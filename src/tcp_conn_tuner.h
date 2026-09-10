@@ -18,73 +18,80 @@
 #include <bpftune/bpftune.h>
 
 enum tcp_cong_tunables {
-	TCP_CONG,
-	TCP_ALLOWED_CONG,
-	TCP_AVAILABLE_CONG,
-	TCP_CONG_DEFAULT,
-	TCP_THIN_LINEAR_TIMEOUTS
+    TCP_CONG,
+    TCP_ALLOWED_CONG,
+    TCP_AVAILABLE_CONG,
+    TCP_CONG_DEFAULT,
+    TCP_THIN_LINEAR_TIMEOUTS
 };
 
 enum tcp_cong_scenarios {
-	TCP_CONG_SET,
+    TCP_CONG_SET,
 };
 
-#define CONG_MAXNAME	16
+#define CONG_MAXNAME 16
 
-#define CONN_TUNER_BPF	"bpftune_conn_tuner"
+#define CONN_TUNER_BPF "bpftune_conn_tuner"
 
+/* Expanded to 16 algorithms (must be a power of two for bitmask logic) */
 enum tcp_states {
-	TCP_STATE_CONG_CUBIC,
-	TCP_STATE_CONG_BBR,
-	TCP_STATE_CONG_HTCP,
-	TCP_STATE_CONG_DCTCP,
-	NUM_TCP_CONG_ALGS
+    TCP_STATE_CONG_CUBIC,
+    TCP_STATE_CONG_BBR,
+    TCP_STATE_CONG_HTCP,
+    TCP_STATE_CONG_DCTCP,
+    TCP_STATE_CONG_SCALABLE,
+    TCP_STATE_CONG_VEGAS,
+    TCP_STATE_CONG_VENO,
+    TCP_STATE_CONG_WESTWOOD,
+    TCP_STATE_CONG_RENO,
+    TCP_STATE_CONG_ILLINOIS,
+    TCP_STATE_CONG_YEAH,
+    TCP_STATE_CONG_LP,
+    TCP_STATE_CONG_BIC,
+    TCP_STATE_CONG_HIGHSPEED,
+    TCP_STATE_CONG_HYBLA,
+    TCP_STATE_CONG_CDG,
+    NUM_TCP_CONG_ALGS
 };
 
 /* match order of enum tcp_states */
-const char congs[NUM_TCP_CONG_ALGS][6] = {
-	{ 'c', 'u', 'b', 'i', 'c', '\0' },
-	{ 'b', 'b', 'r', '\0' },
-	{ 'h', 't', 'c', 'p', '\0' },
-	{ 'd', 'c', 't', 'c', 'p', '\0' }
+const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
+    "cubic", "bbr", "htcp", "dctcp",
+    "scalable", "vegas", "veno", "westwood",
+    "reno", "illinois", "yeah", "lp",
+    "bic", "highspeed", "hybla", "cdg"
 };
 
 struct tcp_conn_metric {
-	__u64 state_flags;	/* logical OR of states */
-	__u64 greedy_count;	/* amount of times greedy option was taken */
-	__u64 min_rtt;
-	__u64 max_rate_delivered;
-	__u64 metric_count;
-	__u64 metric_value;
+    __u64 state_flags;
+    __u64 greedy_count;
+    __u64 min_rtt;
+    __u64 max_rate_delivered;
+    __u64 metric_count;
+    __u64 metric_value;
 };
 
-#define NUM_TCP_CONN_METRICS	NUM_TCP_CONG_ALGS
+#define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
 
 struct tcp_conn_event_data {
-	struct in6_addr raddr;
-	__u64 state_flags;
-	__u64 rate_delivered;
-	__u64 min_rtt;
-	__u64 metric;
+    struct in6_addr raddr;
+    __u64 state_flags;
+    __u64 rate_delivered;
+    __u64 min_rtt;
+    __u64 metric;
 };
 
 struct remote_host {
-	__u64 min_rtt;
-	__u64 max_rate_delivered;
-	__u64 instances;
-	struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
+    __u64 min_rtt;
+    __u64 max_rate_delivered;
+    __u64 instances;
+    struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
 };
 
-/* collect per-conn data once we see > REMOTE_HOST_MIN_INSTANCES */
-#define REMOTE_HOST_MIN_INSTANCES	4
-
-/* if total retrans/segs_out > 1(2^DROP_SHIFT) (1/64 by default)
- * apply BBR congestion control.
- */
-#define DROP_SHIFT	6
-
-#define RTT_SCALE       1000000
-#define DELIVERY_SCALE  1000000
+#define REMOTE_HOST_MIN_INSTANCES 4
+#define DROP_SHIFT 6
+#define RTT_SCALE 1000000
+#define DELIVERY_SCALE 1000000
 
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
  * the min rtt and max rate delivered we have observed for the remote host.
