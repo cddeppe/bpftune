@@ -29,26 +29,40 @@ BPF_MAP_DEF(remote_host_map, BPF_MAP_TYPE_HASH, struct in6_addr, struct remote_h
 
 BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
 
-/* if we have not looked up the host >= REMOTE_HOST_MIN_INSTANCES, return NULL. 
+/* per-CPU scratch buffer used to initialize new remote_host entries without
+ * placing a >512B struct temporary on the BPF stack (NUM_TCP_CONG_ALGS=16
+ * makes struct remote_host 792 bytes, exceeding the 512-byte stack limit).
+ */
+BPF_MAP_DEF(remote_host_scratch, BPF_MAP_TYPE_PERCPU_ARRAY, __u32,
+	    struct remote_host, 1, 0);
+
+/* if we have not looked up the host >= REMOTE_HOST_MIN_INSTANCES, return NULL.
  * This ensures we only apply RL to hosts with which we have multiple
  * interactions.
  */
 static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
 							   bool initial)
 {
-	struct remote_host *remote_host = NULL;
+	__u32 zero = 0;
+	struct remote_host *remote_host;
+	struct remote_host *scratch;
 
 	remote_host = bpf_map_lookup_elem(&remote_host_map, key);
-	if (!remote_host) {
-		struct remote_host new_remote_host = { .instances = 1};
-
-		bpf_map_update_elem(&remote_host_map, key, &new_remote_host,
-				    BPF_ANY);
-		return NULL;
-	} else {
-		/* bump for initial conn established */
+	if (remote_host) {
 		if (initial)
 			remote_host->instances++;
+	} else {
+		/* Use per-CPU scratch to avoid a >512B stack temporary.
+		 * bpf_map_update_elem copies sizeof(*scratch) bytes from
+		 * the kernel-memory scratch buffer into the hash map.
+		 */
+		scratch = bpf_map_lookup_elem(&remote_host_scratch, &zero);
+		if (!scratch)
+			return NULL;
+		__builtin_memset(scratch, 0, sizeof(*scratch));
+		scratch->instances = 1;
+		bpf_map_update_elem(&remote_host_map, key, scratch, BPF_ANY);
+		return NULL;
 	}
 	if (remote_host->instances < REMOTE_HOST_MIN_INSTANCES)
 		return NULL;
@@ -228,7 +242,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		minindex &= (NUM_TCP_CONN_METRICS - 1);
 		/* choose random alg 5% of the time (1/20) */
 		s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
-		s &= (NUM_TCP_CONG_ALGS - 1); 
+		s &= (NUM_TCP_CONG_ALGS - 1);
 
 		set_cong(ops, s);
 
@@ -249,7 +263,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
 		if (!statep)
 			return 1;
-		s = *statep & 0x3;
+		s = *statep & (NUM_TCP_CONG_ALGS - 1);
 		if (!tp)
 			return 1;
 		min_rtt = (__u64)tp->rtt_min.s[0].v;
