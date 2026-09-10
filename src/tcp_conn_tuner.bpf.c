@@ -202,16 +202,23 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 			/* verifier complains about variable stack offset */
 			switch (choice) {
-			case 0:
-				minindex = cands[0]; break;
-			case 1:
-				minindex = cands[1]; break;
-			case 2:
-				minindex = cands[2]; break;
-			case 3:
-				minindex = cands[3]; break;
-			default:
-				return 1;
+			case 0:  minindex = cands[0];  break;
+			case 1:  minindex = cands[1];  break;
+			case 2:  minindex = cands[2];  break;
+			case 3:  minindex = cands[3];  break;
+			case 4:  minindex = cands[4];  break;
+			case 5:  minindex = cands[5];  break;
+			case 6:  minindex = cands[6];  break;
+			case 7:  minindex = cands[7];  break;
+			case 8:  minindex = cands[8];  break;
+			case 9:  minindex = cands[9];  break;
+			case 10: minindex = cands[10]; break;
+			case 11: minindex = cands[11]; break;
+			case 12: minindex = cands[12]; break;
+			case 13: minindex = cands[13]; break;
+			case 14: minindex = cands[14]; break;
+			case 15: minindex = cands[15]; break;
+			default: return 1;
 			}
 		} else if (ncands == 1) {
 			minindex = cands[0];
@@ -221,7 +228,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		minindex &= (NUM_TCP_CONN_METRICS - 1);
 		/* choose random alg 5% of the time (1/20) */
 		s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
-		s &= 0x3;
+		s &= (NUM_TCP_CONG_ALGS - 1); 
 
 		set_cong(ops, s);
 
