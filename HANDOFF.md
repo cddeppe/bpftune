@@ -35,11 +35,11 @@ Inspect: sudo ls -la /var/lib/bpftune/
 ## Build
 git clone https://github.com/cddeppe/bpftune.git
 cd bpftune && dpkg-buildpackage -us -uc -b
-Result: ../bpftune_0-1_ARCH.deb (arm64 auto-detected)
+Result: ../bpftune-custom-0.4.3-ARCH.deb (arm64 auto-detected)
 
 ## Install
 sudo systemctl stop bpftune
-sudo dpkg -i bpftune_0-1_ARCH.deb
+sudo dpkg -i bpftune-custom-0.4.3-ARCH.deb
 sudo systemctl start bpftune
 sleep 30   # let init finish before stopping, else no save
 
