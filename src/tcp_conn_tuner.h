@@ -91,6 +91,9 @@ struct remote_host {
 #define REMOTE_HOST_MIN_INSTANCES 4
 #define DROP_SHIFT 6
 #define RTT_SCALE 1000000
+/* cap the RTT deviation term so one anomalously-low
+ * measurement cannot permanently poison the metric. */
+#define RTT_DEVIATION_CAP 8
 #define DELIVERY_SCALE 1000000
 
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
@@ -131,8 +134,13 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
 		r->min_rtt = min_rtt;
 	if (!r->max_rate_delivered || rate_delivered > r->max_rate_delivered)
 		r->max_rate_delivered = rate_delivered;
-	if (r->min_rtt)
-		metric += ((min_rtt - r->min_rtt)*RTT_SCALE)/r->min_rtt;
+	if (r->min_rtt) {
+                __u64 dev = min_rtt - r->min_rtt;
+                __u64 cap = (__u64)r->min_rtt * RTT_DEVIATION_CAP;
+                if (dev > cap)
+                        dev = cap;
+                metric += (dev * RTT_SCALE) / r->min_rtt;
+        }
 	if (r->max_rate_delivered)
 		metric +=
 		    ((r->max_rate_delivered - rate_delivered)*DELIVERY_SCALE)/r->max_rate_delivered;
