@@ -50,7 +50,7 @@ enum tcp_states {
     TCP_STATE_CONG_BIC,
     TCP_STATE_CONG_HIGHSPEED,
     TCP_STATE_CONG_HYBLA,
-    TCP_STATE_CONG_CDG,
+    TCP_STATE_CONG_NV,
     NUM_TCP_CONG_ALGS
 };
 
@@ -59,7 +59,7 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
     "cubic", "bbr", "htcp", "dctcp",
     "scalable", "vegas", "veno", "westwood",
     "reno", "illinois", "yeah", "lp",
-    "bic", "highspeed", "hybla", "cdg"
+    "bic", "highspeed", "hybla", "nv"
 };
 
 struct tcp_conn_metric {
