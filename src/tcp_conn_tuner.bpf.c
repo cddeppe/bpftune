@@ -166,6 +166,8 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	if (rtable) {
 		switch (ops->family) {
 		case AF_INET:
+            if (!BPFTUNE_CORE_READ(rtable, rt_uses_gateway))
+                    return 1;
 			key->s6_addr32[2] = bpf_htonl(0xffff);
 			key->s6_addr32[3] = BPFTUNE_CORE_READ(rtable, rt_gw4);
 			break;
