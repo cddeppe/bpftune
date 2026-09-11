@@ -16,6 +16,7 @@
 - f153c97 — add HANDOFF.md
 - ea3358d — package filename note
 - 66b98c9 — skip IPv4 routes without a gateway (fixes metric pollution)
+- ac1ebaa — handle algorithms the kernel rejects (metric loop fix + IPv6 gateway)
 
 ## Algorithms
 cubic, bbr, htcp, dctcp, scalable, vegas, veno, westwood, reno,
@@ -79,3 +80,80 @@ Since min_rtt is a monotonic low-water mark, a fast on-link RTT
 poisoned the metric for all other connections sharing that key.
 IPv6 already checked RTF_GATEWAY; IPv4 now checks rt_uses_gateway too.
 No-gateway routes are skipped entirely.
+
+## Three upstream bugs fixed (0.4.5)
+
+**1. IPv4 on-link metric pollution (66b98c9)**
+IPv4 routes without a gateway (same subnet) had rt_gw4 = 0, so all
+on-link connections got bucketed under ::ffff:0.0.0.0 mixed with
+anything else reading as 0. min_rtt is a monotonic low-water mark,
+so a fast on-link RTT (11 us) poisoned the metric for every other
+connection sharing that key (30 ms internet RTT). Fix: check
+rt_uses_gateway, skip no-gateway IPv4 routes.
+
+**2. IPv6 no-gateway fall-through (ac1ebaa)**
+Same class of bug: IPv6 code checked RTF_GATEWAY correctly but used
+'break' instead of 'return', falling out of the switch with an
+all-zero key. Fix: return 1 instead of break.
+
+**3. Failed bpf_setsockopt poisoned the metric (ac1ebaa)**
+bpf_setsockopt(TCP_CONGESTION) for cdg returns -ENOTSUPP on this
+kernel. The old code incremented tcp_cong_choices[] BEFORE checking
+the return value, and never updated sk_storage on failure. Since the
+metric-update path requires sk_storage, cdg's metric_value stayed at
+0 forever; 0 is the minimum, so cdg won every comparison, failed
+every set, and looped. Summary showed cdg at ~90% while no socket
+ever actually ran cdg.
+Fix: set_cong() returns the error; caller sets metric_value = ~0ULL
+on failure so the algorithm stops winning comparisons for that host.
+Counter now only increments on success.
+
+## BUILD REQUIREMENT: make clean before dpkg-buildpackage
+
+The Makefile does not track the .bpf.c -> .skel.h -> .o dependency
+chain properly. Editing tcp_conn_tuner.bpf.c and running
+dpkg-buildpackage alone will silently reuse stale objects and produce
+a .deb with OLD code. This caused ~2 hours of confusion during the
+0.4.4 cycle: the "IPv4 gateway fix" appeared not to change anything
+because the built .deb contained pre-fix code.
+
+ALWAYS:
+    cd ~/bpftune
+    make clean >/dev/null 2>&1
+    dpkg-buildpackage -us -uc -b
+
+Verify after building (the truly definitive check):
+    sudo bpftool prog load src/tcp_conn_tuner.bpf.o /sys/fs/bpf/test_x
+If it loads silently, the verifier is happy. If it prints
+"BPF program is too large" or any error, the build is broken.
+
+Non-definitive but useful: strings on the .so can confirm whether a
+specific code change is present.
+
+## Why cdg was never the winner
+
+Before 0.4.5, every summary showed cdg at ~85-90% of all counts.
+Investigated as a real behavioral preference, but it was an artifact
+of bug #3: cdg was picked, failed to set, its metric never updated,
+and it kept winning. Real sockets always ran the system default
+(scalable) or whatever bpf_setsockopt had successfully set.
+
+Post-0.4.5, cdg is 0 across the fleet, and selection is spread across
+the algorithms that actually work on this kernel.
+
+## Kernel notes
+
+- bpf_setsockopt(TCP_CONGESTION) returns -ENOTSUPP for cdg on
+  kernel 6.12 (Debian 13) from the BPF context, even though a plain
+  setsockopt(2) from userspace works. The userspace and BPF paths
+  differ; do not assume a userspace viability test predicts BPF
+  behavior.
+- Other 15 algorithms set successfully.
+
+## Version history
+- 0.4-2-custom: 16-algorithm expansion (early)
+- 0.4-3-custom: state persistence + -x reset flag
+- 0.4-4-custom: IPv4 gateway fix (BUT the .deb was stale;
+                 never actually shipped a working version of it
+                 on its own — superseded by 0.4-5)
+- 0.4-5-custom: metric loop fix, IPv6 gateway fix, this doc
