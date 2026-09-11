@@ -157,3 +157,20 @@ the algorithms that actually work on this kernel.
                  never actually shipped a working version of it
                  on its own — superseded by 0.4-5)
 - 0.4-5-custom: metric loop fix, IPv6 gateway fix, this doc
+
+## Why cdg is permanently unusable via BPF
+
+Kernel hardcodes a refusal in net/core/filter.c:sol_tcp_sockopt_congestion():
+
+    /* "cdg" is the only cc that alloc a ptr in inet_csk_ca area.
+     * The bpf-tcp-cc may overwrite this ptr after switching to cdg. */
+    if (*optlen >= sizeof("cdg") - 1 && !strncmp("cdg", optval, *optlen))
+        return -ENOTSUPP;
+
+cdg allocates per-connection state in inet_csk_ca; a BPF TCP CC prog
+could clobber it.  Kernel refuses cdg from bpf_setsockopt for safety.
+This is upstream and universal -- not a fork bug, not a kernel bug.
+
+Consequence: cdg will never succeed via this tuner's set_cong() path.
+The 0.4-5 fix (mark metric unusable on failure) handles it correctly.
+Optional tidier alternative: drop cdg from congs[] entirely.
