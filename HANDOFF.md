@@ -1,0 +1,62 @@
+# BPFTUNE FORK — HANDOFF
+
+## Goal
+16 congestion algorithms (vs upstream 4) + persistent learned state.
+
+## Repos
+- Fork: https://github.com/cddeppe/bpftune  (branch main)
+- Upstream: https://github.com/oracle/bpftune
+- Base: 8fd59cc
+
+## Commits
+- 1157b04 — 16-algo enum + congs[]
+- 0637776 — BPF switch expansion + mask fixes
+- d560e60 — per-CPU scratch map fix
+- c73f234 — persist state + -x reset flag
+- f153c97 — add HANDOFF.md
+
+## Algorithms
+cubic, bbr, htcp, dctcp, scalable, vegas, veno, westwood, reno,
+illinois, yeah, lp, bic, highspeed, hybla, cdg
+
+## Persistence
+File: /var/lib/bpftune/tcp_conn_tuner.state (0600)
+Format: 24B header + N entries of (16B key, 792B value)
+Save: fini() calls save_remote_host_map()
+Load: init() calls restore_remote_host_map()
+Atomic write (tmp+rename), magic/version/size checked
+Survives: restart, stop/start, reboot
+Lost on: kill -9 / power loss (delta since last clean stop)
+
+Reset: sudo bpftune -x && sudo systemctl restart bpftune
+Inspect: sudo ls -la /var/lib/bpftune/
+  24 B = empty, 24+808N = N hosts
+
+## Build
+git clone https://github.com/cddeppe/bpftune.git
+cd bpftune && dpkg-buildpackage -us -uc -b
+Result: ../bpftune_0-1_ARCH.deb (arm64 auto-detected)
+
+## Install
+sudo systemctl stop bpftune
+sudo dpkg -i bpftune_0-1_ARCH.deb
+sudo systemctl start bpftune
+sleep 30   # let init finish before stopping, else no save
+
+## Rollback
+Restore /usr/sbin/bpftune.orig and /usr/lib/ARCH-linux-gnu/bpftune.orig/
+
+## Security
+SSH key for GitHub: ~/.ssh/cluster_sync (in ~/.ssh/config). No PAT.
+
+## Known cosmetics (ignore)
+- dpkg: warning: downgrading bpftune
+- ldconfig: ... not a symbolic link
+- modprobe: FATAL: Module tcp_X.ko not found
+- route_table tuner fails on some kernels
+
+## Verified on builder 2026-09-11
+Save: 832 B
+Restore: 832 B with no new traffic
+Delete+restart: 24 B
+bpftune -x: file removed
