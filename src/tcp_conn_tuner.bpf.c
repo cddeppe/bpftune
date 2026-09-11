@@ -69,25 +69,26 @@ static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
 	return remote_host;
 }
 
-static __always_inline void set_cong(struct bpf_sock_ops *ops, __u8 i)
+static __always_inline int set_cong(struct bpf_sock_ops *ops, __u8 i)
 {
-	int ret;
+        int ret;
 
-	ret = bpf_setsockopt(ops, SOL_TCP, TCP_CONGESTION, (void *)congs[i],
-			     sizeof(congs[i]));
-	tcp_cong_choices[i & (NUM_TCP_CONG_ALGS - 1)]++;
-	/* update state */
-	if (!ret) {
-		struct bpf_sock *sk = ops->sk;
-		__u64 *statep;
+        ret = bpf_setsockopt(ops, SOL_TCP, TCP_CONGESTION, (void *)congs[i],
+                             sizeof(congs[i]));
+        if (ret)
+                return ret;
+        tcp_cong_choices[i & (NUM_TCP_CONG_ALGS - 1)]++;
+        /* update state */
+        struct bpf_sock *sk = ops->sk;
+        __u64 *statep;
 
-		if (!sk)
-			return;
-		statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
-                                            BPF_SK_STORAGE_GET_F_CREATE);
-                if (statep)
-			*statep = (__u64)i;
-	}
+        if (!sk)
+                return 0;
+        statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
+                                    BPF_SK_STORAGE_GET_F_CREATE);
+        if (statep)
+                *statep = (__u64)i;
+        return 0;
 }
 
 __u64 tcp_thin_lto_choices;
@@ -133,7 +134,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 							    &one, sizeof(one)))
 						tcp_thin_lto_choices++;
 				}
-				set_cong(ops, TCP_STATE_CONG_BBR);
+				(void)set_cong(ops, TCP_STATE_CONG_BBR);
 				/* no more need for retrans events... */
 				bpf_sock_ops_cb_flags_set(ops, BPF_SOCK_OPS_STATE_CB_FLAG);
 			}
@@ -175,7 +176,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 			rt6 = (struct rt6_info *)rtable;
 			rt_flags = BPFTUNE_CORE_READ(rt6, rt6i_flags);
 			if (!(rt_flags & RTF_GATEWAY))
-				break;
+				return 1;
 			key->s6_addr32[0] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[0]);
 			key->s6_addr32[1] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[1]);
 			key->s6_addr32[2] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[2]);
@@ -246,7 +247,9 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
 		s &= (NUM_TCP_CONG_ALGS - 1);
 
-		set_cong(ops, s);
+		if (set_cong(ops, s))
+
+		        remote_host->metrics[s].metric_value = ~((__u64)0);
 
 		return 1;
 	}
