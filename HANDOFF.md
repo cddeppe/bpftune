@@ -14,6 +14,8 @@
 - d560e60 — per-CPU scratch map fix
 - c73f234 — persist state + -x reset flag
 - f153c97 — add HANDOFF.md
+- ea3358d — package filename note
+- 66b98c9 — skip IPv4 routes without a gateway (fixes metric pollution)
 
 ## Algorithms
 cubic, bbr, htcp, dctcp, scalable, vegas, veno, westwood, reno,
@@ -69,3 +71,11 @@ positional bias). Cause: the cost metric rewards low RTT heavily, and
 cdg is a delay-based algorithm, so it structurally wins. Not a bug.
 Upstream flags the metric as potentially needing tweaks. Leave as-is
 unless cdg is observed to actually perform poorly.
+
+## IPv4 gateway fix (66b98c9)
+IPv4 connections without a gateway (on-link, same subnet) were being
+bucketed under ::ffff:0.0.0.0 mixed with anything else reading as 0.
+Since min_rtt is a monotonic low-water mark, a fast on-link RTT
+poisoned the metric for all other connections sharing that key.
+IPv6 already checked RTF_GATEWAY; IPv4 now checks rt_uses_gateway too.
+No-gateway routes are skipped entirely.
