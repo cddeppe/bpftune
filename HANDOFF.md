@@ -61,3 +61,11 @@ Save: 832 B
 Restore: 832 B with no new traffic
 Delete+restart: 24 B
 bpftune -x: file removed
+
+## Known behavior: cdg dominance
+Both aarch64 and amd64 hosts show ~88% cdg selection. Investigated and
+ruled out code bugs (moved cdg to index 0 — it still dominated, so no
+positional bias). Cause: the cost metric rewards low RTT heavily, and
+cdg is a delay-based algorithm, so it structurally wins. Not a bug.
+Upstream flags the metric as potentially needing tweaks. Leave as-is
+unless cdg is observed to actually perform poorly.
