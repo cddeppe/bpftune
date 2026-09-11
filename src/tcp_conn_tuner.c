@@ -20,7 +20,9 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -51,6 +53,8 @@ struct tcp_conn_tuner_bpf *skel;
 
 int tcp_iter_fd;
 
+static int restore_remote_host_map(struct bpftuner *tuner);
+static int save_remote_host_map(struct bpftuner *tuner);
 int init(struct bpftuner *tuner)
 {
 	struct bpftunable *t;
@@ -79,6 +83,7 @@ int init(struct bpftuner *tuner)
 	if (err)
 		return err;
 
+        restore_remote_host_map(tuner);
 	err = bpftune_cap_add();
 	if (err) {
 		bpftune_log(LOG_ERR, "cannot add caps: %s\n", strerror(-err));
@@ -174,10 +179,135 @@ void summarize(struct bpftuner *tuner)
 	}
 }
 
+#define STATE_DIR     "/var/lib/bpftune"
+#define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
+#define STATE_MAGIC   0x42504654u
+#define STATE_VERSION 1
+
+struct state_header {
+        __u32 magic;
+        __u32 version;
+        __u32 key_size;
+        __u32 value_size;
+        __u32 num_entries;
+        __u32 reserved;
+};
+
+static int restore_remote_host_map(struct bpftuner *tuner)
+{
+        struct bpf_map *map = bpftuner_bpf_map_get(tcp_conn, tuner, remote_host_map);
+        struct state_header hdr;
+        struct in6_addr key;
+        struct remote_host val;
+        int map_fd, err = 0;
+        __u32 i;
+        FILE *f;
+
+        if (!map)
+                return -1;
+        map_fd = bpf_map__fd(map);
+
+        f = fopen(STATE_PATH, "rb");
+        if (!f)
+                return 0;   /* no state file = fresh start, not an error */
+
+        if (fread(&hdr, sizeof(hdr), 1, f) != 1) {
+                bpftune_log(LOG_ERR, "tcp_conn_tuner: %s: truncated header\n", STATE_PATH);
+                err = -1; goto out;
+        }
+        if (hdr.magic != STATE_MAGIC || hdr.version != STATE_VERSION ||
+            hdr.key_size != sizeof(key) || hdr.value_size != sizeof(val)) {
+                bpftune_log(LOG_ERR,
+                            "tcp_conn_tuner: %s: stale or mismatched state (magic=%x ver=%u); ignoring\n",
+                            STATE_PATH, hdr.magic, hdr.version);
+                err = -1; goto out;
+        }
+
+        for (i = 0; i < hdr.num_entries; i++) {
+                if (fread(&key, sizeof(key), 1, f) != 1 ||
+                    fread(&val, sizeof(val), 1, f) != 1) {
+                        bpftune_log(LOG_ERR, "tcp_conn_tuner: %s: truncated entry %u\n",
+                                    STATE_PATH, i);
+                        err = -1; goto out;
+                }
+                if (bpf_map_update_elem(map_fd, &key, &val, BPF_ANY))
+                        bpftune_log(LOG_DEBUG, "tcp_conn_tuner: restore: update failed for entry %u\n", i);
+        }
+
+        bpftune_log(LOG_DEBUG, "tcp_conn_tuner: restored %u entries from %s\n",
+                    hdr.num_entries, STATE_PATH);
+out:
+        fclose(f);
+        return err;
+}
+
+static int save_remote_host_map(struct bpftuner *tuner)
+{
+        struct bpf_map *map = bpftuner_bpf_map_get(tcp_conn, tuner, remote_host_map);
+        struct state_header hdr = { .magic = STATE_MAGIC, .version = STATE_VERSION };
+        struct in6_addr key, next_key;
+        struct remote_host val;
+        void *prev = NULL;
+        int map_fd, err = 0;
+        char tmp[64];
+        FILE *f;
+
+        if (!map)
+                return -1;
+        map_fd = bpf_map__fd(map);
+
+        mkdir(STATE_DIR, 0700);
+
+        snprintf(tmp, sizeof(tmp), STATE_PATH ".tmp");
+        f = fopen(tmp, "wb");
+        if (!f) {
+                bpftune_log(LOG_ERR, "tcp_conn_tuner: cannot open %s: %s\n",
+                            tmp, strerror(errno));
+                return -errno;
+        }
+
+        hdr.key_size = sizeof(key);
+        hdr.value_size = sizeof(val);
+
+        if (fseek(f, sizeof(hdr), SEEK_SET) != 0) { err = -1; goto out; }
+
+        while (bpf_map_get_next_key(map_fd, prev, &next_key) == 0) {
+                if (bpf_map_lookup_elem(map_fd, &next_key, &val))
+                        goto next;
+                if (fwrite(&next_key, sizeof(next_key), 1, f) != 1 ||
+                    fwrite(&val, sizeof(val), 1, f) != 1) { err = -1; goto out; }
+                hdr.num_entries++;
+next:
+                key = next_key;
+                prev = &key;
+        }
+
+        if (fseek(f, 0, SEEK_SET) != 0 ||
+            fwrite(&hdr, sizeof(hdr), 1, f) != 1) { err = -1; goto out; }
+
+        bpftune_log(LOG_DEBUG, "tcp_conn_tuner: saved %u entries to %s\n",
+                    hdr.num_entries, STATE_PATH);
+out:
+        fclose(f);
+        if (err) {
+                unlink(tmp);
+                return err;
+        }
+        chmod(tmp, 0600);
+        if (rename(tmp, STATE_PATH) != 0) {
+                bpftune_log(LOG_ERR, "tcp_conn_tuner: rename %s -> %s: %s\n",
+                            tmp, STATE_PATH, strerror(errno));
+                unlink(tmp);
+                return -errno;
+        }
+        return 0;
+}
+
 void fini(struct bpftuner *tuner)
 {
 	bpftune_log(LOG_DEBUG, "calling fini for %s\n", tuner->name);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+        save_remote_host_map(tuner);
 	summarize(tuner);
 	bpftuner_bpf_fini(tuner);
 }

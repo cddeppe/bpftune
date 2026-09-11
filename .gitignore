@@ -6,3 +6,12 @@
 *.skel.nobtf.h
 *.swp
 *.plist
+
+# build artifacts
+debian/.debhelper/
+debian/bpftune/
+debian/bpftune.debhelper.log
+debian/bpftune.postrm.debhelper
+debian/bpftune.substvars
+debian/debhelper-build-stamp
+debian/files
