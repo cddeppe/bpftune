@@ -54,6 +54,7 @@ SSH key for GitHub: ~/.ssh/cluster_sync (in ~/.ssh/config). No PAT.
 - ldconfig: ... not a symbolic link
 - modprobe: FATAL: Module tcp_X.ko not found
 - route_table tuner fails on some kernels
+- could not get pin: Bad file descriptor (x3 at startup) — pre-existing, cosmetic
 
 ## Verified on builder 2026-09-11
 Save: 832 B
