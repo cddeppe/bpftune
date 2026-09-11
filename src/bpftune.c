@@ -321,6 +321,7 @@ int main(int argc, char *argv[])
 		{ "stderr", 	no_argument,		NULL,	's' },
 		{ "support",	no_argument,		NULL,	'S' },
 		{ "version",	no_argument,		NULL,	'V' },
+            { "reset-state", no_argument,        NULL,   'x' },
 		{ 0 }
 	};
 	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
@@ -339,7 +340,7 @@ int main(int argc, char *argv[])
 
 	bin_name = argv[0];
 
-	while ((opt = getopt_long(argc, argv, "a:c:dDhl:Lr:p:Pq:RsSV", options, NULL))
+	while ((opt = getopt_long(argc, argv, "a:c:dDhl:Lr:p:Pq:RsSVx", options, NULL))
 		>= 0) {
 		switch (opt) {
 		case 'a':
@@ -396,6 +397,10 @@ int main(int argc, char *argv[])
 			use_stderr = true;
 			support_only = true;
 			break;
+                case 'x':
+                        unlink("/var/lib/bpftune/tcp_conn_tuner.state");
+                        fprintf(stderr, "reset tcp_conn_tuner state\n");
+                        return 0;
 		case 'V':
 			do_version();
 			return 0;
