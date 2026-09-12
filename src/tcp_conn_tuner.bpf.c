@@ -273,10 +273,15 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 			return 1;
 		min_rtt = (__u64)tp->rtt_min.s[0].v;
 		rate_interval_us = (__u64)tp->rate_interval_us;
-		rate_delivered = (__u64)tp->rate_delivered;
-		mss = (__u64)tp->mss_cache;
-		rate_delivered = rate_interval_us ?
-			(__u64)(rate_delivered * mss)/rate_interval_us : 0;
+                rate_delivered = (__u64)tp->rate_delivered;
+                mss = (__u64)tp->mss_cache;
+                /* Scale to bytes/second.  Raw bytes/us truncates to 0 or
+                 * 1 for most real connections, so every algorithm
+                 * measures identically and the throughput term in the
+                 * metric is silently inert.
+                 */
+                rate_delivered = rate_interval_us ?
+                        (rate_delivered * mss * 1000000ULL) / rate_interval_us : 0;
 
 		m = &remote_host->metrics[s];
 		if (!m->min_rtt || min_rtt < m->min_rtt)
@@ -284,7 +289,21 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                 if (!m->max_rate_delivered || rate_delivered > m->max_rate_delivered)
                 	m->max_rate_delivered = rate_delivered;
 
-		metric = tcp_metric_calc(remote_host, min_rtt, m->max_rate_delivered);
+		{
+
+		        __u64 rtt_term = 0, rate_term = 0;
+
+		        metric = tcp_metric_calc(remote_host, min_rtt,
+
+		                                 m->max_rate_delivered,
+
+		                                 &rtt_term, &rate_term);
+
+		        bpf_printk("alg=%d rtt=%llu rate=%llu",
+
+		                   s, rtt_term, rate_term);
+
+		}
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
 			if (s == i)
 				continue;
