@@ -94,7 +94,12 @@ struct remote_host {
 /* cap the RTT deviation term so one anomalously-low
  * measurement cannot permanently poison the metric. */
 #define RTT_DEVIATION_CAP 8
-#define DELIVERY_SCALE 1000000
+/* Match the throughput term's ceiling to the RTT term's (which is
+ * RTT_SCALE * RTT_DEVIATION_CAP = 8000000).  Without this, RTT could
+ * contribute up to 8x more than throughput to the summed metric,
+ * making the throughput term effectively decorative even though it's
+ * now producing real values. */
+#define DELIVERY_SCALE 8000000
 
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
  * the min rtt and max rate delivered we have observed for the remote host.
@@ -125,24 +130,35 @@ struct remote_host {
  * new_estimate = old_estimate + learning_rate * (reward - old_estimate)
  */
 static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
-					     __u64 min_rtt,
-					     __u64 rate_delivered)
+                                             __u64 min_rtt,
+                                             __u64 rate_delivered,
+                                             __u64 *rtt_term_out,
+                                             __u64 *rate_term_out)
 {
-	__u64 metric = 0;
+        __u64 metric = 0;
+        __u64 rtt_term = 0;
+        __u64 rate_term = 0;
 
-	if (!r->min_rtt || min_rtt < r->min_rtt)
-		r->min_rtt = min_rtt;
-	if (!r->max_rate_delivered || rate_delivered > r->max_rate_delivered)
-		r->max_rate_delivered = rate_delivered;
-	if (r->min_rtt) {
+        if (!r->min_rtt || min_rtt < r->min_rtt)
+                r->min_rtt = min_rtt;
+        if (!r->max_rate_delivered || rate_delivered > r->max_rate_delivered)
+                r->max_rate_delivered = rate_delivered;
+        if (r->min_rtt) {
                 __u64 dev = min_rtt - r->min_rtt;
                 __u64 cap = (__u64)r->min_rtt * RTT_DEVIATION_CAP;
                 if (dev > cap)
                         dev = cap;
-                metric += (dev * RTT_SCALE) / r->min_rtt;
+                rtt_term = (dev * RTT_SCALE) / r->min_rtt;
+                metric += rtt_term;
         }
-	if (r->max_rate_delivered)
-		metric +=
-		    ((r->max_rate_delivered - rate_delivered)*DELIVERY_SCALE)/r->max_rate_delivered;
-	return metric;
+        if (r->max_rate_delivered) {
+                rate_term = ((r->max_rate_delivered - rate_delivered)
+                             * DELIVERY_SCALE) / r->max_rate_delivered;
+                metric += rate_term;
+        }
+        if (rtt_term_out)
+                *rtt_term_out = rtt_term;
+        if (rate_term_out)
+                *rate_term_out = rate_term;
+        return metric;
 }
