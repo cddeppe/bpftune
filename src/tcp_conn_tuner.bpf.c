@@ -271,6 +271,8 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		s = *statep & (NUM_TCP_CONG_ALGS - 1);
 		if (!tp)
 			return 1;
+		if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
+			return 1;
 		min_rtt = (__u64)tp->rtt_min.s[0].v;
 		rate_interval_us = (__u64)tp->rate_interval_us;
                 rate_delivered = (__u64)tp->rate_delivered;
