@@ -1,3 +1,10 @@
+bpftune (0.4.10) UNRELEASED; urgency=medium
+
+  * Diagnostic: log rtt_term and rate_term separately in metric printk.
+    Branch only (diag/metric-terms); do not merge to main.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 16:30:00 +0200
+
 bpftune (0.4.9) UNRELEASED; urgency=medium
 
   * Custom fork: expanded TCP congestion control selection, persistent
