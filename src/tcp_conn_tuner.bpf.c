@@ -295,6 +295,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		{
 
 		        __u64 rtt_term = 0, rate_term = 0;
+		        __u64 heal_rtt = 0, heal_rate = 0;
 
 		        metric = tcp_metric_calc(remote_host, min_rtt,
 
@@ -302,9 +303,18 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		                                 rate_delivered,
 
-		                                 &rtt_term, &rate_term);
+		                                 &rtt_term, &rate_term,
+		                                 &heal_rtt, &heal_rate);
 
 		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt, avg_rtt);
+		        		        if (heal_rtt)
+		        		                bpf_printk("heal_rtt smrtt=%llu newref=%llu",
+		        		                           (unsigned long long)min_rtt,
+		        		                           (unsigned long long)heal_rtt);
+		        		        if (heal_rate)
+		        		                bpf_printk("heal_rate rate=%llu newref=%llu",
+		        		                           (unsigned long long)rate_delivered,
+		        		                           (unsigned long long)heal_rate);
 
 		}
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
