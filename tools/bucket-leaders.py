@@ -83,7 +83,7 @@ for entry in entries:
 rows_out.sort(reverse=True)
 
 for inst, key, mrtt, mrate, lname, lval, verd in rows_out:
-    print("%-22s %-9d %-8d %-10d %-10s %-10d %s" % (
+    print("%-26s %-9d %-8d %-10d %-10s %-10d %s" % (
         key, inst, mrtt, mrate, lname, lval, verd))
 
 print()
