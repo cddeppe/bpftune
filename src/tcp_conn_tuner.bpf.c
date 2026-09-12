@@ -297,7 +297,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		        metric = tcp_metric_calc(remote_host, min_rtt,
 
-		                                 m->max_rate_delivered,
+		                                 rate_delivered,
 
 		                                 &rtt_term, &rate_term);
 
