@@ -182,7 +182,7 @@ void summarize(struct bpftuner *tuner)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 1
+#define STATE_VERSION 2
 
 struct state_header {
         __u32 magic;
@@ -273,6 +273,8 @@ static int save_remote_host_map(struct bpftuner *tuner)
 
         while (bpf_map_get_next_key(map_fd, prev, &next_key) == 0) {
                 if (bpf_map_lookup_elem(map_fd, &next_key, &val))
+                        goto next;
+                if (val.instances < PERSIST_MIN_INSTANCES)
                         goto next;
                 if (fwrite(&next_key, sizeof(next_key), 1, f) != 1 ||
                     fwrite(&val, sizeof(val), 1, f) != 1) { err = -1; goto out; }
