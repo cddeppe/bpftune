@@ -159,7 +159,7 @@ filename on each host.
 
 ## Algorithms
 cubic, bbr, htcp, dctcp, scalable, vegas, veno, westwood, reno,
-illinois, yeah, lp, bic, highspeed, hybla, cdg
+illinois, yeah, lp, bic, highspeed, hybla, nv
 
 ## Persistence
 File: /var/lib/bpftune/tcp_conn_tuner.state (0600)
@@ -174,22 +174,26 @@ Reset: sudo bpftune -x && sudo systemctl restart bpftune
 Inspect: sudo ls -la /var/lib/bpftune/
   24 B = empty, 24+808N = N hosts
 
-## Build
-git clone https://github.com/cddeppe/bpftune.git
-cd bpftune && dpkg-buildpackage -us -uc -b
-Result: ../bpftune-custom-0.4.3-ARCH.deb (arm64 auto-detected)
+## Build (see CURRENT STATE for current workflow)
+
+ALWAYS `make clean` before dpkg-buildpackage (see "BUILD REQUIREMENT" below).
+    git clone https://github.com/cddeppe/bpftune.git
+    cd bpftune
+    make clean
+    dpkg-buildpackage -b -us -uc
+Result: ../bpftune_<version>_<arch>.deb
+Stage to: /mnt/backup/bpftune-custom-<version>-<arch>.deb
 
 ## Install
-sudo systemctl stop bpftune
-sudo dpkg -i bpftune-custom-0.4.3-ARCH.deb
-sudo systemctl start bpftune
-sleep 30   # let init finish before stopping, else no save
+
+    sudo systemctl stop bpftune
+    sudo rm -f /var/lib/bpftune/tcp_conn_tuner.state  # only when metric semantics change
+    sudo dpkg -i /mnt/backup/bpftune-custom-<version>-<arch>.deb
+    sudo systemctl start bpftune
+    sleep 30   # let init finish before stopping, else no save
 
 ## Rollback
 Restore /usr/sbin/bpftune.orig and /usr/lib/ARCH-linux-gnu/bpftune.orig/
-
-## Security
-SSH key for GitHub: ~/.ssh/cluster_sync (in ~/.ssh/config). No PAT.
 
 ## Known cosmetics (ignore)
 - dpkg: warning: downgrading bpftune
@@ -204,14 +208,15 @@ Restore: 832 B with no new traffic
 Delete+restart: 24 B
 bpftune -x: file removed
 
-## Known behavior: cdg dominance
-Both aarch64 and amd64 hosts show ~88% cdg selection. Investigated and
-ruled out code bugs (moved cdg to index 0 — it still dominated, so no
-positional bias). Cause: the cost metric rewards low RTT heavily, and
-cdg is a delay-based algorithm, so it structurally wins. Not a bug.
-Upstream flags the metric as potentially needing tweaks. Leave as-is
-unless cdg is observed to actually perform poorly.
+## Known behavior: cdg dominance — SUPERSEDED
 
+[This section was written before the SET-failure metric loop bug (#3
+ below) was identified.  The apparent ~88% cdg selection was an
+ artifact of that bug: cdg failed to set, its metric never updated,
+ 0 remained the minimum, and it kept winning.  The explanation about
+ delay-based algorithms "structurally winning" was wrong.  See
+ "Three upstream bugs fixed (0.4.5)" and "Why cdg was never the winner"
+ below for the correct account.]
 ## IPv4 gateway fix (66b98c9)
 IPv4 connections without a gateway (on-link, same subnet) were being
 bucketed under ::ffff:0.0.0.0 mixed with anything else reading as 0.
@@ -290,13 +295,20 @@ the algorithms that actually work on this kernel.
 - Other 15 algorithms set successfully.
 
 ## Version history
+
 - 0.4-2-custom: 16-algorithm expansion (early)
 - 0.4-3-custom: state persistence + -x reset flag
 - 0.4-4-custom: IPv4 gateway fix (BUT the .deb was stale;
                  never actually shipped a working version of it
                  on its own — superseded by 0.4-5)
 - 0.4-5-custom: metric loop fix, IPv6 gateway fix, this doc
-
+- 0.4-6 through 0.4-8-custom: cdg->nv in the algorithm list;
+                 throughput term made meaningful (bytes/sec scaling);
+                 RTT deviation cap (RTT_DEVIATION_CAP=8)
+- 0.4-9-custom: dpkg version string fixed (0-1 -> 0.4.9) — permanently
+                 resolves the apt-downgrade race against 0.0~git*;
+                 adds diagnostic printk for metric analysis
+- 0.4-10 through 0.4-14: metric overhaul.  See CURRENT STATE at top.
 ## Why cdg is permanently unusable via BPF
 
 Kernel hardcodes a refusal in net/core/filter.c:sol_tcp_sockopt_congestion():
@@ -334,5 +346,10 @@ shows upstream's 4 algorithms instead of 16.  Check with `lsof -p
 $(pidof bpftune) | grep tcp_conn_tuner` -- fork loads from
 /usr/lib/bpftune/, upstream from /usr/lib/<arch>-linux-gnu/bpftune/.
 
-Fix: `sudo apt-mark hold bpftune libbpftune0` on each host.
+HISTORICAL FIX (pre-0.4.9): `sudo apt-mark hold bpftune libbpftune0` on each host.
 Reinstall from /mnt/backup if already replaced.
+
+CURRENT (0.4.9+): our dpkg version ("0.4.9", "0.4.14", ...) sorts ABOVE
+the distro package ("0.0~git*"), so a plain `apt update && apt upgrade`
+no longer overwrites the fork.  The apt-mark hold is likely no longer
+needed but is still set on the fleet — test before removing.
