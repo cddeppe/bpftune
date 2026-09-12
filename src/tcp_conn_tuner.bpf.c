@@ -25,7 +25,7 @@ __u64 tcp_cong_choices[NUM_TCP_CONG_ALGS];
 
 long long tcp_thin_lto = 0;
 
-BPF_MAP_DEF(remote_host_map, BPF_MAP_TYPE_HASH, struct in6_addr, struct remote_host, 1024, 0);
+BPF_MAP_DEF(remote_host_map, BPF_MAP_TYPE_LRU_HASH, struct in6_addr, struct remote_host, 4096, 0);
 
 BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
 
@@ -101,8 +101,6 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	struct in6_addr raddr = {};
 	struct in6_addr *key = &raddr;
 	struct bpf_sock *sk = ops->sk;
-	struct rtable *rtable = NULL;
-	struct rt6_info *rt6 = NULL;
 	struct tcp_sock *tp = NULL;
 	unsigned int rt_flags = 0;
 	__u64 *statep = NULL;
@@ -159,33 +157,21 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	if (!sk)
 		return 1;
 	tp = bpf_skc_to_tcp_sock(sk);
-	if (tp) {
-		/* get remote host info from cached destination gateway */
-		rtable = (struct rtable *)BPFTUNE_CORE_READ((struct sock *)tp,
-							    sk_dst_cache);
-	}
-	if (rtable) {
-		switch (ops->family) {
-		case AF_INET:
-            if (!BPFTUNE_CORE_READ(rtable, rt_uses_gateway))
-                    return 1;
-			key->s6_addr32[2] = bpf_htonl(0xffff);
-			key->s6_addr32[3] = BPFTUNE_CORE_READ(rtable, rt_gw4);
-			break;
-		case AF_INET6:
-			rt6 = (struct rt6_info *)rtable;
-			rt_flags = BPFTUNE_CORE_READ(rt6, rt6i_flags);
-			if (!(rt_flags & RTF_GATEWAY))
-				return 1;
-			key->s6_addr32[0] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[0]);
-			key->s6_addr32[1] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[1]);
-			key->s6_addr32[2] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[2]);
-			key->s6_addr32[3] = BPFTUNE_CORE_READ(rt6, rt6i_gateway.in6_u.u6_addr32[3]);
-			break;
-		default:
-			return 1;
-		}
-	}
+	switch (ops->family) {
+        case AF_INET:
+                /* key by destination IP (::ffff:a.b.c.d form) */
+                key->s6_addr32[2] = bpf_htonl(0xffff);
+                key->s6_addr32[3] = ops->remote_ip4;
+                break;
+        case AF_INET6:
+                key->s6_addr32[0] = ops->remote_ip6[0];
+                key->s6_addr32[1] = ops->remote_ip6[1];
+                key->s6_addr32[2] = ops->remote_ip6[2];
+                key->s6_addr32[3] = ops->remote_ip6[3];
+                break;
+        default:
+                return 1;
+        }
 	remote_host = get_remote_host(key, initial);
 	/* no RL unless seen a number of times... */
 	if (!remote_host)

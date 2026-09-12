@@ -1,3 +1,18 @@
+bpftune (0.4.18) UNRELEASED; urgency=medium
+
+  * Switch bucket key from next-hop gateway to destination IP, matching
+    the metric's stated intent (per remote host).  Previously all IPv4
+    traffic through the default route shared one bucket, mixing fast
+    local CDN paths with slow tunnel paths.
+  * Switch remote_host_map to LRU hash, 4096 entries.  Self-manages
+    eviction on a destination-keyed workload.
+  * Persist only buckets with >= PERSIST_MIN_INSTANCES (8) connections.
+    Recurring paths survive restarts; one-off destinations do not.
+  * Bump STATE_VERSION to 2: prior state files held gateway-addressed
+    keys, which are meaningless under destination keying.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 22:57:56 +0200
+
 bpftune (0.4.17) UNRELEASED; urgency=medium
 
   * Diagnostic: log heal events via bpf_printk in the BPF caller.
