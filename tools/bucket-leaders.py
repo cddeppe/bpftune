@@ -38,15 +38,9 @@ for top in data:
         entries.append(top)
 
 def fmt_key(b):
-    raw = bytes(b)
     if b[:10] == [0]*10 and b[10] == 255 and b[11] == 255:
         return "%d.%d.%d.%d" % (b[12], b[13], b[14], b[15])
-    return str(ipaddress.IPv6Address(raw))
-
-header = "%-26s %-9s %-8s %-10s %-10s %-10s %s" % (
-    "destination", "instances", "min_rtt", "max_rate", "leader", "leader_val", "verdict")
-print(header)
-print("-" * len(header))
+    return str(ipaddress.IPv6Address(bytes(b)))
 
 rows_out = []
 for entry in entries:
@@ -82,9 +76,23 @@ for entry in entries:
 
 rows_out.sort(reverse=True)
 
+# Compute destination column width dynamically so long IPv6 addresses
+# (up to 39 chars compressed) don't push the rest of the row around.
+maxcol = len("destination")
+for _, key, *_rest in rows_out:
+    if len(key) > maxcol:
+        maxcol = len(key)
+
+fmt_head = "%-" + str(maxcol) + "s %-9s %-8s %-10s %-10s %-10s %s"
+fmt_data = "%-" + str(maxcol) + "s %-9d %-8d %-10d %-10s %-10d %s"
+
+header = fmt_head % ("destination", "instances", "min_rtt", "max_rate",
+                     "leader", "leader_val", "verdict")
+print(header)
+print("-" * len(header))
+
 for inst, key, mrtt, mrate, lname, lval, verd in rows_out:
-    print("%-26s %-9d %-8d %-10d %-10s %-10d %s" % (
-        key, inst, mrtt, mrate, lname, lval, verd))
+    print(fmt_data % (key, inst, mrtt, mrate, lname, lval, verd))
 
 print()
 print("total buckets: %d" % len(rows_out))
