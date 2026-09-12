@@ -132,6 +132,7 @@ struct remote_host {
  */
 static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                                              __u64 min_rtt,
+                                             __u64 avg_rtt,
                                              __u64 rate_delivered,
                                              __u64 *rtt_term_out,
                                              __u64 *rate_term_out)
@@ -145,7 +146,7 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
         if (!r->max_rate_delivered || rate_delivered > r->max_rate_delivered)
                 r->max_rate_delivered = rate_delivered;
         if (r->min_rtt) {
-                __u64 dev = min_rtt - r->min_rtt;
+                __u64 dev = avg_rtt > r->min_rtt ? avg_rtt - r->min_rtt : 0;
                 __u64 cap = (__u64)r->min_rtt * RTT_DEVIATION_CAP;
                 if (dev > cap)
                         dev = cap;

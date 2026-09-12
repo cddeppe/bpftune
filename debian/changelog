@@ -1,3 +1,12 @@
+bpftune (0.4.14) UNRELEASED; urgency=medium
+
+  * Fix: change RTT term to measure queueing delay (avg_rtt - bucket
+    min_rtt) instead of min-against-min, which was path-constant and
+    carried no algorithm signal on stable paths. Adds avg_rtt parameter
+    to tcp_metric_calc, sourced from tp->srtt_us >> 3.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 17:42:03 +0200
+
 bpftune (0.4.13) UNRELEASED; urgency=medium
 
   * Fix: pass current socket's rate_delivered to tcp_metric_calc

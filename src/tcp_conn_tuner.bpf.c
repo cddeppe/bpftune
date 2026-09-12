@@ -255,7 +255,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	}
 	case BPF_SOCK_OPS_STATE_CB: {
 		/* update metric/send metric event on connection close. */
-		__u64 metric, metric_old, min_rtt, rate_interval_us, rate_delivered, mss;
+		__u64 metric, metric_old, min_rtt, avg_rtt, rate_interval_us, rate_delivered, mss;
 		struct tcp_conn_metric *m;
 		bool greedy = true;
 		__u8 i, s;
@@ -274,6 +274,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
 			return 1;
 		min_rtt = (__u64)tp->rtt_min.s[0].v;
+		avg_rtt = (__u64)(tp->srtt_us >> 3);
 		rate_interval_us = (__u64)tp->rate_interval_us;
                 rate_delivered = (__u64)tp->rate_delivered;
                 mss = (__u64)tp->mss_cache;
@@ -297,11 +298,13 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		        metric = tcp_metric_calc(remote_host, min_rtt,
 
+		                                 avg_rtt,
+
 		                                 rate_delivered,
 
 		                                 &rtt_term, &rate_term);
 
-		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt);
+		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt, avg_rtt);
 
 		}
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
