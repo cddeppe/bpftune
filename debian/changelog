@@ -1,3 +1,10 @@
+bpftune (0.4.11) UNRELEASED; urgency=medium
+
+  * Diagnostic: log raw socket min_rtt and bucket min_rtt alongside the
+    metric terms.  Remove duplicate old-format printk.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 16:42:33 +0200
+
 bpftune (0.4.10) UNRELEASED; urgency=medium
 
   * Diagnostic: log rtt_term and rate_term separately in metric printk.

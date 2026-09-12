@@ -299,10 +299,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		                                 &rtt_term, &rate_term);
 
-		        bpf_printk("alg=%d rtt=%llu rate=%llu",
-
-		                   s, rtt_term, rate_term);
-		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term);
+		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt);
 
 		}
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
