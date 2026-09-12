@@ -13,7 +13,7 @@ Verdict thresholds (leader_val vs next-best metric_value):
 
 Usage:  sudo python3 tools/bucket-leaders.py
 """
-import json, subprocess, sys
+import ipaddress, json, subprocess, sys
 
 names = ['cubic','bbr','htcp','dctcp','scalable','vegas','veno','westwood',
          'reno','illinois','yeah','lp','bic','highspeed','hybla','nv']
@@ -38,11 +38,12 @@ for top in data:
         entries.append(top)
 
 def fmt_key(b):
+    raw = bytes(b)
     if b[:10] == [0]*10 and b[10] == 255 and b[11] == 255:
         return "%d.%d.%d.%d" % (b[12], b[13], b[14], b[15])
-    return ":".join("%02x%02x" % (b[i], b[i+1]) for i in range(0, 16, 2))
+    return str(ipaddress.IPv6Address(raw))
 
-header = "%-22s %-9s %-8s %-10s %-10s %-10s %s" % (
+header = "%-26s %-9s %-8s %-10s %-10s %-10s %s" % (
     "destination", "instances", "min_rtt", "max_rate", "leader", "leader_val", "verdict")
 print(header)
 print("-" * len(header))
