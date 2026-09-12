@@ -101,6 +101,13 @@ struct remote_host {
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
 #define METRIC_MIN_SEGS 100
+/* Reject reference updates that are more than this factor better
+ * than the current reference (lower for min_rtt, higher for
+ * max_rate).  A single unusually-fast or slow socket must not be
+ * able to permanently anchor the reference to a value the rest of
+ * the traffic cannot reach.  Progressive improvements (each step
+ * within the factor) still apply. */
+#define REF_OUTLIER_FACTOR 2
 
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
  * the min rtt and max rate delivered we have observed for the remote host.
@@ -141,9 +148,15 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
         __u64 rtt_term = 0;
         __u64 rate_term = 0;
 
-        if (!r->min_rtt || min_rtt < r->min_rtt)
+        if (!r->min_rtt)
                 r->min_rtt = min_rtt;
-        if (!r->max_rate_delivered || rate_delivered > r->max_rate_delivered)
+        else if (min_rtt < r->min_rtt
+                 && min_rtt >= r->min_rtt / REF_OUTLIER_FACTOR)
+                r->min_rtt = min_rtt;
+        if (!r->max_rate_delivered)
+                r->max_rate_delivered = rate_delivered;
+        else if (rate_delivered > r->max_rate_delivered
+                 && rate_delivered <= r->max_rate_delivered * REF_OUTLIER_FACTOR)
                 r->max_rate_delivered = rate_delivered;
         if (r->min_rtt) {
                 __u64 dev = avg_rtt > r->min_rtt ? avg_rtt - r->min_rtt : 0;
@@ -154,8 +167,12 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                 metric += rtt_term;
         }
         if (r->max_rate_delivered) {
-                rate_term = ((r->max_rate_delivered - rate_delivered)
-                             * DELIVERY_SCALE) / r->max_rate_delivered;
+                /* Guard against negative: if this socket beat the
+                 * reference without updating it (outlier rejection),
+                 * treat it as perfect rather than giving a bonus. */
+                if (rate_delivered < r->max_rate_delivered)
+                        rate_term = ((r->max_rate_delivered - rate_delivered)
+                                     * DELIVERY_SCALE) / r->max_rate_delivered;
                 metric += rate_term;
         }
         if (rtt_term_out)
