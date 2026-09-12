@@ -1,3 +1,13 @@
+bpftune (0.4.13) UNRELEASED; urgency=medium
+
+  * Fix: pass current socket's rate_delivered to tcp_metric_calc
+    instead of the algorithm's all-time-best rate. Previously the
+    rate term was frozen per algorithm (only changed when the alg
+    set a new personal best), making half the metric historic while
+    the RTT half was live per-socket.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 17:09:38 +0200
+
 bpftune (0.4.12) UNRELEASED; urgency=medium
 
   * Fix: only sockets with >= METRIC_MIN_SEGS total segments update
