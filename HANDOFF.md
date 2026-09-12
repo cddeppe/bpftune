@@ -174,3 +174,26 @@ This is upstream and universal -- not a fork bug, not a kernel bug.
 Consequence: cdg will never succeed via this tuner's set_cong() path.
 The 0.4-5 fix (mark metric unusable on failure) handles it correctly.
 Optional tidier alternative: drop cdg from congs[] entirely.
+
+## Two summary blocks (not a bug, per-netns)
+On hosts with more than one network namespace, `bpftune -q summary`
+prints one CongAlg block per netns.  Modern systemd sandboxes like
+polkitd each get their own netns even without any container or
+explicit `ip netns add`; `ip netns list` will not show them, but
+`lsns -t net` will.  The tuner tracks per-netns state separately,
+which is by design (see "bpftune supports per-netns policy" in the
+startup log).
+
+Effect: two blocks, one all zeros (sandbox netns), one with real
+counts (main netns).  Cosmetic confusion only.  Not caused by any
+fork change.
+
+## apt can silently replace this fork
+Installing an upstream bpftune package (or running upgrade operations
+that pull it in) will overwrite this fork's files.  Symptom: summary
+shows upstream's 4 algorithms instead of 16.  Check with `lsof -p
+$(pidof bpftune) | grep tcp_conn_tuner` -- fork loads from
+/usr/lib/bpftune/, upstream from /usr/lib/<arch>-linux-gnu/bpftune/.
+
+Fix: `sudo apt-mark hold bpftune libbpftune0` on each host.
+Reinstall from /mnt/backup if already replaced.
