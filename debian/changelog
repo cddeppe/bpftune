@@ -1,3 +1,10 @@
+bpftune (0.4.9) UNRELEASED; urgency=medium
+
+  * Custom fork: expanded TCP congestion control selection, persistent
+    learned state, and instrumentation for metric weight analysis.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 15:54:12 +0200
+
 bpftune (0-1) UNRELEASED; urgency=medium
 
   * Initial release. (Closes: #nnnn)  <nnnn is the bug number of your ITP>
