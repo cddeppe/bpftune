@@ -27,6 +27,16 @@ except (subprocess.CalledProcessError, FileNotFoundError) as e:
 
 data = json.loads(raw)
 
+# Normalize across bpftool versions:
+#   old (<=7.4):  [ { "key": ..., "value": ... }, ... ]
+#   new (>=7.5):  [ { "id":..., "type":..., "elements": [ {key,value}, ... ] } ]
+entries = []
+for top in data:
+    if 'elements' in top:
+        entries.extend(top['elements'])
+    elif 'key' in top and 'value' in top:
+        entries.append(top)
+
 def fmt_key(b):
     if b[:10] == [0]*10 and b[10] == 255 and b[11] == 255:
         return "%d.%d.%d.%d" % (b[12], b[13], b[14], b[15])
@@ -38,7 +48,9 @@ print(header)
 print("-" * len(header))
 
 rows_out = []
-for entry in data:
+for entry in entries:
+    if 'key' not in entry or 'value' not in entry:
+        continue
     v = entry['value']
     if v['instances'] == 0:
         continue
