@@ -1,3 +1,14 @@
+bpftune (0.4.15) UNRELEASED; urgency=medium
+
+  * Fix: reject bucket-reference updates that are more than 2x better
+    than the current reference.  A single anomalous socket (e.g. a
+    fast CDN hitting the same gateway as a 30ms tunnel) had been
+    able to permanently anchor min_rtt far below real traffic and
+    saturate rtt_term at its cap.  Also guard rate_term against
+    negative when a socket exceeds the ceiling without updating it.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 19:25:56 +0200
+
 bpftune (0.4.14) UNRELEASED; urgency=medium
 
   * Fix: change RTT term to measure queueing delay (avg_rtt - bucket
