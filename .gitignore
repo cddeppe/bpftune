@@ -15,3 +15,5 @@ debian/bpftune.postrm.debhelper
 debian/bpftune.substvars
 debian/debhelper-build-stamp
 debian/files
+*.prebytepatch
+*.preversionpatch
