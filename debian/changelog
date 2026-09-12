@@ -1,3 +1,15 @@
+bpftune (0.4.16) UNRELEASED; urgency=medium
+
+  * Fix: heal poisoned bucket references.  When a socket's min_rtt
+    is more than REF_HEAL_FACTOR times the current reference (or its
+    rate is more than REF_HEAL_FACTOR below the ceiling), move the
+    reference 1/REF_HEAL_DIV of the gap toward the observed value.
+    Prevents a single fast socket that hit an empty bucket first from
+    permanently capping the RTT term for all subsequent traffic.
+    Healthy traffic never triggers this.  Parameters: factor 3, div 16.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 20:05:28 +0200
+
 bpftune (0.4.15) UNRELEASED; urgency=medium
 
   * Fix: reject bucket-reference updates that are more than 2x better
