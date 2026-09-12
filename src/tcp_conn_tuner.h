@@ -100,6 +100,7 @@ struct remote_host {
  * making the throughput term effectively decorative even though it's
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
+#define METRIC_MIN_SEGS 100
 
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
  * the min rtt and max rate delivered we have observed for the remote host.

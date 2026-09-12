@@ -1,3 +1,14 @@
+bpftune (0.4.12) UNRELEASED; urgency=medium
+
+  * Fix: only sockets with >= METRIC_MIN_SEGS total segments update
+    the per-algorithm metric and bucket references. Prevents small
+    control sockets from pinning the bucket min_rtt to an unachievable
+    floor, which had caused every real connection to saturate the RTT
+    term and lock the tuner onto whichever algorithm got the poisoned
+    bucket first.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 16:54:55 +0200
+
 bpftune (0.4.11) UNRELEASED; urgency=medium
 
   * Diagnostic: log raw socket min_rtt and bucket min_rtt alongside the
