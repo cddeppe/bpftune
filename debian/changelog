@@ -1,3 +1,12 @@
+bpftune (0.4.17) UNRELEASED; urgency=medium
+
+  * Diagnostic: log heal events via bpf_printk in the BPF caller.
+    tcp_metric_calc returns healed reference values through output
+    parameters; the BPF caller prints them when non-zero.  Keeps
+    bpf_printk out of the shared header.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sat, 12 Sep 2026 20:22:02 +0200
+
 bpftune (0.4.16) UNRELEASED; urgency=medium
 
   * Fix: heal poisoned bucket references.  When a socket's min_rtt

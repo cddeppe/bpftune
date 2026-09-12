@@ -150,11 +150,15 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                                              __u64 avg_rtt,
                                              __u64 rate_delivered,
                                              __u64 *rtt_term_out,
-                                             __u64 *rate_term_out)
+                                             __u64 *rate_term_out,
+                                             __u64 *heal_rtt_out,
+                                             __u64 *heal_rate_out)
 {
         __u64 metric = 0;
         __u64 rtt_term = 0;
         __u64 rate_term = 0;
+        __u64 heal_rtt = 0;
+        __u64 heal_rate = 0;
 
         if (!r->min_rtt) {
                 r->min_rtt = min_rtt;
@@ -166,6 +170,7 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
         } else if (min_rtt > r->min_rtt * REF_HEAL_FACTOR) {
                 /* Far above reference: heal it upward. */
                 r->min_rtt += (min_rtt - r->min_rtt) / REF_HEAL_DIV;
+                heal_rtt = r->min_rtt;
         }
         if (!r->max_rate_delivered) {
                 r->max_rate_delivered = rate_delivered;
@@ -175,6 +180,7 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
         } else if (rate_delivered * REF_HEAL_FACTOR < r->max_rate_delivered) {
                 /* Far below ceiling: heal it downward. */
                 r->max_rate_delivered -= (r->max_rate_delivered - rate_delivered) / REF_HEAL_DIV;
+                heal_rate = r->max_rate_delivered;
         }
         if (r->min_rtt) {
                 __u64 dev = avg_rtt > r->min_rtt ? avg_rtt - r->min_rtt : 0;
@@ -197,5 +203,9 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                 *rtt_term_out = rtt_term;
         if (rate_term_out)
                 *rate_term_out = rate_term;
+        if (heal_rtt_out)
+                *heal_rtt_out = heal_rtt;
+        if (heal_rate_out)
+                *heal_rate_out = heal_rate;
         return metric;
 }
