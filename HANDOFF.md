@@ -1,3 +1,142 @@
+## CURRENT STATE — post-metric-fix session
+
+**Version:** 0.4.14 on `diag/metric-terms` branch. `main` is at 0.4.9 (released as `0.4-9-custom`).
+**Fleet:** all four hosts on 0.4.14 with diagnostic captures running. All state files reset on deploy.
+
+### Branches
+- `main` — 0.4.9, released, latest tag `0.4-9-custom`
+- `diag/metric-terms` — 0.4.10 through 0.4.14, un-merged. Contains all metric fixes since 0.4.9.
+
+### What was fixed this session (three bugs + one redesign)
+
+1. **0.4.10** — diagnostic printk extended. Instrumentation only.
+2. **0.4.11** — printk extended further (added `smrtt`/`bmrtt`) and duplicate old-format printk removed.
+3. **0.4.12** — segment threshold on metric updates (`METRIC_MIN_SEGS=100`).
+   Small sockets (health-check cadence, 16-36 segments) were updating the bucket's
+   `min_rtt` reference and pinning it to 144µs, while real traffic was ~30000µs.
+   Every real socket then hit the RTT cap and the tuner locked onto whatever
+   algorithm got the poisoned bucket first.
+4. **0.4.13** — rate term passes the current socket's `rate_delivered` instead of the
+   algorithm's all-time-best. Previously the term was frozen per algorithm
+   (`m->max_rate_delivered` only changed when the alg set a new personal best).
+   Same algorithm on sockets of 30x different size produced identical `rate_term`.
+5. **0.4.14** — RTT term changed from min-vs-min to queueing-delay:
+   `avg_rtt - bucket_min_rtt`. min-vs-min was path-constant (all 16 algs within
+   ±5% of each other). Queueing delay is algorithm-dependent (5-38ms spread observed;
+   dctcp/vegas shallow, hybla/scalable deep — matches theory).
+
+### The current metric (0.4.14)
+
+    metric = rtt_term + rate_term         (lower is better; chosen alg exploited 95%, random 5%)
+
+    rtt_term  = (avg_rtt - bucket_min_rtt) / bucket_min_rtt * RTT_SCALE
+                avg_rtt = tp->srtt_us >> 3
+                capped at RTT_DEVIATION_CAP (8) x RTT_SCALE
+                RTT_SCALE = 1_000_000
+
+    rate_term = (bucket_max_rate - this_socket_rate) / bucket_max_rate
+                * DELIVERY_SCALE
+                DELIVERY_SCALE = 8_000_000
+
+### Magnitude balance achieved (verified via remote_host_map dump)
+
+    current leader   metric_value: 5,074,149
+    second           metric_value: 5,263,802
+    third            metric_value: 5,395,454
+    (16 algorithms total; range 5.0M - 8.4M)
+
+Top three separated by <250K. RTT term spread is ~1M. **RTT has a real chance
+of flipping decisions at the top of the ranking** — the balanced design works.
+
+### Diagnostic printk (ACTIVE in current builds)
+
+Format in `tcp_conn_tuner.bpf.c` STATE_CB path:
+
+    met alg=<idx> segs=<N> val=<V> rtt=<R> rate=<RT> smrtt=<S> bmrtt=<B> avgrtt=<A>
+
+STRIP BEFORE RELEASE — doubles trace buffer pressure. Has caused LOST EVENTS at volume.
+Keep running for 12-24h across all hosts, then decide strip vs keep.
+
+### Observing
+
+Start capture:
+
+    sudo sh -c 'nohup cat /sys/kernel/tracing/trace_pipe > /tmp/met.log 2>&1 & echo "pid=$!"'
+
+Buffer size (per CPU, non-persistent across reboot):
+
+    echo 32768 | sudo tee /sys/kernel/tracing/buffer_size_kb
+
+Only ONE reader at a time. To restart: `sudo pkill -f 'cat /sys/kernel/tracing/trace_pipe'` first.
+
+Analyse per-algorithm queueing delay:
+
+    sudo grep "met alg=" /tmp/met.log | awk '{
+      alg=""; smrtt=""; avgrtt="";
+      for(i=1;i<=NF;i++){
+        if($i ~ /^alg=/){split($i,a,"="); alg=a[2]}
+        if($i ~ /^smrtt=/){split($i,a,"="); smrtt=a[2]}
+        if($i ~ /^avgrtt=/){split($i,a,"="); avgrtt=a[2]}
+      }
+      if(alg!="" && avgrtt!="" && smrtt!="") print alg, avgrtt-smrtt
+    }' | awk '{sum[$1]+=$2; cnt[$1]++} END {for(a in sum) printf "alg=%s mean_qdelay=%d n=%d\n", a, sum[a]/cnt[a], cnt[a]}' | sort -k1.5 -n
+
+Dump live running averages:
+
+    sudo bpftool map dump name remote_host_map
+
+### Open questions for next session
+
+1. **Does the algorithm ordering generalize across hosts?** Only the heavy-traffic
+   host has been analysed so far. If the same 3-4 algorithms cluster on all hosts,
+   the signal is real. If each has a random ordering, it's path-specific noise.
+2. **Does `bmrtt` stay realistic over 24h?** Bucket references are still monotonic
+   (`min_rtt` only ever decreases; `max_rate_delivered` only ever increases). Reset on
+   deploy, but drift over a day is unknown. If it plumbs back to unachievable lows,
+   we have a third class of bug to fix (bucket reference decay).
+3. **Does the summary converge?** After a day of 0.4.14 deciding, do we see 1-3
+   algorithms with clear majorities, or still scattered?
+4. **Final step:** strip diagnostic, cut 0.4.15, merge `diag/metric-terms` → `main`,
+   release to all hosts, tag `0.4-15-custom`, GitHub release.
+
+### Deploy sequence (the rm is REQUIRED)
+
+    sudo systemctl stop bpftune
+    sudo rm -f /var/lib/bpftune/tcp_conn_tuner.state      # delete BETWEEN stop and start
+    sudo dpkg -i /mnt/backup/bpftune-custom-<version>-<arch>.deb
+    sudo systemctl start bpftune
+
+Without the `rm`, the state file restores old poisoned/immature bucket references into
+the new binary and the fix silently does nothing. This bit us on the 0.4.12 deploy.
+
+### Version sorting
+
+0.4.14 sorts above the distro package (`0.0~git*`) because "4" > "0" at
+the third character of the upstream part. **The `apt-mark hold` from prior sessions may
+no longer be needed** — worth testing. The prior handoff said "hold required"; that was
+true at `0-1` but 0.4.14 is authoritative.
+
+### Host-switching workflow
+
+Four hosts, two architectures, two roles each:
+
+    amd64 builder       — source of truth, does the git push
+    amd64 target        —
+    aarch64 builder     — pulls, builds arm64, stages to shared mount
+    aarch64 heavy-traffic host — where the tuner's choices matter most
+
+I switch hosts myself — you don't need to tell me to SSH. Give me commands
+for whichever host I'm on and label them clearly.
+
+When "build both arches": you provide commit+push commands for the amd64 builder,
+I switch manually to the aarch64 builder, you provide pull+build commands for that
+host. Both .debs land in /mnt/backup/ shared mount. Install with the arch-appropriate
+filename on each host.
+
+---
+
+## PRIOR STATE (earlier sessions before the metric work above)
+
 # BPFTUNE FORK — HANDOFF
 
 ## Goal
