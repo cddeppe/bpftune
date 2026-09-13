@@ -65,8 +65,6 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
 struct tcp_conn_metric {
     __u64 state_flags;
     __u64 greedy_count;
-    __u64 min_rtt;
-    __u64 max_rate_delivered;
     __u64 metric_count;
     __u64 metric_value;
 };
@@ -102,6 +100,7 @@ struct remote_host {
 #define DELIVERY_SCALE 8000000
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
+#define METRIC_AVG_CAP 32
 /* Minimum instances before a bucket is written to the persistent
  * state file.  One-off destinations never accumulate enough samples
  * to be worth persisting; recurring paths (CDN, tunnel) do. */

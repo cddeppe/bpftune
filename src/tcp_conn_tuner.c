@@ -158,19 +158,17 @@ void summarize(struct bpftuner *tuner)
 		if (bpf_map_lookup_elem(map_fd, &key, &r))
 			continue;
 
-		bpftune_log(LOG_DEBUG, "# Summary: tcp_conn_tuner: %48s %8s %20s %8s %8s %8s %8s\n",
-			    "IPAddress", "CongAlg", "Metric", "Count", "Greedy", "MinRtt", "MaxDlvr");
+		bpftune_log(LOG_DEBUG, "# Summary: tcp_conn_tuner: %48s %8s %20s %8s %8s\n",
+			    "IPAddress", "CongAlg", "Metric", "Count", "Greedy");
 		inet_ntop(AF_INET6, &key, buf, sizeof(buf));
 
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
 
-			bpftune_log(LOG_DEBUG, "# Summary: tcp_conn_tuner: %48s %8s %20llu %8llu %8llu %8llu %8llu\n",
+			bpftune_log(LOG_DEBUG, "# Summary: tcp_conn_tuner: %48s %8s %20llu %8llu %8llu\n",
 				    buf, congs[i],
 				    r.metrics[i].metric_value,
 				    r.metrics[i].metric_count,
-				    r.metrics[i].greedy_count,
-				    r.metrics[i].min_rtt,
-				    r.metrics[i].max_rate_delivered);
+				    r.metrics[i].greedy_count);
 			bpftuner_tunable_stats_update(tuner, TCP_CONG,
 						      TCP_CONG_SET, true,
 						      r.metrics[i].metric_count);
@@ -182,7 +180,7 @@ void summarize(struct bpftuner *tuner)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 2
+#define STATE_VERSION 3
 
 struct state_header {
         __u32 magic;
