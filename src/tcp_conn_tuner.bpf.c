@@ -89,11 +89,8 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops, __u8 i)
         statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
                                     BPF_SK_STORAGE_GET_F_CREATE);
         if (statep) {
-                if (statep->settle_until)
-                        statep->swaps++;
                 statep->state = (__u64)i;
-                statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
-                statep->bad_since = 0;
+                statep->bad_count = 0;
         }
         return 0;
 }
@@ -360,6 +357,41 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		        		                           (unsigned long long)rate_delivered,
 		        		                           (unsigned long long)heal_rate);
 
+		}
+		/* Mid-socket swap: if this socket has been running far worse
+		 * than the best alternative on the bucket for SWAP_AFTER_BAD
+		 * consecutive checkpoints, switch.  Attribution: the current
+		 * checkpoint still credits the old algo (metric was measured
+		 * under it); future checkpoints read statep->state and credit
+		 * the new one. */
+		{
+			struct conn_state *csp = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
+			if (csp && !is_close && csp->swaps < MAX_SWAPS) {
+				__u64 best_alt = ~((__u64)0);
+				__u8 best_alt_i = 0;
+				for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
+					if (i == s)
+						continue;
+					if (remote_host->metrics[i].metric_count == 0)
+						continue;
+					if (remote_host->metrics[i].metric_value < best_alt) {
+						best_alt = remote_host->metrics[i].metric_value;
+						best_alt_i = i;
+					}
+				}
+				if (best_alt != ~((__u64)0) && metric >= best_alt * BAD_RTT_FACTOR) {
+					csp->bad_count++;
+					if (csp->bad_count >= SWAP_AFTER_BAD) {
+						if (!set_cong(ops, best_alt_i)) {
+							csp->swaps++;
+							bpf_printk("swap old=%u new=%u metric=%llu alt=%llu",
+								   s, best_alt_i, metric, best_alt);
+						}
+					}
+				} else {
+					csp->bad_count = 0;
+				}
+			}
 		}
 		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
 			if (s == i)
