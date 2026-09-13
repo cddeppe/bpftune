@@ -210,6 +210,17 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                         csp->best_alt_i = (min2 == ~((__u64)0)) ? ~((__u64)0) : (__u64)min2index;
                     else
                         csp->best_alt_i = (__u64)minindex;
+                    {
+                        __u64 rank = 0;
+                        __u64 s_val = remote_host->metrics[s].metric_value;
+                        __u8 j;
+                        for (j = 0; j < NUM_TCP_CONN_METRICS; j++) {
+                            if (j != s && remote_host->metrics[j].metric_count > 0 &&
+                                remote_host->metrics[j].metric_value < s_val)
+                                rank++;
+                        }
+                        csp->rank_at_assign = rank;
+                    }
                 }
             }
         }
@@ -382,7 +393,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             statep->pending_swap == 0 &&
             now >= statep->settle_until &&
             best_alt != ~((__u64)0) &&
-            m->metric_value >= best_alt * BAD_RTT_FACTOR) {
+            statep->rank_at_assign >= SWAP_RANK_CUT &&
+            m->metric_value * 100 >= best_alt * SWAP_MARGIN_FACTOR) {
             statep->bad_count++;
             if (statep->bad_count >= SWAP_AFTER_BAD) {
                 statep->pending_swap = (__u64)best_alt_i + 1;
