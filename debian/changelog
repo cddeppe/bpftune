@@ -1,3 +1,85 @@
+bpftune (0.4.25) UNRELEASED; urgency=medium
+
+  * Mid-socket algorithm swap: when a socket is assigned a bottom-half
+    algorithm at ESTABLISHED (rank_at_assign >= 8), and its metric stays
+    >= 1.25x the best alternative for 2 consecutive voting checkpoints,
+    swap it to that alternative via bpf_setsockopt(TCP_CONGESTION) from
+    a dedicated RTT_CB program.  Protects against exploration regret:
+    the ~5% of sockets greedy assigns to a random algorithm no longer
+    stay on a bad pick for their entire life.  Bounded by MAX_SWAPS=2
+    and a 5s settle window after each swap.
+  * Split the single sockops program into three (conn_tuner /
+    conn_tuner_vote / conn_tuner_swap).  The merged program with the
+    swap decision in RTT_CB exceeded the 1M instruction verifier
+    budget via state explosion: a 16-iter loop adjacent to two live
+    map_value pointers plus helper calls.  Snapshotting best_alt_i at
+    ESTABLISHED removes all loops from the vote path; the swap exec
+    path is straight-line.
+  * sk_storage_map value type: __u64 -> struct conn_state { state,
+    swaps, bad_count, settle_until, pending_swap, best_alt_i,
+    rank_at_assign }.
+
+  Userspace attaches and detaches all three programs at the same
+  cgroup sockops hook.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 23:00:00 +0200
+
+bpftune (0.4.25) UNRELEASED; urgency=medium
+
+  * Mid-socket algorithm swap.  When a socket is assigned a bottom-half
+    algorithm at ESTABLISHED (rank_at_assign >= 8 by current bucket
+    metric), and its metric stays >= 1.25x the best alternative for 2
+    consecutive voting checkpoints, swap it to that alternative via
+    bpf_setsockopt(TCP_CONGESTION) from a dedicated RTT_CB program.
+    Protects against exploration regret: the ~5% of sockets the greedy
+    path assigns to a random algorithm no longer stay on a bad pick
+    for their entire life.  Bounded by MAX_SWAPS=2 and a 5s settle
+    window after each swap.
+  * Split the single sockops program into three (conn_tuner /
+    conn_tuner_vote / conn_tuner_swap).  The merged program with the
+    swap decision in RTT_CB exceeded the 1M instruction verifier
+    budget via state explosion: a 16-iter loop adjacent to two live
+    map_value pointers plus helper calls.  Snapshotting best_alt_i at
+    ESTABLISHED removes all loops from the vote path; the swap exec
+    path is straight-line.  Total states across the three programs:
+    1694, below the single-program baseline of 1217+ additions.
+  * sk_storage_map value type: __u64 -> struct conn_state { state,
+    swaps, bad_count, settle_until, pending_swap, best_alt_i,
+    rank_at_assign }.
+
+  Userspace attaches and detaches all three programs at the same
+  cgroup sockops hook.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 23:00:00 +0200
+
+bpftune (0.4.25) UNRELEASED; urgency=medium
+
+  * Mid-socket algorithm swap.  When a socket is assigned a bottom-half
+    algorithm at ESTABLISHED (rank_at_assign >= 8 by current bucket
+    metric), and its metric stays >= 1.25x the best alternative for 2
+    consecutive voting checkpoints, swap it to that alternative via
+    bpf_setsockopt(TCP_CONGESTION) from a dedicated RTT_CB program.
+    Protects against exploration regret: the ~5% of sockets the greedy
+    path assigns to a random algorithm no longer stay on a bad pick
+    for their entire life.  Bounded by MAX_SWAPS=2 and a 5s settle
+    window after each swap.
+  * Split the single sockops program into three (conn_tuner /
+    conn_tuner_vote / conn_tuner_swap).  The merged program with the
+    swap decision in RTT_CB exceeded the 1M instruction verifier
+    budget via state explosion: a 16-iter loop adjacent to two live
+    map_value pointers plus helper calls.  Snapshotting best_alt_i at
+    ESTABLISHED removes all loops from the vote path; the swap exec
+    path is straight-line.  Total states across the three programs:
+    1694, below the single-program baseline of 1217+ additions.
+  * sk_storage_map value type: __u64 -> struct conn_state { state,
+    swaps, bad_count, settle_until, pending_swap, best_alt_i,
+    rank_at_assign }.
+
+  Userspace attaches and detaches all three programs at the same
+  cgroup sockops hook.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 23:00:00 +0200
+
 bpftune (0.4.24) UNRELEASED; urgency=medium
 
   * Vote at every checkpoint at or above METRIC_TRIGGER_SEGS, not just

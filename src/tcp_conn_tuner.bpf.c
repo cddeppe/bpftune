@@ -393,7 +393,6 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             statep->pending_swap == 0 &&
             now >= statep->settle_until &&
             best_alt != ~((__u64)0) &&
-            (bpf_printk("swapcheck rank=%llu metric=%llu alt=%llu", statep->rank_at_assign, m->metric_value, best_alt) || 0) == 0 &&
             statep->rank_at_assign >= SWAP_RANK_CUT &&
             m->metric_value * 100 >= best_alt * SWAP_MARGIN_FACTOR) {
             statep->bad_count++;
