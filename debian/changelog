@@ -1,3 +1,24 @@
+bpftune (0.4.22) UNRELEASED; urgency=medium
+
+  * Margin-gated exploitation.  Track leader and second-place metric in
+    one pass (no extra iterations); if the leader is not >=25% ahead of
+    second, boost exploration from 1/20 to 1/4 until a clear winner
+    emerges.  Prevents the tuner from committing to a leader whose
+    early samples look better than they are.
+  * Coverage gate lowered from 5 back to 2.  Coverage=5 required 80
+    sockets per bucket before exploit could start, which most
+    destinations never reach.  Coverage=2 is enough to establish a
+    first-pass distribution; the margin gate then decides whether the
+    evidence supports committing.
+  * Remove tie-break machinery from the selection path.  With
+    cold-start coverage guaranteeing every algorithm has real samples,
+    the multi-candidate random selection and its 16-case switch are
+    dead weight; on a program already at the 1,000,000-instruction
+    verifier limit, dropping them is what makes room for the margin
+    gate.  Ties now resolve by lowest index.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 17:30:00 +0200
+
 bpftune (0.4.21) UNRELEASED; urgency=medium
 
   * metric_value: replace slow-learning rolling update with count-based
