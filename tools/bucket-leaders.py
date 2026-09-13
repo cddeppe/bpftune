@@ -2,10 +2,11 @@
 """Show per-destination bucket leaders from bpftune's remote_host_map.
 
 Under destination-keying (0.4.18+), each bucket represents one remote
-destination address. Displays instances, RTT reference, rate reference,
-the winning algorithm, and how decisively it leads.
+destination address.  Shows the top-3 algorithms per bucket (best first)
+so you can see whether the tuner has converged on a single winner or
+settled on a small tie.
 
-Verdict thresholds (leader_val vs next-best metric_value):
+Verdict thresholds (top-1 metric_value vs top-2 metric_value):
     ALONE   - only one algorithm has samples
     CLEAR   - leader is >=2x better than next       (converged)
     LEAD    - leader is 1.2-2x better than next     (preference)
@@ -42,6 +43,15 @@ def fmt_key(b):
         return "%d.%d.%d.%d" % (b[12], b[13], b[14], b[15])
     return str(ipaddress.IPv6Address(bytes(b)))
 
+def fmt_val(v):
+    if v == 0:
+        return "0"
+    if v >= 1_000_000:
+        return "%.1fM" % (v / 1_000_000.0)
+    if v >= 1_000:
+        return "%.1fK" % (v / 1_000.0)
+    return "%d" % v
+
 rows_out = []
 for entry in entries:
     if 'key' not in entry or 'value' not in entry:
@@ -57,42 +67,40 @@ for entry in entries:
         alg_rows.append((m['metric_value'], m['metric_count'], m['greedy_count'], names[i]))
 
     if not alg_rows:
-        rows_out.append((v['instances'], key, v['min_rtt'], v['max_rate_delivered'],
-                         "(none)", 0, "no closes yet"))
+        rows_out.append({'key': key, 'inst': v['instances'],
+                         'mrtt': v['min_rtt'], 'mrate': v['max_rate_delivered'],
+                         'top3': '(none)', 'verdict': 'no closes yet'})
         continue
 
     alg_rows.sort()
-    lead_mv, lead_n, lead_g, lead_nm = alg_rows[0]
+    top3 = alg_rows[:3]
+    top3_str = ' '.join('%s=%s' % (nm, fmt_val(mv)) for mv, n, g, nm in top3)
 
-    if len(alg_rows) >= 2 and lead_mv > 0:
-        ratio = alg_rows[1][0] / float(lead_mv)
+    if len(alg_rows) >= 2 and alg_rows[0][0] > 0:
+        ratio = alg_rows[1][0] / float(alg_rows[0][0])
         verdict = "CLEAR" if ratio >= 2.0 else ("LEAD" if ratio >= 1.2 else "TIGHT")
         verdict = "%s (x%.1f)" % (verdict, ratio)
     else:
         verdict = "ALONE"
 
-    rows_out.append((v['instances'], key, v['min_rtt'], v['max_rate_delivered'],
-                     lead_nm, lead_mv, verdict))
+    rows_out.append({'key': key, 'inst': v['instances'],
+                     'mrtt': v['min_rtt'], 'mrate': v['max_rate_delivered'],
+                     'top3': top3_str, 'verdict': verdict})
 
-rows_out.sort(reverse=True)
+rows_out.sort(key=lambda r: -r['inst'])
 
-# Compute destination column width dynamically so long IPv6 addresses
-# (up to 39 chars compressed) don't push the rest of the row around.
-maxcol = len("destination")
-for _, key, *_rest in rows_out:
-    if len(key) > maxcol:
-        maxcol = len(key)
+w_key  = max([len("destination")] + [len(r['key']) for r in rows_out])
+w_top3 = max([len("top-3 (best first)")] + [len(r['top3']) for r in rows_out])
 
-fmt_head = "%-" + str(maxcol) + "s %-9s %-8s %-10s %-10s %-10s %s"
-fmt_data = "%-" + str(maxcol) + "s %-9d %-8d %-10d %-10s %-10d %s"
+hdr = ("%-" + str(w_key) + "s  %-9s  %-7s  %-8s  %-" + str(w_top3) + "s  %s") % (
+    "destination", "instances", "min_rtt", "max_rate",
+    "top-3 (best first)", "verdict")
+print(hdr)
+print("-" * len(hdr))
 
-header = fmt_head % ("destination", "instances", "min_rtt", "max_rate",
-                     "leader", "leader_val", "verdict")
-print(header)
-print("-" * len(header))
-
-for inst, key, mrtt, mrate, lname, lval, verd in rows_out:
-    print(fmt_data % (key, inst, mrtt, mrate, lname, lval, verd))
+for r in rows_out:
+    print(("%-" + str(w_key) + "s  %-9d  %-7d  %-8s  %-" + str(w_top3) + "s  %s") % (
+        r['key'], r['inst'], r['mrtt'], fmt_val(r['mrate']), r['top3'], r['verdict']))
 
 print()
 print("total buckets: %d" % len(rows_out))
