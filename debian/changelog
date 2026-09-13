@@ -1,3 +1,15 @@
+bpftune (0.4.24) UNRELEASED; urgency=medium
+
+  * Vote at every checkpoint at or above METRIC_TRIGGER_SEGS, not just
+    10K.  A socket that survives to 1M segments now casts five votes
+    (10K/25K/100K/500K/1M) instead of one.  Long-lived sockets weigh
+    more than short ones in proportion to their evidential value — the
+    30-minute video and the 200 ms TLS handshake no longer contribute
+    equally.  METRIC_AVG_CAP=32 bounds any single socket to ~15%% of an
+    algorithm mean, so proportional weighting cannot drown the pack.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 19:00:00 +0200
+
 bpftune (0.4.23) UNRELEASED; urgency=medium
 
   * Fix cold-start coverage to count selections, not votes.  The 0.4.22

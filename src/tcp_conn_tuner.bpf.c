@@ -180,7 +180,11 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		case 500000: *nextp = 1000000; break;
 		default:     *nextp = ~((__u64)0);
 		}
-		if (next != METRIC_TRIGGER_SEGS)
+		/* Every checkpoint at or above METRIC_TRIGGER_SEGS votes.
+		 * A socket that survives to 1M casts 5 votes (10K/25K/100K/500K/1M),
+		 * so long-lived sockets weigh more than short ones in proportion
+		 * to their evidential value.  Below 10K: printk only. */
+		if (next < METRIC_TRIGGER_SEGS)
 			return 1;
 		break;
 	}
