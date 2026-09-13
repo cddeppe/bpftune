@@ -1,3 +1,12 @@
+bpftune (0.4.19) UNRELEASED; urgency=medium
+
+  * Diagnostic: log one mid-flight sample per socket at each of
+    1K/5K/25K/100K/500K/1M segments via BPF_SOCK_OPS_RTT_CB, plus a
+    port-tagged close sample.  Lets us compare mid-flight metric
+    evolution against the close-time value for the same socket.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 09:13:38 +0200
+
 bpftune (0.4.18) UNRELEASED; urgency=medium
 
   * Switch bucket key from next-hop gateway to destination IP, matching
