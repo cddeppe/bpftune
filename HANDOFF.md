@@ -9,22 +9,46 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `diag/metric-terms`)
 - `main` untouched since 0.4.9 (tag `0.4-9-custom`). Everything since lives on the branch.
-- Latest commit: `032b4bb`
+- Latest commit: `dffab80`
+- Latest tag: `0.4-20-custom`
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.19** | capture running → /tmp/met.log |
-| Builder | amd64 | 0.4.18 | runs git push origin |
-| Target | amd64 | 0.4.18 | |
-| Builder | aarch64 | 0.4.18 | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.20** | capture → /tmp/met.log |
+| Builder | amd64 | **0.4.20** | runs git push origin |
+| Target | amd64 | **0.4.20** | |
+| Builder | aarch64 | **0.4.20** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 ---
 
-## SESSION 2026-09-13 (LIVE) — mid-flight sampling diagnostic
-Version **0.4.19**, deployed to heavy host only.
+## SESSION 2026-09-13 (LATEST) — fixed-size metric sampling (0.4.20)
+Version **0.4.20**, all four hosts. Tag `0.4-20-custom`.
+
+Sockets cast their metric vote exactly once at 10000 segments
+(METRIC_TRIGGER_SEGS in tcp_conn_tuner.h). Previous behavior was
+close-only — a 200-segment health check and a 500,000-segment video
+transfer weighted equally in bucket ranking.
+
+RTT_CB falls through to shared metric-update at 10K; STATE_CB skips the
+vote for sockets that already voted; closport printk moved before the
+skip gate so close-event pairing survives. RETRANS_CB-promoted sockets
+(forced BBR) abstain.
+
+Verified on heavy host, 10-min YouTube stream: 25 midsamp thr=10000
+fires, 23 met votes >= 10000, 33 close-path votes (< 10000). Archived
+to /tmp/met.0.4.19.log, /tmp/met.0.4.20.log.
+
+Open for 0.4.21: short closes still vote with equal weight (33 vs 23).
+Options: (a) weight by segment count, (b) raise trigger, (c) require N
+trigger votes per bucket. Prototype (a) and (c).
+
+---
+
+## SESSION 2026-09-13 (HISTORICAL) — mid-flight diagnostic (0.4.19)
+Version **0.4.19**, heavy host only. Superseded by 0.4.20.
 
 ### What's live
 Two diagnostics run concurrently:
