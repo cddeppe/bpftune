@@ -239,23 +239,18 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		__u64 metric_min = ~((__u64)0x0);
 		__u8 i, minindex = 0, s;
 
-		/* Cold-start coverage: force-sample any algorithm with < 2 votes
-		 * before allowing the greedy path to run. */
-		{
-			__u64 min_count = ~(__u64)0;
-			__u8 forced = 0;
-			for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
-				if (remote_host->metrics[i].metric_count < min_count) {
-					min_count = remote_host->metrics[i].metric_count;
-					forced = i;
-				}
-			}
-			if (min_count < 2) {
-				forced &= (NUM_TCP_CONG_ALGS - 1);
-				if (set_cong(ops, forced))
-					remote_host->metrics[forced].metric_value = ~((__u64)0);
-				return 1;
-			}
+		/* Cold-start coverage: first 2*16 selections on a fresh bucket go
+		 * round-robin across every algorithm, so each gets two real
+		 * observations before exploitation begins.  Counting SELECTIONS
+		 * (not votes) is essential — a socket that never votes must
+		 * still advance the coverage pointer, otherwise the same algo is
+		 * flooded until one of its sockets happens to vote. */
+		if (remote_host->selection_count < 2 * NUM_TCP_CONN_METRICS) {
+			__u8 forced = remote_host->selection_count & (NUM_TCP_CONN_METRICS - 1);
+			remote_host->selection_count++;
+			if (set_cong(ops, forced))
+				remote_host->metrics[forced].metric_value = ~((__u64)0);
+			return 1;
 		}
 
 		/* Find best and second-best in one pass.  Coverage guarantees all

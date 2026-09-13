@@ -83,6 +83,7 @@ struct remote_host {
     __u64 min_rtt;
     __u64 max_rate_delivered;
     __u64 instances;
+    __u64 selection_count;
     struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
 };
 
