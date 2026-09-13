@@ -17,3 +17,6 @@ debian/debhelper-build-stamp
 debian/files
 *.prebytepatch
 *.preversionpatch
+
+# Ad-hoc patch snapshots (from manual src edits)
+*.pre*
