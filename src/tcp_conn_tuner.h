@@ -101,6 +101,7 @@ struct remote_host {
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
 #define METRIC_MIN_SEGS 100
+#define METRIC_TRIGGER_SEGS 10000
 /* Minimum instances before a bucket is written to the persistent
  * state file.  One-off destinations never accumulate enough samples
  * to be worth persisting; recurring paths (CDN, tunnel) do. */

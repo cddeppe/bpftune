@@ -173,13 +173,16 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		switch (next) {
 		case 1000:   *nextp = 5000;    break;
-		case 5000:   *nextp = 25000;   break;
+		case 5000:   *nextp = 10000;   break;
+		case 10000:  *nextp = 25000;   break;
 		case 25000:  *nextp = 100000;  break;
 		case 100000: *nextp = 500000;  break;
 		case 500000: *nextp = 1000000; break;
 		default:     *nextp = ~((__u64)0);
 		}
-		return 1;
+		if (next != METRIC_TRIGGER_SEGS)
+			return 1;
+		break;
 	}
 	case BPF_SOCK_OPS_STATE_CB:
 		state = ops->args[1];
@@ -282,12 +285,14 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
 		return 1;
 	}
-	case BPF_SOCK_OPS_STATE_CB: {
-		/* update metric/send metric event on connection close. */
+	case BPF_SOCK_OPS_STATE_CB:
+	case BPF_SOCK_OPS_RTT_CB: {
+		/* STATE_CB: vote on close (short sks); RTT_CB: vote at 10K. */
 		__u64 metric, metric_old, min_rtt, avg_rtt, rate_interval_us, rate_delivered, mss;
 		struct tcp_conn_metric *m;
 		bool greedy = true;
 		__u8 i, s;
+		bool is_close = (ops->op == BPF_SOCK_OPS_STATE_CB);
 
 		if (!sk)
 			return 1;
@@ -301,6 +306,13 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		if (!tp)
 			return 1;
 		if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
+			return 1;
+		if (is_close)
+			bpf_printk("closport port=%u segs=%llu",
+			   ops->local_port,
+			   (__u64)tp->segs_out + tp->segs_in);
+		if (is_close &&
+			    (__u64)tp->segs_out + tp->segs_in >= METRIC_TRIGGER_SEGS)
 			return 1;
 		min_rtt = (__u64)tp->rtt_min.s[0].v;
 		avg_rtt = (__u64)(tp->srtt_us >> 3);
@@ -336,7 +348,6 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		                                 &heal_rtt, &heal_rate);
 
 		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt, avg_rtt);
-		        		        bpf_printk("closport port=%u segs=%llu", ops->local_port, (__u64)tp->segs_out + tp->segs_in);
 		        		        if (heal_rtt)
 		        		                bpf_printk("heal_rtt smrtt=%llu newref=%llu",
 		        		                           (unsigned long long)min_rtt,
