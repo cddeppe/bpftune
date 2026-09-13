@@ -1,3 +1,13 @@
+bpftune (0.4.20) UNRELEASED; urgency=medium
+
+  * Fixed-size metric sampling: a socket casts its metric vote once
+    at METRIC_TRIGGER_SEGS (10000) segments, so all voters are
+    compared at a comparable lifecycle stage.  Previously the vote
+    only happened at close, so a 127-segment health check and a
+    500,000-segment video transfer contributed equally.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Sun, 13 Sep 2026 20:00:00 +0200
+
 bpftune (0.4.19) UNRELEASED; urgency=medium
 
   * Diagnostic: log one mid-flight sample per socket at each of
