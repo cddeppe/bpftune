@@ -66,12 +66,12 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
 
 struct conn_state {
     __u64 state;
-    __u64 swaps;
-    __u64 bad_count;
+    __u64 swap_count;
+    __u64 bad_checkpoints;
     __u64 settle_until;
     __u64 pending_swap;    /* 0 = none, else algo index + 1 */
     __u64 best_alt_i;      /* snapshot best-alternative algo idx; ~0 = none */
-    __u64 rank_at_assign;  /* algs better than assigned at ESTABLISHED; >= CUT triggers */
+    __u64 last_metric;     /* most recent metric sample for this socket; 0 = unset */
 };
 
 struct tcp_conn_metric {
@@ -121,10 +121,9 @@ struct remote_host {
  * MAX_SWAPS times, move it.  After a swap, suppress re-judgement
  * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
  * ssthresh, so early samples on the new algorithm are a cold start. */
-#define SWAP_RANK_CUT      8    /* require >= this many algs were better at assign */
-#define SWAP_MARGIN_FACTOR 125  /* ... and metric >= best * 125 / 100 */
-#define SWAP_AFTER_BAD 2
-#define MAX_SWAPS      2
+#define SWAP_MARGIN_PCT 125     /* last_metric >= best_alt * 125 / 100 fires */
+#define SWAP_BAD_BEFORE 2       /* consecutive bad checkpoints before swap */
+#define SWAP_MAX       2
 #define T_SETTLE_NS    (5ULL * 1000000000ULL)
 
 /* Minimum instances before a bucket is written to the persistent
