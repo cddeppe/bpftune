@@ -2,9 +2,8 @@
 """Show per-destination bucket leaders from bpftune's remote_host_map.
 
 Under destination-keying (0.4.18+), each bucket represents one remote
-destination address.  Shows the top-3 algorithms per bucket (best first)
-so you can see whether the tuner has converged on a single winner or
-settled on a small tie.
+destination address.  Shows the top-3 algorithms per bucket with sample
+counts, so you can distinguish a real winner from a lucky single sample.
 
 Verdict thresholds (top-1 metric_value vs top-2 metric_value):
     ALONE   - only one algorithm has samples
@@ -12,9 +11,14 @@ Verdict thresholds (top-1 metric_value vs top-2 metric_value):
     LEAD    - leader is 1.2-2x better than next     (preference)
     TIGHT   - leader is <1.2x better than next      (bouncing)
 
+Sample counts shown as (nN).  Trust a leader with n>=5; distrust n=1-2.
+
 Usage:  sudo python3 tools/bucket-leaders.py
 """
-import ipaddress, json, subprocess, sys
+import ipaddress, json, signal, subprocess, sys
+
+# Silence BrokenPipeError when output is piped to head(1).
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 names = ['cubic','bbr','htcp','dctcp','scalable','vegas','veno','westwood',
          'reno','illinois','yeah','lp','bic','highspeed','hybla','nv']
@@ -74,7 +78,8 @@ for entry in entries:
 
     alg_rows.sort()
     top3 = alg_rows[:3]
-    top3_str = ' '.join('%s=%s' % (nm, fmt_val(mv)) for mv, n, g, nm in top3)
+    # Compact: alpine=5.2K(n1) — value(ncount)
+    top3_str = ' '.join('%s=%s(n%d)' % (nm, fmt_val(mv), n) for mv, n, g, nm in top3)
 
     if len(alg_rows) >= 2 and alg_rows[0][0] > 0:
         ratio = alg_rows[1][0] / float(alg_rows[0][0])
@@ -90,11 +95,11 @@ for entry in entries:
 rows_out.sort(key=lambda r: -r['inst'])
 
 w_key  = max([len("destination")] + [len(r['key']) for r in rows_out])
-w_top3 = max([len("top-3 (best first)")] + [len(r['top3']) for r in rows_out])
+w_top3 = max([len("top-3 (best first, with sample counts)")] + [len(r['top3']) for r in rows_out])
 
 hdr = ("%-" + str(w_key) + "s  %-9s  %-7s  %-8s  %-" + str(w_top3) + "s  %s") % (
     "destination", "instances", "min_rtt", "max_rate",
-    "top-3 (best first)", "verdict")
+    "top-3 (value, sample count)", "verdict")
 print(hdr)
 print("-" * len(hdr))
 
