@@ -29,6 +29,8 @@ BPF_MAP_DEF(remote_host_map, BPF_MAP_TYPE_LRU_HASH, struct in6_addr, struct remo
 
 BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
 
+BPF_MAP_DEF(midsamp_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
+
 /* per-CPU scratch buffer used to initialize new remote_host entries without
  * placing a >512B struct temporary on the BPF stack (NUM_TCP_CONG_ALGS=16
  * makes struct remote_host 792 bytes, exceeding the 512-byte stack limit).
@@ -96,7 +98,7 @@ __u64 tcp_thin_lto_choices;
 SEC("sockops")
 int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 {
-	int cb_flags = BPF_SOCK_OPS_STATE_CB_FLAG|BPF_SOCK_OPS_RETRANS_CB_FLAG;
+	int cb_flags = BPF_SOCK_OPS_STATE_CB_FLAG|BPF_SOCK_OPS_RETRANS_CB_FLAG|BPF_SOCK_OPS_RTT_CB_FLAG;
 	struct remote_host *remote_host;
 	struct in6_addr raddr = {};
 	struct in6_addr *key = &raddr;
@@ -138,6 +140,47 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 			}
 		}
 		return 1;
+	case BPF_SOCK_OPS_RTT_CB: {
+		__u64 *nextp;
+		__u64 segs, next;
+		struct tcp_sock *tps;
+		__u64 smin, savg, srate, srate_raw, smss, sinter;
+
+		if (!sk)
+			return 1;
+		tps = bpf_skc_to_tcp_sock(sk);
+		if (!tps)
+			return 1;
+		nextp = bpf_sk_storage_get(&midsamp_map, sk, 0,
+					   BPF_SK_STORAGE_GET_F_CREATE);
+		if (!nextp)
+			return 1;
+		next = *nextp;
+		if (!next)
+			next = 1000;
+		segs = (__u64)ops->segs_out + (__u64)ops->segs_in;
+		if (segs < next)
+			return 1;
+
+		smin = (__u64)tps->rtt_min.s[0].v;
+		savg = (__u64)(tps->srtt_us >> 3);
+		sinter = (__u64)tps->rate_interval_us;
+		srate_raw = (__u64)tps->rate_delivered;
+		smss = (__u64)tps->mss_cache;
+		srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
+		bpf_printk("midsamp port=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
+			   ops->local_port, next, segs, smin, savg, srate);
+
+		switch (next) {
+		case 1000:   *nextp = 5000;    break;
+		case 5000:   *nextp = 25000;   break;
+		case 25000:  *nextp = 100000;  break;
+		case 100000: *nextp = 500000;  break;
+		case 500000: *nextp = 1000000; break;
+		default:     *nextp = ~((__u64)0);
+		}
+		return 1;
+	}
 	case BPF_SOCK_OPS_STATE_CB:
 		state = ops->args[1];
 		switch (state) {
@@ -293,6 +336,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		                                 &heal_rtt, &heal_rate);
 
 		        		        bpf_printk("met alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu", s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term, min_rtt, remote_host->min_rtt, avg_rtt);
+		        		        bpf_printk("closport port=%u segs=%llu", ops->local_port, (__u64)tp->segs_out + tp->segs_in);
 		        		        if (heal_rtt)
 		        		                bpf_printk("heal_rtt smrtt=%llu newref=%llu",
 		        		                           (unsigned long long)min_rtt,
