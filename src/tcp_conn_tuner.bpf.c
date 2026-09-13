@@ -236,14 +236,11 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	switch (ops->op) {
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB: {
-		__u64 metric_value = 0, metric_min = ~((__u64)0x0);
-		__u8 i, ncands = 0, minindex = 0, s;
-		__u8 cands[NUM_TCP_CONN_METRICS];
+		__u64 metric_min = ~((__u64)0x0);
+		__u8 i, minindex = 0, s;
 
-		/* Cold-start coverage: force-sample any algorithm with < 5 votes
-		 * before allowing the greedy path to run.  Guarantees every
-		 * algorithm gets at least 5 observations on a fresh bucket, so
-		 * a single lucky first sample cannot lock the others out. */
+		/* Cold-start coverage: force-sample any algorithm with < 2 votes
+		 * before allowing the greedy path to run. */
 		{
 			__u64 min_count = ~(__u64)0;
 			__u8 forced = 0;
@@ -253,7 +250,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 					forced = i;
 				}
 			}
-			if (min_count < 5) {
+			if (min_count < 2) {
 				forced &= (NUM_TCP_CONG_ALGS - 1);
 				if (set_cong(ops, forced))
 					remote_host->metrics[forced].metric_value = ~((__u64)0);
@@ -261,58 +258,33 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 			}
 		}
 
-		/* find best (minimum) metric and use cong alg based on it. */
-		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
-			cands[i] = 0;
-			metric_value = remote_host->metrics[i].metric_value;
-			if (metric_value > metric_min)
-				continue;
-			else if (metric_value < metric_min) {
-				cands[0] = i;
-				ncands = 1;
-			} else if (metric_value == metric_min) {
-				cands[ncands] = i;
-				ncands++;
+		/* Find best and second-best in one pass.  Coverage guarantees all
+		 * algs have >= 2 samples, so exact ties are vanishingly rare;
+		 * lowest index wins. */
+		{
+			__u64 min2 = ~((__u64)0);
+			for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
+				__u64 v = remote_host->metrics[i].metric_value;
+				if (v < metric_min) {
+					min2 = metric_min;
+					metric_min = v;
+					minindex = i;
+				} else if (v < min2) {
+					min2 = v;
+				}
 			}
-			metric_min = metric_value;
+			minindex &= (NUM_TCP_CONN_METRICS - 1);
+			/* Margin gate: if leader not >=25% ahead of 2nd, boost
+			 * exploration to 1/4 until the winner is clear. */
+			if (min2 == ~((__u64)0) || metric_min * 5 > min2 * 4)
+				s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 4);
+			else
+				s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
 		}
-		/* if multiple min values, choose randomly. */
-		if (ncands > 1 && ncands <= NUM_TCP_CONN_METRICS) {
-			__u32 choice = bpf_get_prandom_u32() % ncands;
-
-			/* verifier complains about variable stack offset */
-			switch (choice) {
-			case 0:  minindex = cands[0];  break;
-			case 1:  minindex = cands[1];  break;
-			case 2:  minindex = cands[2];  break;
-			case 3:  minindex = cands[3];  break;
-			case 4:  minindex = cands[4];  break;
-			case 5:  minindex = cands[5];  break;
-			case 6:  minindex = cands[6];  break;
-			case 7:  minindex = cands[7];  break;
-			case 8:  minindex = cands[8];  break;
-			case 9:  minindex = cands[9];  break;
-			case 10: minindex = cands[10]; break;
-			case 11: minindex = cands[11]; break;
-			case 12: minindex = cands[12]; break;
-			case 13: minindex = cands[13]; break;
-			case 14: minindex = cands[14]; break;
-			case 15: minindex = cands[15]; break;
-			default: return 1;
-			}
-		} else if (ncands == 1) {
-			minindex = cands[0];
-		} else {
-			return 1;
-		}
-		minindex &= (NUM_TCP_CONN_METRICS - 1);
-		/* choose random alg 5% of the time (1/20) */
-		s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
 		s &= (NUM_TCP_CONG_ALGS - 1);
 
 		if (set_cong(ops, s))
-
-		        remote_host->metrics[s].metric_value = ~((__u64)0);
+			remote_host->metrics[s].metric_value = ~((__u64)0);
 
 		return 1;
 	}
