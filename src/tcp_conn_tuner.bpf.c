@@ -27,7 +27,7 @@ long long tcp_thin_lto = 0;
 
 BPF_MAP_DEF(remote_host_map, BPF_MAP_TYPE_LRU_HASH, struct in6_addr, struct remote_host, 4096, 0);
 
-BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
+BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, struct conn_state, 0, BPF_F_NO_PREALLOC);
 
 BPF_MAP_DEF(midsamp_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
 
@@ -82,14 +82,19 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops, __u8 i)
         tcp_cong_choices[i & (NUM_TCP_CONG_ALGS - 1)]++;
         /* update state */
         struct bpf_sock *sk = ops->sk;
-        __u64 *statep;
+        struct conn_state *statep;
 
         if (!sk)
                 return 0;
         statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
                                     BPF_SK_STORAGE_GET_F_CREATE);
-        if (statep)
-                *statep = (__u64)i;
+        if (statep) {
+                if (statep->settle_until)
+                        statep->swaps++;
+                statep->state = (__u64)i;
+                statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
+                statep->bad_since = 0;
+        }
         return 0;
 }
 
@@ -105,7 +110,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	struct bpf_sock *sk = ops->sk;
 	struct tcp_sock *tp = NULL;
 	unsigned int rt_flags = 0;
-	__u64 *statep = NULL;
+	struct conn_state *statep = NULL;
 	bool initial = false;
 	int state;
 
@@ -125,7 +130,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 				statep = bpf_sk_storage_get(&sk_storage_map, sk,
 							    0, 0);
 			}
-			if (!statep || *statep != TCP_STATE_CONG_BBR) {
+			if (!statep || statep->state != TCP_STATE_CONG_BBR) {
 				/* turn on TCP thin linear timeouts for lossy connections */
 				if (!statep && !tcp_thin_lto) {
 					int one = 1;
@@ -304,7 +309,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
 		if (!statep)
 			return 1;
-		s = *statep & (NUM_TCP_CONG_ALGS - 1);
+		s = statep->state & (NUM_TCP_CONG_ALGS - 1);
 		if (!tp)
 			return 1;
 		if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
