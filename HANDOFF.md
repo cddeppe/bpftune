@@ -14,7 +14,7 @@ per gateway), not just single-path datacenters.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.20** | capture → /tmp/met.log |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.21** | capture → /tmp/met.log |
 | Builder | amd64 | **0.4.20** | runs git push origin |
 | Target | amd64 | **0.4.20** | |
 | Builder | aarch64 | **0.4.20** | builds arm64 |
@@ -23,43 +23,64 @@ per gateway), not just single-path datacenters.
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
-## 0.4.21 scope (planned, next session)
+## SESSION 2026-09-13 (LATEST) — 0.4.21 metric averaging + cold-start
 
-Seven items, decided. Deploy to heavy host first, verify, then fleet.
+Version **0.4.21**, heavy host only (fleet rollout pending). Tag pending.
 
-1. metric_value -> incremental mean with divisor min(count+1, CAP).
-   Replaces rl_update at tcp_conn_tuner.bpf.c:370.
-   Verified 2026-09-13: -r 0 gives 1/64 step, exact match to
-   observed dctcp move (16K observed, 256K predicted at 1/4).
+### Root cause found
 
-2. Pollution filter at bucket-key step. Skip 169.254.0.0/16,
-   fe80::/10, 127.0.0.0/8, ::1.
+metric_value was updated via rl_update with BPFTUNE_BITSHIFT=2, i.e. a
+25% step per observation.  Effective memory ~4 samples regardless of
+metric_count.  Home-bucket leader churn on 82.43.215.97 (bbr 5.8M ->
+7.59M over 5 votes) was this step, not path drift.  Verified by -r 0
+drop-in: step became 1/64, matching the exact delta seen in the map.
 
-3. Multi-netns column in bucket-leaders.py.
+### Fixes shipped on 0.4.21
 
-4. Remove dead per-alg min_rtt / max_rate_delivered from
-   struct tcp_conn_metric. Bump STATE_VERSION 2 -> 3.
-   Display-only fields (tcp_conn_tuner.c:172); never read by metric.
+1. metric_value -> count-based incremental mean, divisor min(count+1,
+   METRIC_AVG_CAP=32).  Early observations move the value a lot, later
+   ones settle it.  Verified: bbr 5->6 moved by (obs-value)/6 exactly.
+2. Skip 127.0.0.0/8, 169.254.0.0/16, ::1, fe80::/10 at bucket-key.
+3. Add remote_port to midsamp and closport printks (fixes 443 pairing).
+4. Remove dead per-alg min_rtt/max_rate_delivered; STATE_VERSION=3.
+5. Cold-start coverage: force-sample least-sampled alg until every alg
+   has >= 5 votes, then normal epsilon-greedy.  Bounded (<=80 sockets).
 
-5. Add ops->remote_port to midsamp and closport printks.
+### What we learned about cold-start
 
-6. n>=3 gate on tool verdict column.
+Coverage=2 was tried first.  Result: illinois raced to n=25 while nv
+held the best log mean but was stuck at n=6.  Greedy exits coverage at
+n=2, where the mean is mostly noise, so it commits to whichever alg
+sampled lucky first.  Coverage=5 keeps the distribution flat (observed: 16
+algs all between 4 and 7 after 30 min), then greedy resumes.
 
-7. Group no-closes-yet rows in tool output.
+Margin-gated exploitation (raise epsilon to 1/4 while leader is not
+>=20% ahead of 2nd) was attempted and REJECTED by the verifier: the
+second 16-iteration loop pushed the program over the 1,000,000-
+instruction limit.  Not viable without restructuring.
 
-DEPLOY NOTE: state file MUST be deleted on 0.4.21 install.
-Metric semantics changed (new averaging) and state format changed
-(STATE_VERSION 3). Preserving state would poison the new average.
+### Verification method (important)
 
-DEFERRED to 0.4.22:
-- Vote weighting (needs new averaging first, plus design decision)
-- Algorithm-ordering generalization (needs multi-day fleet data)
+Do NOT reconstruct metric_value from /tmp/met.log.  Bucket min_rtt
+drifts mid-run so bmrtt filters miss votes, and trace_pipe drops
+events under load.  Correct method: take two map dumps minutes
+apart and solve V2 = V1 + (obs - V1)/(N+1) for each alg that gained
+a vote.
 
-DIAGNOSTIC RUNNING: -r 0 drop-in on instance-20260905-0931.
-Read bucket-leaders.py in the morning before building anything.
+### 0.4.22 scope (from tonight)
+
+- Near-tie leader rotation.  When top algs are within ~12%, greedy
+  oscillates between them without converging.  Margin gate would fix
+  it but needs a non-loop implementation or verifier headroom.
+- Vote weighting: long-lived sockets vote once then go silent; a
+  30-min video and a 200ms handshake both contribute one vote.
+  Options: re-vote at 100K/1M checkpoints, or weight by bytes.
+- Tool: multi-netns column, n>=3 verdict gate, group no-closes rows.
+- RFC1918 / VPC gateway filter (172.16/12 etc) not yet applied.
+
 ---
 
-## SESSION 2026-09-13 (LATEST) — fixed-size metric sampling (0.4.20)
+## SESSION 2026-09-13 (HISTORICAL) — fixed-size metric sampling (0.4.20)
 Version **0.4.20**, all four hosts. Tag `0.4-20-custom`.
 
 Sockets cast their metric vote exactly once at 10000 segments
