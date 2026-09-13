@@ -10,6 +10,12 @@ bpftune (0.4.21) UNRELEASED; urgency=medium
     169.254.0.0/16, ::1, fe80::/10.
   * Add remote_port to midsamp and closport printks, so incoming 443
     connections can be paired reliably.
+  * Cold-start coverage: on a fresh bucket, force-sample the
+    least-sampled algorithm until every algorithm has >= 2 votes,
+    then fall back to normal epsilon-greedy.  Without this, a lucky
+    first sample locks the leader in and the exploration rate (5%/16
+    per non-leader) is too thin to recover.  Bounded cost: at most 32
+    sockets, then zero overhead.
   * Remove dead per-algorithm min_rtt / max_rate_delivered fields from
     struct tcp_conn_metric. Displayed but never read by the metric.
     STATE_VERSION 2 -> 3.
