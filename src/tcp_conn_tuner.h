@@ -64,8 +64,7 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
 
 struct conn_state {
     __u64 state;
-    __u64 settle_until;
-    __u64 bad_since;
+    __u64 bad_count;
     __u64 swaps;
 };
 
@@ -109,15 +108,12 @@ struct remote_host {
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
-/* Mid-socket swap policy.  A socket gets T_SETTLE_NS to reach steady
- * state after ESTABLISHED (or after a swap), then is judged.  If its
- * current metric stays >= BAD_RTT_FACTOR times the best alternative
- * (lowest metric_value among algorithms != current) for T_BAD_NS
- * continuously, set_cong to that best alternative.  MAX_SWAPS bounds
- * thrashing. */
-#define T_SETTLE_NS    (5ULL * 1000000000ULL)
-#define T_BAD_NS       (3ULL * 1000000000ULL)
+/* Mid-socket swap policy.  If a socket metric is more than
+ * BAD_RTT_FACTOR worse than the best alternative for SWAP_AFTER_BAD
+ * consecutive checkpoints, switch to that alternative.  MAX_SWAPS
+ * bounds thrashing. */
 #define BAD_RTT_FACTOR 3
+#define SWAP_AFTER_BAD 2
 #define MAX_SWAPS      2
 /* Minimum instances before a bucket is written to the persistent
  * state file.  One-off destinations never accumulate enough samples
