@@ -1,3 +1,38 @@
+## SESSION 2026-09-13 — mid-flight sampling diagnostic
+
+**Branch:** `diag/metric-terms` | **Fleet:** 0.4.19 on heavy host, 0.4.18 elsewhere | **Last tag:** `0.4-9-custom`
+
+### What's deployed
+0.4.19 on the aarch64 heavy-traffic host only. Adds a mid-flight diagnostic:
+- `midsamp port=P thr=T segs=N smin=M savg=A srate=R` at 1K/5K/25K/100K/500K/1M segment checkpoints (RTT_CB)
+- `closport port=P segs=N` for pairing
+
+### Problem being diagnosed
+Metric only updates at socket close. Long-lived sockets (video streams) rarely close, so the tuner learns mostly from control traffic. Need fixed-size sampling instead of close-only.
+
+### Confirmed finding
+Queueing delay (savg - smin) grows with socket size — 10-13K µs at 1000 segs vs 19-20K at 5000 segs. RTT term measures "how big was the socket," not algorithm quality. Fixed-size sampling justified.
+
+### Next step
+Let a YouTube stream run 10 minutes on the heavy host, then:
+    sudo grep -c 'midsamp' /tmp/met.log
+    sudo grep 'midsamp' /tmp/met.log | awk '{for(i=1;i<=NF;i++){if($i~/^thr=/){split($i,a,"="); print a[2]}}}' | sort -n | uniq -c
+    sudo head -3 /tmp/met.log
+- 25K+ checkpoints fire → design fixed-size sampling
+- only 1K/5K fire → long sockets missed, investigate that
+- LOST EVENTS in header → increase buffer_size_kb
+
+### Known limitation
+`ops->local_port` is 443 for all home connections — midsamp/closport can't pair. Next patch: add `ops->remote_port` to both printks.
+
+### Fixes shipped on this branch since 0.4.9
+Rate-term inert; small-socket RTT poisoning; rate-term frozen per algorithm; RTT term path-constant; outlier rejection; reference healing; destination keying (2 buckets → 100+ per host).
+
+### Parked
+Reference drift churn; multi-netns map dump; link-local filter; branch merge to main + 0.4.20 release.
+
+---
+
 ## CURRENT STATE — post-metric-fix session
 
 **Version:** 0.4.14 on `diag/metric-terms` branch. `main` is at 0.4.9 (released as `0.4-9-custom`).
