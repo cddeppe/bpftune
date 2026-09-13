@@ -78,6 +78,8 @@ int init(struct bpftuner *tuner)
 	 * detach from cgroup.
 	 */
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+	bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
+	bpftuner_cgroup_detach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
 
 	err = bpftuner_bpf_init(tcp_conn, tuner, NULL);
 	if (err)
@@ -92,6 +94,14 @@ int init(struct bpftuner *tuner)
 
 	/* attach to root cgroup */
 	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+	if (err)
+		goto out;
+
+	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
+	if (err)
+		goto out;
+
+	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
 	if (err)
 		goto out;
 
@@ -307,6 +317,8 @@ void fini(struct bpftuner *tuner)
 {
 	bpftune_log(LOG_DEBUG, "calling fini for %s\n", tuner->name);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+	bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
+	bpftuner_cgroup_detach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
         save_remote_host_map(tuner);
 	summarize(tuner);
 	bpftuner_bpf_fini(tuner);

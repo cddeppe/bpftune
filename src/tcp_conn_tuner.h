@@ -32,6 +32,8 @@ enum tcp_cong_scenarios {
 #define CONG_MAXNAME 16
 
 #define CONN_TUNER_BPF "bpftune_conn_tuner"
+#define CONN_TUNER_VOTE_BPF "bpftune_conn_tuner_vote"
+#define CONN_TUNER_SWAP_BPF "bpftune_conn_tuner_swap"
 
 /* Expanded to 16 algorithms (must be a power of two for bitmask logic) */
 enum tcp_states {
@@ -64,8 +66,11 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
 
 struct conn_state {
     __u64 state;
-    __u64 bad_count;
     __u64 swaps;
+    __u64 bad_count;
+    __u64 settle_until;
+    __u64 pending_swap;   /* 0 = none, else algo index + 1 */
+    __u64 best_alt_i;     /* snapshot best-alternative algo idx; ~0 = none */
 };
 
 struct tcp_conn_metric {
@@ -108,13 +113,18 @@ struct remote_host {
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
-/* Mid-socket swap policy.  If a socket metric is more than
- * BAD_RTT_FACTOR worse than the best alternative for SWAP_AFTER_BAD
- * consecutive checkpoints, switch to that alternative.  MAX_SWAPS
- * bounds thrashing. */
+/* Mid-socket swap policy.  Compare the current algorithm bucket EMA
+ * against the best alternative bucket EMA - not a single socket
+ * sample against an average.  If the ratio holds for SWAP_AFTER_BAD
+ * consecutive checkpoints and the socket has not already swapped
+ * MAX_SWAPS times, move it.  After a swap, suppress re-judgement
+ * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
+ * ssthresh, so early samples on the new algorithm are a cold start. */
 #define BAD_RTT_FACTOR 3
 #define SWAP_AFTER_BAD 2
 #define MAX_SWAPS      2
+#define T_SETTLE_NS    (5ULL * 1000000000ULL)
+
 /* Minimum instances before a bucket is written to the persistent
  * state file.  One-off destinations never accumulate enough samples
  * to be worth persisting; recurring paths (CDN, tunnel) do. */
