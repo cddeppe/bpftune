@@ -16,6 +16,10 @@ bpftune (0.4.21) UNRELEASED; urgency=medium
     first sample locks the leader in and the exploration rate (5%/16
     per non-leader) is too thin to recover.  Bounded cost: at most 32
     sockets, then zero overhead.
+  * Raise cold-start coverage from 2 to 5 votes per algorithm before
+    exiting the round-robin phase, so the tuner does not begin
+    exploiting a leader whose early samples may have been lucky.
+    Bounded cost: 80 sockets per fresh bucket, then zero overhead.
   * Remove dead per-algorithm min_rtt / max_rate_delivered fields from
     struct tcp_conn_metric. Displayed but never read by the metric.
     STATE_VERSION 2 -> 3.

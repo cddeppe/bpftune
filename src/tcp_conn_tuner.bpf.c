@@ -240,9 +240,9 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		__u8 i, ncands = 0, minindex = 0, s;
 		__u8 cands[NUM_TCP_CONN_METRICS];
 
-		/* Cold-start coverage: force-sample any algorithm with < 2 votes
+		/* Cold-start coverage: force-sample any algorithm with < 5 votes
 		 * before allowing the greedy path to run.  Guarantees every
-		 * algorithm gets at least 2 observations on a fresh bucket, so
+		 * algorithm gets at least 5 observations on a fresh bucket, so
 		 * a single lucky first sample cannot lock the others out. */
 		{
 			__u64 min_count = ~(__u64)0;
@@ -253,7 +253,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 					forced = i;
 				}
 			}
-			if (min_count < 2) {
+			if (min_count < 5) {
 				forced &= (NUM_TCP_CONG_ALGS - 1);
 				if (set_cong(ops, forced))
 					remote_host->metrics[forced].metric_value = ~((__u64)0);
