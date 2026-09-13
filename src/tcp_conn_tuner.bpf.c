@@ -90,7 +90,7 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops, __u8 i)
                                     BPF_SK_STORAGE_GET_F_CREATE);
         if (statep) {
                 statep->state = (__u64)i;
-                statep->bad_count = 0;
+                statep->bad_checkpoints = 0;
         }
         return 0;
 }
@@ -210,17 +210,6 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                         csp->best_alt_i = (min2 == ~((__u64)0)) ? ~((__u64)0) : (__u64)min2index;
                     else
                         csp->best_alt_i = (__u64)minindex;
-                    {
-                        __u64 rank = 0;
-                        __u64 s_val = remote_host->metrics[s].metric_value;
-                        __u8 j;
-                        for (j = 0; j < NUM_TCP_CONN_METRICS; j++) {
-                            if (j != s && remote_host->metrics[j].metric_count > 0 &&
-                                remote_host->metrics[j].metric_value < s_val)
-                                rank++;
-                        }
-                        csp->rank_at_assign = rank;
-                    }
                 }
             }
         }
@@ -375,6 +364,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 
     now = bpf_ktime_get_ns();
 
+    if (statep && !is_close)
+        statep->last_metric = metric;
+
     {
         __u64 best_alt = ~((__u64)0);
         __u8 best_alt_i = 0;
@@ -389,19 +381,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
 
-        if (statep && !is_close && statep->swaps < MAX_SWAPS &&
+        if (statep && !is_close && statep->swap_count < SWAP_MAX &&
             statep->pending_swap == 0 &&
             now >= statep->settle_until &&
             best_alt != ~((__u64)0) &&
-            statep->rank_at_assign >= SWAP_RANK_CUT &&
-            m->metric_value * 100 >= best_alt * SWAP_MARGIN_FACTOR) {
-            statep->bad_count++;
-            if (statep->bad_count >= SWAP_AFTER_BAD) {
+            statep->last_metric != 0 &&
+            statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT) {
+            statep->bad_checkpoints++;
+            if (statep->bad_checkpoints >= SWAP_BAD_BEFORE) {
                 statep->pending_swap = (__u64)best_alt_i + 1;
-                statep->bad_count = 0;
+                statep->bad_checkpoints = 0;
             }
         } else if (statep) {
-            statep->bad_count = 0;
+            statep->bad_checkpoints = 0;
         }
     }
 
@@ -443,8 +435,9 @@ int bpftune_conn_tuner_swap(struct bpf_sock_ops *ops)
 		int sret = set_cong(ops, algo);
 		bpf_printk("swap-attempt algo=%u pending=%llu ret=%d", algo, pending, sret);
 		if (!sret) {
-			statep->swaps++;
+			statep->swap_count++;
 			statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
+                        statep->last_metric = 0;
 			bpf_printk("swap-exec algo=%u pending=%llu", algo, pending);
 		}
 		statep->pending_swap = 0;
