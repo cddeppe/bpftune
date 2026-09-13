@@ -168,8 +168,8 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		srate_raw = (__u64)tps->rate_delivered;
 		smss = (__u64)tps->mss_cache;
 		srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
-		bpf_printk("midsamp port=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
-			   ops->local_port, next, segs, smin, savg, srate);
+		bpf_printk("midsamp port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
+			   ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
 
 		switch (next) {
 		case 1000:   *nextp = 5000;    break;
@@ -203,6 +203,16 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	if (!sk)
 		return 1;
 	tp = bpf_skc_to_tcp_sock(sk);
+	/* Skip addresses not worth CC-tuning. */
+	if (ops->family == AF_INET) {
+		__u32 ip4 = bpf_ntohl(ops->remote_ip4);
+		if ((ip4 & 0xff000000) == 0x7f000000) return 1;
+		if ((ip4 & 0xffff0000) == 0xa9fe0000) return 1;
+	} else if (ops->family == AF_INET6) {
+		if (ops->remote_ip6[0] == 0 && ops->remote_ip6[1] == 0 && ops->remote_ip6[2] == 0 && ops->remote_ip6[3] == bpf_htonl(1)) return 1;
+		if ((ops->remote_ip6[0] & bpf_htonl(0xffc00000)) == bpf_htonl(0xfe800000)) return 1;
+	}
+
 	switch (ops->family) {
         case AF_INET:
                 /* key by destination IP (::ffff:a.b.c.d form) */
@@ -288,7 +298,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 	case BPF_SOCK_OPS_STATE_CB:
 	case BPF_SOCK_OPS_RTT_CB: {
 		/* STATE_CB: vote on close (short sks); RTT_CB: vote at 10K. */
-		__u64 metric, metric_old, min_rtt, avg_rtt, rate_interval_us, rate_delivered, mss;
+		__u64 metric, min_rtt, avg_rtt, rate_interval_us, rate_delivered, mss;
 		struct tcp_conn_metric *m;
 		bool greedy = true;
 		__u8 i, s;
@@ -308,8 +318,8 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 		if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
 			return 1;
 		if (is_close)
-			bpf_printk("closport port=%u segs=%llu",
-			   ops->local_port,
+			bpf_printk("closport port=%u rport=%u segs=%llu",
+			   ops->local_port, bpf_ntohl(ops->remote_port),
 			   (__u64)tp->segs_out + tp->segs_in);
 		if (is_close &&
 			    (__u64)tp->segs_out + tp->segs_in >= METRIC_TRIGGER_SEGS)
@@ -328,10 +338,6 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                         (rate_delivered * mss * 1000000ULL) / rate_interval_us : 0;
 
 		m = &remote_host->metrics[s];
-		if (!m->min_rtt || min_rtt < m->min_rtt)
-                	m->min_rtt = min_rtt;
-                if (!m->max_rate_delivered || rate_delivered > m->max_rate_delivered)
-                	m->max_rate_delivered = rate_delivered;
 
 		{
 
@@ -366,8 +372,15 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 				break;
 			}
 		}
-		metric_old = m->metric_value;
-		m->metric_value = rl_update(metric_old, metric, BPFTUNE_BITSHIFT);
+		{
+			__u64 __div = m->metric_count + 1;
+			if (__div > METRIC_AVG_CAP)
+				__div = METRIC_AVG_CAP;
+			if (metric > m->metric_value)
+				m->metric_value += (metric - m->metric_value) / __div;
+			else
+				m->metric_value -= (m->metric_value - metric) / __div;
+		}
 		m->metric_count++;
 		if (greedy)
 			m->greedy_count++;
