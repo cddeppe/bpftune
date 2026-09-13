@@ -440,7 +440,9 @@ int bpftune_conn_tuner_swap(struct bpf_sock_ops *ops)
 		return 1;
 	{
 		__u8 algo = (__u8)((pending - 1) & (NUM_TCP_CONG_ALGS - 1));
-		if (!set_cong(ops, algo)) {
+		int sret = set_cong(ops, algo);
+		bpf_printk("swap-attempt algo=%u pending=%llu ret=%d", algo, pending, sret);
+		if (!sret) {
 			statep->swaps++;
 			statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
 			bpf_printk("swap-exec algo=%u pending=%llu", algo, pending);
