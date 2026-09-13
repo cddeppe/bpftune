@@ -23,6 +23,49 @@ per gateway), not just single-path datacenters.
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
+
+## SESSION 2026-09-13 (FINAL) — 0.4.22 shipped, freeze declared
+
+Fleet on 0.4.22. Tag `0.4-22-custom`. GitHub release published.
+
+### What 0.4.22 changed
+
+- Margin-gated exploitation: if leader is not >=25%% ahead of 2nd,
+  boost exploration from 1/20 to 1/4 until the winner is clear.
+- Coverage lowered 5 -> 2 (bounded cost 32 sockets/bucket, not 80).
+- Tie-break machinery removed to fit the 1M-instruction verifier
+  limit.  Ties resolve by lowest index.
+
+### Why coverage went back to 2
+
+Coverage=5 needed 80 sockets per bucket.  On the fleet map the vast
+majority of buckets have <20 connections total, so most destinations
+would stay in permanent round-robin and never learn.  Coverage=2
+establishes a first-pass distribution; the margin gate then decides
+whether to commit.  Low-traffic buckets stay neutral by design —
+that is the correct answer when there is not enough information.
+
+### Freeze
+
+No code changes to the tuner until at least 2026-09-20.  Observe:
+
+- High-traffic buckets (home IP, active CDNs): leader should
+  settle and stay settled.
+- Mid-traffic buckets: should gradually prefer one algorithm.
+- Low-traffic buckets: neutral is fine, that is the design.
+
+If behavior is clearly wrong at the end of the window, the next
+change has a well-defined target.  If it is right, work is done.
+
+### Do NOT
+
+- Change the tuner without evidence from the freeze window.
+- Re-derive the 0.4.21 root cause (rl_update 25%% step, verified).
+- Re-attempt margin gate as a second loop (verifier rejects).
+- Reconstruct metric_value from /tmp/met.log (bmrtt drift).
+
+---
+
 ## SESSION 2026-09-13 (LATEST) — 0.4.21 metric averaging + cold-start
 
 Version **0.4.21**, heavy host only (fleet rollout pending). Tag pending.
