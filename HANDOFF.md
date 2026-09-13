@@ -24,7 +24,66 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
-## SESSION 2026-09-13 (FINAL) — 0.4.22 shipped, freeze declared
+
+## SESSION 2026-09-13 (FINAL) — 0.4.23 coverage fix, 0.4.24 long-socket voting
+
+Fleet on 0.4.24.  Tags `0.4-23-custom`, `0.4-24-custom`.  Freeze in effect
+until 2026-09-20 — no code changes to the tuner during that window.
+
+### 0.4.23 — coverage counts selections, not votes
+
+Bug found after 0.4.22 shipped: the coverage loop gated on per-alg
+metric_count, which only increments when a socket votes.  Sockets that
+never vote did not advance the coverage pointer, so the same algorithm
+was assigned to every new connection until one of its sockets happened
+to vote.  Observed on heavy host: cubic 149, htcp 99, bbr 84, indices
+6-15 at zero.  Round-robin was not happening.
+
+Fix: add __u64 selection_count to struct remote_host, increment on every
+ESTABLISHED, force-pick (selection_count & 15) while selection_count <
+32.  STATE_VERSION 3 -> 4.  Verified post-deploy: instances=102,
+selection_count=32, vote distribution spread across all 16 algs.
+
+### 0.4.24 — long-lived sockets vote more
+
+A socket that survives to 1M segments now casts 5 votes (10K/25K/100K/
+500K/1M) instead of 1.  Before this, a 30-min video and a 200 ms TLS
+handshake contributed equally — wrong, since the long socket has been
+tested against the network and the short one barely finished slow
+start.  Below 10K: printk only.  METRIC_AVG_CAP=32 bounds a 5-vote
+socket to ~15%% of an algo mean, so it cannot drown the pack.
+
+Change: `if (next != METRIC_TRIGGER_SEGS)` -> `if (next <` in the RTT_CB
+walker.  One-line fix.
+
+### Freeze — 2026-09-13 through 2026-09-20
+
+Crons running on all four hosts:
+- 04:00 daily: stop/start bpftune (forces save_remote_host_map)
+- 04:05 daily: bucket-leaders.py output to /var/log/bpftune-leaders/
+
+On 2026-09-20, read the seven daily leaderboard files:
+
+    ls -la /var/log/bpftune-leaders/
+
+What to look for:
+- Home IP (CLIENT-IP): leader should stabilize by day 2-3 and stay.
+- Mid-traffic destinations: should trend toward a single leader.
+- Low-traffic tail: neutral is correct, not a bug.
+
+If high-traffic buckets churn across the week, the margin-gate
+threshold (25%% lead requirement) is the first knob to tune.
+
+### Do NOT during freeze
+
+- Change the tuner without evidence from the freeze window.
+- Re-derive the rl_update 25%%-step root cause (verified 0.4.21).
+- Re-attempt margin gate as second loop (verifier budget).
+- Reconstruct metric_value from /tmp/met.log (bmrtt drift).
+
+---
+
+## SESSION 2026-09-13 (FINAL 0.4.22 draft) — historical
 
 Fleet on 0.4.22. Tag `0.4-22-custom`. GitHub release published.
 
