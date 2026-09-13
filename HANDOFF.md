@@ -22,6 +22,41 @@ per gateway), not just single-path datacenters.
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
+
+## 0.4.21 scope (planned, next session)
+
+Seven items, decided. Deploy to heavy host first, verify, then fleet.
+
+1. metric_value -> incremental mean with divisor min(count+1, CAP).
+   Replaces rl_update at tcp_conn_tuner.bpf.c:370.
+   Verified 2026-09-13: -r 0 gives 1/64 step, exact match to
+   observed dctcp move (16K observed, 256K predicted at 1/4).
+
+2. Pollution filter at bucket-key step. Skip 169.254.0.0/16,
+   fe80::/10, 127.0.0.0/8, ::1.
+
+3. Multi-netns column in bucket-leaders.py.
+
+4. Remove dead per-alg min_rtt / max_rate_delivered from
+   struct tcp_conn_metric. Bump STATE_VERSION 2 -> 3.
+   Display-only fields (tcp_conn_tuner.c:172); never read by metric.
+
+5. Add ops->remote_port to midsamp and closport printks.
+
+6. n>=3 gate on tool verdict column.
+
+7. Group no-closes-yet rows in tool output.
+
+DEPLOY NOTE: state file MUST be deleted on 0.4.21 install.
+Metric semantics changed (new averaging) and state format changed
+(STATE_VERSION 3). Preserving state would poison the new average.
+
+DEFERRED to 0.4.22:
+- Vote weighting (needs new averaging first, plus design decision)
+- Algorithm-ordering generalization (needs multi-day fleet data)
+
+DIAGNOSTIC RUNNING: -r 0 drop-in on instance-20260905-0931.
+Read bucket-leaders.py in the morning before building anything.
 ---
 
 ## SESSION 2026-09-13 (LATEST) — fixed-size metric sampling (0.4.20)
