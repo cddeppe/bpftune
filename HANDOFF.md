@@ -109,6 +109,81 @@ tcp_conn_tuner.h (SWAP_MARGIN_PCT, MIN_LEADER_TRUST).
       sudo bpftool map show name remote_host_map 2>&1 | grep -c 'name'
   Expected: 2 programs, 1 map.  Anything higher means an orphan.
 
+## SESSION 2026-09-14 — 0.4.25 and 0.4.26 mid-socket swap
+
+Reconstructed 2026-09-14 from session memory; several intermediate
+iterations are lost to a force-push cycle.  The key shipped changes and
+the reasoning that produced them are captured below.
+
+### 0.4.25 — mid-socket swap, live tracker
+
+Goal: rescue a socket that drew a bad algorithm without waiting for it
+to close.  A 30-minute video should not be stuck on a bad choice for
+its entire life because exploration rolled the dice badly at
+ESTABLISHED.
+
+Design landed on:
+- Trigger in RTT_CB when the socket's own metric sample (last_metric)
+  is >= 1.25x the current best alternative (SWAP_MARGIN_PCT=125),
+  sustained for two consecutive checkpoints (SWAP_BAD_BEFORE=2).
+- Swap bounded by SWAP_MAX=2 and a 5-second settle window
+  (T_SETTLE_NS) after any successful swap, to avoid thrashing on
+  cold-start readings from tcp_reinit_congestion_control.
+- Attribution: the swap executes via bpf_setsockopt(TCP_CONGESTION);
+  subsequent checkpoints read statep->state and credit the new
+  algorithm automatically.
+- sk_storage_map value type changed __u64 -> struct conn_state carrying
+  {state, swap_count, bad_checkpoints, settle_until, last_metric,
+  pending_swap}.  STATE_VERSION 4 -> 5.
+
+First implemented as three sockops programs (conn_tuner,
+conn_tuner_vote, conn_tuner_swap) with a pending_swap flag passing
+between vote and swap.  Split because the merged version blew the 1M
+insn verifier budget: a 16-iteration loop adjacent to two live
+map_value pointers plus helper calls causes state explosion.
+Snapshotting best_alt_i at ESTABLISHED removed all loops from the vote
+path.  Tags 0.4-25-custom.
+
+### 0.4.26 — merge back, four fixes
+
+Traces from 0.4.25 on the heavy host showed:
+- 6 swaps in a 15-minute window targeting the current leader
+- Zero downgrades (no socket moved off the leader)
+- But: the target was `highspeed` on a socket whose bucket leader was
+  `illinois` — best_alt_i was snapshot at ESTABLISHED and never
+  refreshed.
+
+Fixes in 0.4.26:
+
+1. Merge vote+swap back to a single RTT_CB program.  Inline set_cong
+   removes the pending_swap field and the cross-program queue; swaps
+   fire in the same RTT_CB event.  Program count 3 -> 2.  Safe because
+   neither program has loops after the snapshot removal.
+
+2. METRIC_TRIGGER_SEGS back to 10000.  The 5K experiment biased the
+   metric: every socket's 5K sample is roughly 10x lower than its 25K
+   sample (no queueing yet, no delivery rate yet), so 5K samples
+   dominated the leader ranking and cubic took over on n=1.
+
+3. MIN_LEADER_TRUST=3.  A leader needs at least 3 votes before it can
+   be a swap target.  Directly addresses the n=1 leader case.
+
+4. No downgrade branch.  A socket already on best_i has no better
+   target and is skipped.  Previously the code targeted second_i in
+   that case — a strict downgrade that could thrash the socket between
+   best and second-best.
+
+5. SWAP_BAD_FIRST=1, SWAP_BAD_LATER=2.  First rescue fires on a single
+   bad checkpoint (faster for 30s+ videos); subsequent swaps need two.
+
+6. Live tracker: best_i/best_v/second_i/second_v on struct remote_host,
+   refreshed on every vote via an incremental update.  Replaces the
+   ESTABLISHED snapshot (best_alt_i removed from conn_state).
+
+STATE_VERSION 5 -> 6.  Tags 0.4-26-custom.  Verified: 6 swaps in
+15 minutes, all targeting the current leader with a 3.3x margin,
+zero downgrades, no thrash.
+
 ## SESSION 2026-09-13 (FINAL) — 0.4.23 coverage fix, 0.4.24 long-socket voting
 
 Fleet on 0.4.24.  Tags `0.4-23-custom`, `0.4-24-custom`.  Freeze in effect
