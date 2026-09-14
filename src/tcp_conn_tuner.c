@@ -186,7 +186,7 @@ void summarize(struct bpftuner *tuner)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 6
+#define STATE_VERSION 7
 
 struct state_header {
         __u32 magic;

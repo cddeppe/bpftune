@@ -1,3 +1,24 @@
+bpftune (0.4.28) UNRELEASED; urgency=medium
+
+  * Add loss rate as a metric axis.  metric is now
+    rtt_term + rate_term + loss_term, where loss_term =
+    min(retrans/segs_out, LOSS_CAP_BP) / LOSS_CAP_BP * LOSS_SCALE
+    with LOSS_CAP_BP=200 (2.00%).  The met log line gains a loss=
+    field so the distribution can be observed live.
+  * Remove the hardcoded forced-BBR rescue in RETRANS_CB.  It
+    predated the per-destination metric and bypassed it: any
+    socket above ~1.56% loss was switched to BBR and its RTT_CB
+    flag cleared, so lossy sockets could never vote for any other
+    algorithm.  With loss now in the metric, the tuner can learn
+    per-path which algorithm handles loss best; the forced BBR
+    shortcut is no longer needed.  The TCP_THIN_LINEAR_TIMEOUTS
+    opt-in for lossy sockets is kept.
+  * STATE_VERSION 6 -> 7 (metric formula changed; old bucket
+    values are not comparable).  State file MUST be deleted on
+    deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 14:00:00 +0200
+
 bpftune (0.4.27) UNRELEASED; urgency=medium
 
   * Re-anchor best_i/best_v on every ESTABLISHED.  The incremental
