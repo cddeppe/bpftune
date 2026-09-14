@@ -1,3 +1,16 @@
+bpftune (0.4.27) UNRELEASED; urgency=medium
+
+  * Re-anchor best_i/best_v on every ESTABLISHED.  The incremental
+    tracker in the vote path only compares best against second, so a
+    third algorithm can drift into a lower position without ever being
+    promoted through the pair.  Observed on the fleet as best_i
+    disagreeing with the top-3 output.  Fix persists minindex and
+    metric_min (already computed by the existing selection loop) into
+    remote_host->best_i/best_v.  No new variables — an earlier attempt
+    with an explicit min2index blew the 1M insn verifier budget.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 15:00:00 +0200
+
 bpftune (0.4.26) UNRELEASED; urgency=medium
 
   * Merge vote+swap back to a single RTT_CB program.  set_cong is now
