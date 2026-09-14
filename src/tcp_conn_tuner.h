@@ -68,7 +68,9 @@ struct conn_state {
     __u64 swap_count;
     __u64 bad_checkpoints;
     __u64 settle_until;
-    __u64 last_metric;     /* most recent metric sample for this socket; 0 = unset */
+    __u64 last_metric;      /* most recent metric sample; 0 = unset */
+    __u64 last_time_check;  /* ns of last 60s-cadence vote */
+    __u64 time_check_segs;  /* segments at last time check */
 };
 
 struct tcp_conn_metric {
@@ -135,7 +137,9 @@ struct remote_host {
 #define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
 #define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
 #define SWAP_MAX       2
-#define T_SETTLE_NS    (5ULL * 1000000000ULL)
+#define T_SETTLE_NS      (60ULL * 1000000000ULL)
+#define T_TIME_CHECK_NS  (60ULL * 1000000000ULL)  /* supplementary vote cadence */
+#define TIME_CHECK_MIN_SEGS 1000  /* require progress between checks */
 
 /* Minimum instances before a bucket is written to the persistent
  * state file.  One-off destinations never accumulate enough samples
