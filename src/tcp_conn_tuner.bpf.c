@@ -225,7 +225,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     __u64 now;
 
     switch (ops->op) {
-    case BPF_SOCK_OPS_RTT_CB:
+    case BPF_SOCK_OPS_RTT_CB: {
+        bool time_check = false;
         if (!sk)
             return 1;
         tps = bpf_skc_to_tcp_sock(sk);
@@ -239,28 +240,45 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         if (!next)
             next = 1000;
         segs = (__u64)ops->segs_out + (__u64)ops->segs_in;
-        if (segs < next)
-            return 1;
-        smin = (__u64)tps->rtt_min.s[0].v;
-        savg = (__u64)(tps->srtt_us >> 3);
-        sinter = (__u64)tps->rate_interval_us;
-        srate_raw = (__u64)tps->rate_delivered;
-        smss = (__u64)tps->mss_cache;
-        srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
-        bpf_printk("midsamp cookie=%llu port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
-                   bpf_get_socket_cookie(ops), ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
-        switch (next) {
-        case 1000:   *nextp = 5000;    break;
-        case 5000:   *nextp = 10000;   break;
-        case 10000:  *nextp = 25000;   break;
-        case 25000:  *nextp = 100000;  break;
-        case 100000: *nextp = 500000;  break;
-        case 500000: *nextp = 1000000; break;
-        default:     *nextp = ~((__u64)0);
+        if (segs < next) {
+            /* Not at a segment checkpoint.  Time-based vote: fires when
+             * 60s have elapsed and the socket advanced since last check.
+             * Keeps long-lived sockets responsive once they are past
+             * the 1M segment rung (where nextp is ~0). */
+            statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
+            if (!statep)
+                return 1;
+            now = bpf_ktime_get_ns();
+            if (now - statep->last_time_check < T_TIME_CHECK_NS ||
+                segs < statep->time_check_segs + TIME_CHECK_MIN_SEGS)
+                return 1;
+            statep->last_time_check = now;
+            statep->time_check_segs = segs;
+            time_check = true;
         }
-        if (next < METRIC_TRIGGER_SEGS)
-            return 1;
+        if (!time_check) {
+            smin = (__u64)tps->rtt_min.s[0].v;
+            savg = (__u64)(tps->srtt_us >> 3);
+            sinter = (__u64)tps->rate_interval_us;
+            srate_raw = (__u64)tps->rate_delivered;
+            smss = (__u64)tps->mss_cache;
+            srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
+            bpf_printk("midsamp cookie=%llu port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
+                       bpf_get_socket_cookie(ops), ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
+            switch (next) {
+            case 1000:   *nextp = 5000;    break;
+            case 5000:   *nextp = 10000;   break;
+            case 10000:  *nextp = 25000;   break;
+            case 25000:  *nextp = 100000;  break;
+            case 100000: *nextp = 500000;  break;
+            case 500000: *nextp = 1000000; break;
+            default:     *nextp = ~((__u64)0);
+            }
+            if (next < METRIC_TRIGGER_SEGS)
+                return 1;
+        }
         break;
+    }
     case BPF_SOCK_OPS_STATE_CB: {
         int state = ops->args[1];
         switch (state) {
@@ -368,17 +386,31 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 best_alt = ~((__u64)0);
         __u8 best_alt_i = 0;
 
-        if (remote_host->best_v != 0 && s != remote_host->best_i) {
-            __u8 bi = (__u8)(remote_host->best_i & (NUM_TCP_CONN_METRICS - 1));
-            if (remote_host->metrics[bi].metric_count >= MIN_LEADER_TRUST) {
-                best_alt = remote_host->best_v;
-                best_alt_i = bi;
+        if (remote_host->best_v != 0) {
+            if (s != remote_host->best_i) {
+                /* Socket on non-leader: target the leader. */
+                __u8 bi = (__u8)(remote_host->best_i & (NUM_TCP_CONN_METRICS - 1));
+                if (remote_host->metrics[bi].metric_count >= MIN_LEADER_TRUST) {
+                    best_alt = remote_host->best_v;
+                    best_alt_i = bi;
+                }
+            } else if (remote_host->second_v != 0) {
+                /* Socket on leader but leader struggling for THIS socket:
+                 * target second-best.  Since second_v >= best_v, the
+                 * 1.25x margin bar is naturally higher here, so this
+                 * only fires when the gap between top two is small and
+                 * the socket is clearly worse than either. */
+                __u8 si = (__u8)(remote_host->second_i & (NUM_TCP_CONN_METRICS - 1));
+                if (remote_host->metrics[si].metric_count >= MIN_LEADER_TRUST) {
+                    best_alt = remote_host->second_v;
+                    best_alt_i = si;
+                }
             }
         }
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
 
-        if (statep && !is_close && statep->swap_count < SWAP_MAX &&
+        if (statep && !is_close &&
             now >= statep->settle_until &&
             best_alt != ~((__u64)0) &&
             statep->last_metric != 0 &&

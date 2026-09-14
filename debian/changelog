@@ -1,3 +1,27 @@
+bpftune (0.4.29) UNRELEASED; urgency=medium
+
+  * Add a time-based supplementary vote: every 60 seconds, if the
+    socket has advanced by >= 1000 segments since the last time
+    check, the vote + swap decision runs even if no segment
+    checkpoint was reached.  Fixes the case where a long-lived
+    socket (past the 1M rung, where nextp is ~0) can go many
+    minutes without re-evaluation while the path degrades.
+  * Raise the post-swap settle window from 5s to 60s, matching
+    the time-check cadence.  This is the rate limiter now.
+  * Remove SWAP_MAX.  No total cap per socket; a long socket can
+    swap as often as needed, at most once per settle window.
+  * Swap decision: when the socket is on best_i and best_i's
+    metric is worse than second_i's by 1.25x for this socket,
+    swap to second_i.  Handles the case where the leader is
+    performing badly for a particular socket but the bucket's
+    EMA hasn't caught up yet.  Because second_v >= best_v, the
+    1.25x bar is naturally higher than the normal case, so this
+    fires rarely.
+  * STATE_VERSION 7 -> 8 (struct conn_state gained two fields).
+    State file MUST be deleted on deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 16:00:00 +0200
+
 bpftune (0.4.28) UNRELEASED; urgency=medium
 
   * Add loss rate as a metric axis.  metric is now
