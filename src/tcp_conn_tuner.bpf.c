@@ -185,6 +185,16 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                 }
             }
             minindex &= (NUM_TCP_CONN_METRICS - 1);
+            /* Re-anchor the swap-target tracker to the true best on every
+             * ESTABLISHED.  The incremental update in the vote path only
+             * compares best vs second, so a third algorithm can drift into
+             * a lower position without ever being promoted through the
+             * pair.  No new variables — the loop already found minindex
+             * and metric_min; we just persist them. */
+            if (remote_host->metrics[minindex].metric_count > 0) {
+                remote_host->best_i = minindex;
+                remote_host->best_v = metric_min;
+            }
             if (min2 == ~((__u64)0) || metric_min * 5 > min2 * 4)
                 s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 4);
             else
