@@ -485,6 +485,10 @@ Upstream (unchanged code inherited from oracle/bpftune):
 Self-inflicted (from the 16-algorithm expansion we added):
 5. cdg metric loop — kernel rejects cdg from `bpf_setsockopt`; the failure path
    wasn't checked, so cdg's metric stayed at 0 and won every comparison.
+   Note: the unchecked-return pattern is inherited from upstream, but the
+   manifestation is ours — upstream ships 4 algorithms that all set
+   successfully on this kernel, so the bug could not fire there.  It became
+   real the moment we added cdg.
 
 ---
 
