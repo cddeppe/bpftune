@@ -133,8 +133,9 @@ struct remote_host {
  * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
  * ssthresh, so early samples on the new algorithm are a cold start. */
 #define SWAP_MARGIN_PCT 125     /* last_metric >= best_alt * 125 / 100 fires */
-#define SWAP_BAD_FIRST 1   /* checkpoints before first swap */
+#define SWAP_BAD_FIRST      2   /* checkpoints before first swap */
 #define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
+#define SWAP_BAD_DESPERATE_PCT 200  /* 2.0x leader -> immediate fire */
 #define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
 #define SWAP_MAX       2
 #define T_SETTLE_NS      (60ULL * 1000000000ULL)
