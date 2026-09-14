@@ -174,17 +174,14 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
 
         {
             __u64 min2 = ~((__u64)0);
-            __u8 min2index = 0;
             for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
                 __u64 v = remote_host->metrics[i].metric_value;
                 if (v < metric_min) {
                     min2 = metric_min;
-                    min2index = minindex;
                     metric_min = v;
                     minindex = i;
                 } else if (v < min2) {
                     min2 = v;
-                    min2index = i;
                 }
             }
             minindex &= (NUM_TCP_CONN_METRICS - 1);
@@ -196,22 +193,6 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
             s &= (NUM_TCP_CONG_ALGS - 1);
             if (set_cong(ops, s))
                 remote_host->metrics[s].metric_value = ~((__u64)0);
-
-            /* Snapshot the best alternative for this socket.  If greedy
-             * picked the best algo (minindex), the alternative is the
-             * second-best (min2index); otherwise (exploration picked a
-             * non-best algo), the alternative is minindex itself.  RTT_CB
-             * reads this snapshot rather than rescanning 16 slots on every
-             * checkpoint (that rescan is what blew the verifier budget). */
-            {
-                struct conn_state *csp = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
-                if (csp) {
-                    if (s == minindex)
-                        csp->best_alt_i = (min2 == ~((__u64)0)) ? ~((__u64)0) : (__u64)min2index;
-                    else
-                        csp->best_alt_i = (__u64)minindex;
-                }
-            }
         }
     }
     return 1;
@@ -372,11 +353,15 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 best_alt = ~((__u64)0);
         __u8 best_alt_i = 0;
 
-        if (statep && statep->best_alt_i < NUM_TCP_CONN_METRICS) {
-            __u8 alt = (__u8)(statep->best_alt_i & (NUM_TCP_CONN_METRICS - 1));
-            if (alt != s && remote_host->metrics[alt].metric_count > 0) {
-                best_alt = remote_host->metrics[alt].metric_value;
-                best_alt_i = alt;
+        if (remote_host->best_v != 0) {
+            if (s == remote_host->best_i) {
+                if (remote_host->second_v != 0) {
+                    best_alt = remote_host->second_v;
+                    best_alt_i = (__u8)remote_host->second_i;
+                }
+            } else {
+                best_alt = remote_host->best_v;
+                best_alt_i = (__u8)remote_host->best_i;
             }
         }
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
@@ -406,6 +391,33 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             m->metric_value += (metric - m->metric_value) / __div;
         else
             m->metric_value -= (m->metric_value - metric) / __div;
+    }
+    {
+        __u64 v = m->metric_value;
+        if (v != 0 && v != ~((__u64)0)) {
+            if (s == remote_host->best_i) {
+                remote_host->best_v = v;
+            } else if (s == remote_host->second_i) {
+                remote_host->second_v = v;
+            } else if (remote_host->best_v == 0 || v < remote_host->best_v) {
+                remote_host->second_i = remote_host->best_i;
+                remote_host->second_v = remote_host->best_v;
+                remote_host->best_i = s;
+                remote_host->best_v = v;
+            } else if (remote_host->second_v == 0 || v < remote_host->second_v) {
+                remote_host->second_i = s;
+                remote_host->second_v = v;
+            }
+            if (remote_host->best_v != 0 && remote_host->second_v != 0 &&
+                remote_host->second_v < remote_host->best_v) {
+                __u64 ti = remote_host->best_i;
+                __u64 tv = remote_host->best_v;
+                remote_host->best_i = remote_host->second_i;
+                remote_host->best_v = remote_host->second_v;
+                remote_host->second_i = ti;
+                remote_host->second_v = tv;
+            }
+        }
     }
     m->metric_count++;
     if (greedy)
