@@ -379,8 +379,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 
     now = bpf_ktime_get_ns();
 
-    if (statep && !is_close)
+    if (statep && !is_close) {
         statep->last_metric = metric;
+        /* Track the best reading this socket has ever produced, and
+         * which algorithm it was on at the time.  Used by the freeze
+         * path once enough swaps have accumulated.  Skip the ~0
+         * poisoned-metric sentinel and the 0 (unset) sentinel. */
+        if (metric != 0 && metric != ~((__u64)0) &&
+            (statep->best_seen_metric == 0 ||
+             metric < statep->best_seen_metric)) {
+            statep->best_seen_metric = metric;
+            statep->best_seen_alg = s;
+        }
+    }
 
     {
         __u64 best_alt = ~((__u64)0);
@@ -410,41 +421,72 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
 
-        if (statep && !is_close &&
-            now >= statep->settle_until &&
-            best_alt != ~((__u64)0) &&
-            statep->last_metric != 0 &&
-            statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT) {
-            statep->bad_checkpoints++;
-            {
-                /* Two-tier trigger.  Very bad sockets (~2x the
-                 * leader) fire immediately; moderately bad ones need
-                 * SWAP_BAD_FIRST (first swap) or SWAP_BAD_LATER
-                 * (subsequent) consecutive checkpoints.  The normal
-                 * tier filters sockets whose metric oscillates around
-                 * the 1.25x margin -- those are churn, not rescue. */
-                bool desperate = (statep->last_metric * 100 >=
-                                  best_alt * SWAP_BAD_DESPERATE_PCT);
-                __u64 needed = (statep->swap_count == 0) ? SWAP_BAD_FIRST : SWAP_BAD_LATER;
-                if (desperate || statep->bad_checkpoints >= needed) {
-                    /* Capture diagnostics BEFORE set_cong.  Helper call
-                     * can clobber register state; read-after-helper was
-                     * returning 0 in practice. */
-                    __u64 bc_fire = statep->bad_checkpoints;
-                    __u64 ac = remote_host->metrics[s].metric_count;
-                    __u8 from_i = s;
-                    __u8 to_i = best_alt_i;
-                    int d_flag = desperate ? 1 : 0;
-                    if (!set_cong(ops, best_alt_i)) {
-                        statep->swap_count++;
-                        statep->settle_until = now + T_SETTLE_NS;
-                        statep->last_metric = 0;
-                        statep->bad_checkpoints = 0;
-                        bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=%d",
-                                   bpf_get_socket_cookie(ops), from_i, to_i,
-                                   bc_fire, ac, d_flag);
+        if (statep && !is_close) {
+            bool margin_met = (best_alt != ~((__u64)0) &&
+                               statep->last_metric != 0 &&
+                               statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT);
+            bool desperate = (margin_met &&
+                              statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT);
+
+            if (now < statep->settle_until) {
+                /* settle window -- wait */
+            } else if (desperate) {
+                /* Desperate tier fires regardless of frozen.  A socket
+                 * at >=2x the leader has met a real change; the freeze
+                 * only insulates against moderate churn. */
+                __u64 bc_fire = statep->bad_checkpoints;
+                __u64 ac = remote_host->metrics[s].metric_count;
+                __u8 from_i = s;
+                __u8 to_i = best_alt_i;
+                if (!set_cong(ops, best_alt_i)) {
+                    statep->swap_count++;
+                    statep->settle_until = now + T_SETTLE_NS;
+                    statep->last_metric = 0;
+                    statep->bad_checkpoints = 0;
+                    bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1",
+                               bpf_get_socket_cookie(ops), from_i, to_i,
+                               bc_fire, ac);
+                }
+            } else if (margin_met && !statep->frozen) {
+                if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
+                    /* FREEZE: go to the algorithm on which this socket
+                     * looked best, then stop trying.  Only fires when
+                     * not desperate, so real change still gets through. */
+                    int fret = 0;
+                    __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
+                    __u8 tgt8 = (__u8)tgt;
+                    if (statep->best_seen_metric != 0 && tgt8 != s)
+                        fret = set_cong(ops, tgt8);
+                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d",
+                               bpf_get_socket_cookie(ops), s, tgt8, fret);
+                    statep->frozen = 1;
+                    statep->settle_until = now + T_SETTLE_NS;
+                    statep->last_metric = 0;
+                    statep->bad_checkpoints = 0;
+                } else {
+                    /* Normal-tier swap. */
+                    statep->bad_checkpoints++;
+                    {
+                        __u64 needed = (statep->swap_count == 0) ? SWAP_BAD_FIRST : SWAP_BAD_LATER;
+                        if (statep->bad_checkpoints >= needed) {
+                            __u64 bc_fire = statep->bad_checkpoints;
+                            __u64 ac = remote_host->metrics[s].metric_count;
+                            __u8 from_i = s;
+                            __u8 to_i = best_alt_i;
+                            if (!set_cong(ops, best_alt_i)) {
+                                statep->swap_count++;
+                                statep->settle_until = now + T_SETTLE_NS;
+                                statep->last_metric = 0;
+                                statep->bad_checkpoints = 0;
+                                bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0",
+                                           bpf_get_socket_cookie(ops), from_i, to_i,
+                                           bc_fire, ac);
+                            }
+                        }
                     }
                 }
+            } else {
+                statep->bad_checkpoints = 0;
             }
         } else if (statep) {
             statep->bad_checkpoints = 0;

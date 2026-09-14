@@ -1,3 +1,25 @@
+bpftune (0.4.31) UNRELEASED; urgency=medium
+
+  * Per-socket freeze after FREEZE_AFTER_SWAPS (4) swaps.
+    A socket that has cycled through four different algorithms
+    without stabilising has a path or application problem that
+    no algorithm choice can fix.  Once swap_count reaches the
+    threshold, swap to whichever algorithm produced the lowest
+    metric on THIS socket, set frozen=1, and skip moderate swaps
+    for the rest of the connection.  Desperate readings (>= 2x the
+    leader) still fire: the freeze insulates only against moderate
+    churn, not against genuine path degradation.
+  * conn_state gains best_seen_metric, best_seen_alg, frozen.
+    best_seen_metric/alg update on every vote; the freeze path
+    reads them.  Skips the ~0 poisoned-metric and 0 unset
+    sentinels.
+  * freeze log line emitted (tag=freeze) so the pattern is
+    visible in the met log alongside swap lines.
+  * STATE_VERSION 8 -> 9.  State file MUST be deleted on
+    deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 22:00:00 +0200
+
 bpftune (0.4.30) UNRELEASED; urgency=medium
 
   * Two-tier swap trigger.
