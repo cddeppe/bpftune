@@ -25,6 +25,48 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-14 — 0.4.29 continuous monitoring, branch cleanup
+
+All four hosts on 0.4.29.  State file deleted on deploy (STATE_VERSION
+7 -> 8).  Observation window restarts.
+
+### What changed
+- Time-based supplementary vote: every 60s, if segs advanced by
+  >= 1000, run the vote + swap decision even without a segment
+  checkpoint.  Long sockets (past 1M segments) now get evaluated
+  continuously instead of never.
+- Settle window 5s -> 60s.  Rate limiter, not a total cap.
+- SWAP_MAX removed.  Sockets can swap as often as needed, at most once
+  per minute.
+- New second-best branch: when a socket is on best_i and best_i is
+  worse than second_i by 1.25x for this socket, swap to second_i.
+  Because second_v >= best_v, this threshold is naturally stricter than
+  the normal case; it should fire rarely.
+
+### Why
+The observation earlier today caught a socket running bbr at 4.9M that
+was swapped to veno and settled at 363K.  That confirmed the mechanism
+can produce large improvements.  But three of four swaps produced no
+post-swap vote -- they fired at 10K and the sockets closed before 25K.
+The time-check exists so that long sockets which previously went
+unmonitored past 1M segments get continuous attention.
+
+### Branch state
+main is now the working branch.  diag/metric-terms is a stale pointer at
+the same commit.  Future commits go to main; pull with `git pull --rebase
+origin main` on the builders.
+
+### What to read after 24-72h
+- Is the time-check firing?  Count met cookie lines -- should be
+  noticeably higher than 0.4.28.
+- Are swaps more frequent on long sockets?  `swap cookie` count should
+  be higher, especially on sockets with segs > 1M.
+- Are swaps improving sockets?  Compare swapped-socket metric drop
+  against the ~8% natural drift on non-swapped sockets.
+- Does the second-best branch fire at all?  If yes, is it firing on
+  genuine "leader struggling" cases or producing thrash between the
+  top two?
+
 ## SESSION 2026-09-14 — 0.4.28 loss term, forced-BBR removed
 
 Tag pending.  All four hosts deployed with state reset.  Previous freeze
