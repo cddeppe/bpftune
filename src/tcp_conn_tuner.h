@@ -68,9 +68,12 @@ struct conn_state {
     __u64 swap_count;
     __u64 bad_checkpoints;
     __u64 settle_until;
-    __u64 last_metric;      /* most recent metric sample; 0 = unset */
-    __u64 last_time_check;  /* ns of last 60s-cadence vote */
-    __u64 time_check_segs;  /* segments at last time check */
+    __u64 last_metric;       /* most recent metric sample; 0 = unset */
+    __u64 last_time_check;   /* ns of last 60s-cadence vote */
+    __u64 time_check_segs;   /* segments at last time check */
+    __u64 best_seen_metric;  /* lowest metric seen on this socket */
+    __u64 best_seen_alg;     /* algorithm it was running then */
+    __u64 frozen;            /* 1 = no more swaps on this socket */
 };
 
 struct tcp_conn_metric {
@@ -135,6 +138,11 @@ struct remote_host {
 #define SWAP_MARGIN_PCT 125     /* last_metric >= best_alt * 125 / 100 fires */
 #define SWAP_BAD_FIRST      2   /* checkpoints before first swap */
 #define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
+/* After this many swaps, freeze: go to the algorithm on which
+ * this socket performed best, and stop trying.  A socket that
+ * has cycled through this many algorithms and stayed bad has a
+ * path or app problem that no algorithm can fix. */
+#define FREEZE_AFTER_SWAPS 4
 #define SWAP_BAD_DESPERATE_PCT 200  /* 2.0x leader -> immediate fire */
 #define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
 #define SWAP_MAX       2
