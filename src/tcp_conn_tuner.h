@@ -33,7 +33,6 @@ enum tcp_cong_scenarios {
 
 #define CONN_TUNER_BPF "bpftune_conn_tuner"
 #define CONN_TUNER_VOTE_BPF "bpftune_conn_tuner_vote"
-#define CONN_TUNER_SWAP_BPF "bpftune_conn_tuner_swap"
 
 /* Expanded to 16 algorithms (must be a power of two for bitmask logic) */
 enum tcp_states {
@@ -69,7 +68,6 @@ struct conn_state {
     __u64 swap_count;
     __u64 bad_checkpoints;
     __u64 settle_until;
-    __u64 pending_swap;    /* 0 = none, else algo index + 1 */
     __u64 last_metric;     /* most recent metric sample for this socket; 0 = unset */
 };
 
@@ -118,7 +116,7 @@ struct remote_host {
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
 #define METRIC_MIN_SEGS 100
-#define METRIC_TRIGGER_SEGS 5000
+#define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
 /* Mid-socket swap policy.  Compare the current algorithm bucket EMA
  * against the best alternative bucket EMA - not a single socket
@@ -128,7 +126,9 @@ struct remote_host {
  * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
  * ssthresh, so early samples on the new algorithm are a cold start. */
 #define SWAP_MARGIN_PCT 125     /* last_metric >= best_alt * 125 / 100 fires */
-#define SWAP_BAD_BEFORE 2       /* consecutive bad checkpoints before swap */
+#define SWAP_BAD_FIRST 1   /* checkpoints before first swap */
+#define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
+#define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
 #define SWAP_MAX       2
 #define T_SETTLE_NS    (5ULL * 1000000000ULL)
 

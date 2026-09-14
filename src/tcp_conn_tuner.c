@@ -79,7 +79,6 @@ int init(struct bpftuner *tuner)
 	 */
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
-	bpftuner_cgroup_detach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
 
 	err = bpftuner_bpf_init(tcp_conn, tuner, NULL);
 	if (err)
@@ -101,9 +100,6 @@ int init(struct bpftuner *tuner)
 	if (err)
 		goto out;
 
-	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
-	if (err)
-		goto out;
 
 	err = bpftuner_tunables_init(tuner, ARRAY_SIZE(descs), descs,
 				     ARRAY_SIZE(scenarios), scenarios);
@@ -190,7 +186,7 @@ void summarize(struct bpftuner *tuner)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 5
+#define STATE_VERSION 6
 
 struct state_header {
         __u32 magic;
@@ -318,7 +314,6 @@ void fini(struct bpftuner *tuner)
 	bpftune_log(LOG_DEBUG, "calling fini for %s\n", tuner->name);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
-	bpftuner_cgroup_detach(tuner, CONN_TUNER_SWAP_BPF, BPF_CGROUP_SOCK_OPS);
         save_remote_host_map(tuner);
 	summarize(tuner);
 	bpftuner_bpf_fini(tuner);
