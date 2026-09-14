@@ -427,16 +427,22 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                   best_alt * SWAP_BAD_DESPERATE_PCT);
                 __u64 needed = (statep->swap_count == 0) ? SWAP_BAD_FIRST : SWAP_BAD_LATER;
                 if (desperate || statep->bad_checkpoints >= needed) {
+                    /* Capture diagnostics BEFORE set_cong.  Helper call
+                     * can clobber register state; read-after-helper was
+                     * returning 0 in practice. */
+                    __u64 bc_fire = statep->bad_checkpoints;
+                    __u64 ac = remote_host->metrics[s].metric_count;
+                    __u8 from_i = s;
+                    __u8 to_i = best_alt_i;
+                    int d_flag = desperate ? 1 : 0;
                     if (!set_cong(ops, best_alt_i)) {
-                        __u64 bc_fire = statep->bad_checkpoints;
-                        __u64 ac = remote_host->metrics[s].metric_count;
                         statep->swap_count++;
                         statep->settle_until = now + T_SETTLE_NS;
                         statep->last_metric = 0;
                         statep->bad_checkpoints = 0;
                         bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=%d",
-                                   bpf_get_socket_cookie(ops), s, best_alt_i,
-                                   bc_fire, ac, desperate ? 1 : 0);
+                                   bpf_get_socket_cookie(ops), from_i, to_i,
+                                   bc_fire, ac, d_flag);
                     }
                 }
             }
