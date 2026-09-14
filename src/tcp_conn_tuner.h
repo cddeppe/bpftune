@@ -70,7 +70,6 @@ struct conn_state {
     __u64 bad_checkpoints;
     __u64 settle_until;
     __u64 pending_swap;    /* 0 = none, else algo index + 1 */
-    __u64 best_alt_i;      /* snapshot best-alternative algo idx; ~0 = none */
     __u64 last_metric;     /* most recent metric sample for this socket; 0 = unset */
 };
 
@@ -96,6 +95,13 @@ struct remote_host {
     __u64 max_rate_delivered;
     __u64 instances;
     __u64 selection_count;
+    /* Incremental best and 2nd-best across metrics; refreshed on every
+     * vote.  best_v == 0 means unset.  Vote path reads these for a
+     * live swap target without a 16-iter loop. */
+    __u64 best_i;
+    __u64 best_v;
+    __u64 second_i;
+    __u64 second_v;
     struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
 };
 
@@ -112,7 +118,7 @@ struct remote_host {
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
 #define METRIC_MIN_SEGS 100
-#define METRIC_TRIGGER_SEGS 10000
+#define METRIC_TRIGGER_SEGS 5000
 #define METRIC_AVG_CAP 32
 /* Mid-socket swap policy.  Compare the current algorithm bucket EMA
  * against the best alternative bucket EMA - not a single socket
