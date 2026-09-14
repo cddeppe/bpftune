@@ -260,8 +260,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         srate_raw = (__u64)tps->rate_delivered;
         smss = (__u64)tps->mss_cache;
         srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
-        bpf_printk("midsamp port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
-                   ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
+        bpf_printk("midsamp cookie=%llu port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
+                   bpf_get_socket_cookie(ops), ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
         switch (next) {
         case 1000:   *nextp = 5000;    break;
         case 5000:   *nextp = 10000;   break;
@@ -349,8 +349,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 heal_rtt = 0, heal_rate = 0;
         metric = tcp_metric_calc(remote_host, min_rtt, avg_rtt, rate_delivered,
                                  &rtt_term, &rate_term, &heal_rtt, &heal_rate);
-        bpf_printk("met rport=%u alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu",
-                   bpf_ntohl(ops->remote_port),
+        bpf_printk("met cookie=%llu rport=%u alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu",
+                   bpf_get_socket_cookie(ops), bpf_ntohl(ops->remote_port),
                    s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term,
                    min_rtt, remote_host->min_rtt, avg_rtt);
         if (heal_rtt)
@@ -434,7 +434,7 @@ int bpftune_conn_tuner_swap(struct bpf_sock_ops *ops)
 	{
 		__u8 algo = (__u8)((pending - 1) & (NUM_TCP_CONG_ALGS - 1));
 		int sret = set_cong(ops, algo);
-		bpf_printk("swap-attempt algo=%u pending=%llu ret=%d", algo, pending, sret);
+		bpf_printk("swap-attempt cookie=%llu algo=%u pending=%llu ret=%d", bpf_get_socket_cookie(ops), algo, pending, sret);
 		if (!sret) {
 			statep->swap_count++;
 			statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
