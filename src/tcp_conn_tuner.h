@@ -115,6 +115,11 @@ struct remote_host {
  * making the throughput term effectively decorative even though it's
  * now producing real values. */
 #define DELIVERY_SCALE 8000000
+/* Loss term: penalizes retransmits as a fraction of our sent
+ * segments.  LOSS_CAP_BP is the loss rate in basis points that
+ * earns the full penalty; above it the term saturates.  200 = 2%. */
+#define LOSS_CAP_BP   200
+#define LOSS_SCALE    8000000
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32

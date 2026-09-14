@@ -116,15 +116,11 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
         if (ops->total_retrans > (ops->segs_out >> DROP_SHIFT)) {
             if (sk)
                 statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
-            if (!statep || statep->state != TCP_STATE_CONG_BBR) {
-                if (!statep && !tcp_thin_lto) {
-                    int one = 1;
-                    if (!bpf_setsockopt(ops, SOL_TCP, TCP_THIN_LINEAR_TIMEOUTS,
-                                        &one, sizeof(one)))
-                        tcp_thin_lto_choices++;
-                }
-                (void)set_cong(ops, TCP_STATE_CONG_BBR);
-                bpf_sock_ops_cb_flags_set(ops, BPF_SOCK_OPS_STATE_CB_FLAG);
+            if (!statep && !tcp_thin_lto) {
+                int one = 1;
+                if (!bpf_setsockopt(ops, SOL_TCP, TCP_THIN_LINEAR_TIMEOUTS,
+                                    &one, sizeof(one)))
+                    tcp_thin_lto_choices++;
             }
         }
         return 1;
@@ -336,14 +332,23 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     m = &remote_host->metrics[s];
 
     {
-        __u64 rtt_term = 0, rate_term = 0;
+        __u64 rtt_term = 0, rate_term = 0, loss_term = 0;
         __u64 heal_rtt = 0, heal_rate = 0;
         metric = tcp_metric_calc(remote_host, min_rtt, avg_rtt, rate_delivered,
                                  &rtt_term, &rate_term, &heal_rtt, &heal_rate);
-        bpf_printk("met cookie=%llu rport=%u alg=%d segs=%llu val=%llu rtt=%llu rate=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu",
+        {
+            __u64 __rtx = (__u64)tp->total_retrans;
+            __u64 __sout = (__u64)tp->segs_out;
+            __u64 loss_bp = __sout ? (__rtx * 10000) / __sout : 0;
+            if (loss_bp > LOSS_CAP_BP)
+                loss_bp = LOSS_CAP_BP;
+            loss_term = (loss_bp * LOSS_SCALE) / LOSS_CAP_BP;
+            metric += loss_term;
+        }
+        bpf_printk("met cookie=%llu rport=%u alg=%d segs=%llu val=%llu rtt=%llu rate=%llu loss=%llu smrtt=%llu bmrtt=%llu avgrtt=%llu",
                    bpf_get_socket_cookie(ops), bpf_ntohl(ops->remote_port),
                    s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term,
-                   min_rtt, remote_host->min_rtt, avg_rtt);
+                   loss_term, min_rtt, remote_host->min_rtt, avg_rtt);
         if (heal_rtt)
             bpf_printk("heal_rtt smrtt=%llu newref=%llu",
                        (unsigned long long)min_rtt,
