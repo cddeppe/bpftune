@@ -9,15 +9,15 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `diag/metric-terms`)
 - `main` untouched since 0.4.9 (tag `0.4-9-custom`). Everything since lives on the branch.
-- Latest commit: `dffab80`
-- Latest tag: `0.4-20-custom`
+- Latest commit: `0eb764c`
+- Latest tag: `0.4-26-custom`
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.21** | capture → /tmp/met.log |
-| Builder | amd64 | **0.4.20** | runs git push origin |
-| Target | amd64 | **0.4.20** | |
-| Builder | aarch64 | **0.4.20** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.26** | capture → /tmp/met.log |
+| Builder | amd64 | **0.4.26** | runs git push origin |
+| Target | amd64 | **0.4.26** | |
+| Builder | aarch64 | **0.4.26** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -296,6 +296,22 @@ Versions **0.4.10 through 0.4.14**.
   Diagnostics added incrementally.
 - **0.4.15 → 0.4.19**: outlier rejection, reference healing, heal diagnostics,
   destination keying, mid-flight diagnostic.
+- **0.4-20**: fixed-size metric sampling.  Sockets vote once at 10K segments
+  instead of only at close.
+- **0.4-21**: `metric_value` → count-based incremental mean (replaces the
+  25%%-step `rl_update` that caused leader churn).  Cold-start coverage.
+  Pollution filter (127/8, 169.254/16, fe80::/10).  `remote_port` on midsamp
+  and closport.
+- **0.4-22**: margin-gated exploitation; coverage 5→2; tie-break switch
+  dropped to fit the verifier.
+- **0.4-23**: coverage counts SELECTIONS, not votes.  Fixes a bug where the
+  same algorithm was assigned until one of its sockets happened to vote.
+- **0.4-24**: vote at every checkpoint (10K..1M).  Long-lived sockets now
+  carry more weight than short ones.
+- **0.4-25**: mid-socket swap.  Trigger moved from rank-at-assign to live
+  socket metric vs live bucket leader.  Live `best_i`/`second_i` on remote_host.
+- **0.4-26**: merged vote+swap back to one RTT_CB program (3→2).  `MIN_LEADER_TRUST=3`;
+  no downgrade branch; `SWAP_BAD_FIRST=1`, `SWAP_BAD_LATER=2`.
 
 ---
 
@@ -414,8 +430,14 @@ Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
    leaders flip. Healing helps but doesn't stabilize busy buckets.
 2. Fixed-size vs time-based trigger for long-socket sampling (informs this session).
 3. Link-local filter — 169.254.x.x and fe80::/10 don't need CC tuning.
-4. Branch merge to `main` + 0.4.20 release — everything since 0.4.9 lives on `diag/metric-terms`.
-5. Add `remote_port` to `midsamp` / `closport` printks for reliable pairing.
+4. ~~Branch merge to `main` + 0.4.20 release~~ — done.
+5. ~~Add `remote_port` to `midsamp` / `closport`~~ — done in 0.4.21.
+6. Does the mid-socket swap actually help?  Six swaps on 2026-09-14 targeted
+   the current bucket leader with a clean margin; no thrash observed.
+   Post-swap improvement is committed to the log (cookie= on met lines) but
+   not yet quantified across many sockets.
+7. Short-video rescue — sub-15s videos cannot accumulate the checkpoints
+   needed before close.  Physics limit, not a design gap.
 
 ## Working style (things that bite us)
 - **User switches hosts manually.** Give commands for whichever host they're on and
