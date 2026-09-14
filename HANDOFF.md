@@ -25,6 +25,90 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-14 — 0.4.27 tracker re-anchor shipped
+
+Tag `0.4-27-custom`, all four hosts active.  Freeze resumes until 2026-09-21.
+
+### What 0.4.27 fixes
+
+Bug found in 0.4.25/0.4.26: the incremental tracker in the vote path
+only compared best_i against second_i on each vote.  A third algorithm
+could drift into a lower position without ever being promoted through
+the pair, so best_i ended up pointing at the #2 algorithm while the
+top-3 output on the tool showed the true #1.  Observed on the fleet as
+`best_i=cubic` disagreeing with a top-3 whose first entry was westwood.
+
+Fix: at the end of the ESTABLISHED selection loop, persist that loop's
+own minindex and metric_min into remote_host->best_i/best_v.  Both
+values are already computed by the loop — no new variables, no verifier
+cost.  State count went 1077 -> 1087.
+
+### Why not the more obvious fixes
+
+- Explicit min2index tracking: blew the 1M insn verifier budget.  State
+  count 1077 -> 23392.  The verifier's state explosion is driven by the
+  number of variables live across loop iterations, not instruction
+  count.
+- Userspace re-anchor via bpf_map_update_elem: designed but not built.
+  Would require a periodic hook in the daemon; the tuner ops struct
+  (struct bpftuner in include/bpftune/bpftune.h) has init/fini/
+  event_handler/summarize slots but no periodic slot.  bpftune.c:490
+  has the mainloop (bpftune_ring_buffer_poll, interval=100).  Adding a
+  periodic slot is the cleaner long-term design but not necessary given
+  the ESTABLISHED re-anchor fits.
+
+### Verification
+
+Heavy host after deploy: best_i and top-3 leader agree exactly on 6 of
+7 buckets.  The seventh shows both at 4.4M on a one-decimal display —
+either a genuine tie or a rounding ambiguity, not a real mismatch.
+
+### State file note
+
+0.4.27 did NOT require a state-file delete.  struct remote_host layout
+is unchanged from 0.4.26; only additional writes go into existing
+fields.
+
+### The 0.4.26 swap behavioral data
+
+Between 0.4.26 and 0.4.27, on the heavy host:
+- 6 swaps fired in a 15-minute window
+- All 6 targeted the current bucket leader (algo=8, reno)
+- Zero cases of "swap a socket off the leader" — the downgrade-branch
+  removal holds
+- No thrash pattern
+
+The question that remains open: does the swap *improve* the socket's
+own performance afterward?  Cookie-tagged met lines make this
+measurable.  Sample set is not yet large enough to say.
+
+### Freeze window
+
+2026-09-14 through 2026-09-21.  Daily at 04:00 a snapshot; 04:05 a
+leaderboard dump to /var/log/bpftune-leaders/.  On 2026-09-21:
+
+    ls -la /var/log/bpftune-leaders/
+    for f in /var/log/bpftune-leaders/*.txt; do echo "== $f"; head -10 "$f"; done
+
+Look for: home-IP leader stable by day 2-3; mid-traffic buckets trend
+toward one leader; low-traffic tail neutral.  If high-traffic buckets
+churn, first thing to look at is threshold values in
+tcp_conn_tuner.h (SWAP_MARGIN_PCT, MIN_LEADER_TRUST).
+
+### Watch-list for the freeze
+
+- All buckets showed `TIGHT (x1.0)` — the metric's discrimination across
+  algorithms on busy buckets is low.  Either the algorithms genuinely
+  perform similarly on these paths, or the metric isn't picking up the
+  differences.  Worth a direct look at rtt_term and rate_term separately
+  across the 16 algorithms for one busy bucket.
+- Orphan BPF programs and duplicate maps can accumulate across deploys
+  (found two on ip-172-26-13-90, one on vps-3959, from pre-0.4.18 and
+  ad-hoc starts).  Weekly check:
+      sudo bpftool prog show 2>/dev/null | grep -cE 'name .*conn_tuner'
+      sudo bpftool map show name remote_host_map 2>&1 | grep -c 'name'
+  Expected: 2 programs, 1 map.  Anything higher means an orphan.
+
 ## SESSION 2026-09-13 (FINAL) — 0.4.23 coverage fix, 0.4.24 long-socket voting
 
 Fleet on 0.4.24.  Tags `0.4-23-custom`, `0.4-24-custom`.  Freeze in effect
