@@ -1,3 +1,28 @@
+bpftune (0.4.30) UNRELEASED; urgency=medium
+
+  * Two-tier swap trigger.
+    - Desperate tier: socket_metric >= best_v * 2.00 fires
+      immediately, regardless of bad_checkpoints.  Very bad
+      sockets do not wait.
+    - Normal tier: socket_metric >= best_v * 1.25 requires
+      SWAP_BAD_FIRST (2, changed from 1) consecutive bad
+      checkpoints on the first swap; SWAP_BAD_LATER (2) on
+      subsequent swaps.
+    Observed churn: on a bucket where the top-8 algorithms were
+    within 20% of each other, sockets on 1.25-1.5x readings
+    swapped back and forth as the leader moved -- 137 swaps/day
+    on the heavy host, with a dip in user experience on YouTube
+    Shorts.  The two-tier split targets that: sockets in the
+    churn band wait for confirmation, sockets genuinely stuck
+    fire immediately.
+  * Swap printk extended with bc= (bad_checkpoints at fire),
+    ac= (source algorithm bucket vote count), and d= (1 = fired
+    via desperate tier, 0 = normal tier).  So we can measure
+    which tier produced which outcome over the next day.
+  * No STATE_VERSION bump (no struct field changes).
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 20:00:00 +0200
+
 bpftune (0.4.29) UNRELEASED; urgency=medium
 
   * Add a time-based supplementary vote: every 60 seconds, if the
