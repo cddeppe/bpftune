@@ -353,30 +353,34 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 best_alt = ~((__u64)0);
         __u8 best_alt_i = 0;
 
-        if (remote_host->best_v != 0) {
-            if (s == remote_host->best_i) {
-                if (remote_host->second_v != 0) {
-                    best_alt = remote_host->second_v;
-                    best_alt_i = (__u8)remote_host->second_i;
-                }
-            } else {
+        if (remote_host->best_v != 0 && s != remote_host->best_i) {
+            __u8 bi = (__u8)(remote_host->best_i & (NUM_TCP_CONN_METRICS - 1));
+            if (remote_host->metrics[bi].metric_count >= MIN_LEADER_TRUST) {
                 best_alt = remote_host->best_v;
-                best_alt_i = (__u8)remote_host->best_i;
+                best_alt_i = bi;
             }
         }
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
 
         if (statep && !is_close && statep->swap_count < SWAP_MAX &&
-            statep->pending_swap == 0 &&
             now >= statep->settle_until &&
             best_alt != ~((__u64)0) &&
             statep->last_metric != 0 &&
             statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT) {
             statep->bad_checkpoints++;
-            if (statep->bad_checkpoints >= SWAP_BAD_BEFORE) {
-                statep->pending_swap = (__u64)best_alt_i + 1;
-                statep->bad_checkpoints = 0;
+            {
+                __u64 needed = (statep->swap_count == 0) ? SWAP_BAD_FIRST : SWAP_BAD_LATER;
+                if (statep->bad_checkpoints >= needed) {
+                    if (!set_cong(ops, best_alt_i)) {
+                        statep->swap_count++;
+                        statep->settle_until = now + T_SETTLE_NS;
+                        statep->last_metric = 0;
+                        statep->bad_checkpoints = 0;
+                        bpf_printk("swap cookie=%llu from=%u to=%u",
+                                   bpf_get_socket_cookie(ops), s, best_alt_i);
+                    }
+                }
             }
         } else if (statep) {
             statep->bad_checkpoints = 0;
@@ -425,35 +429,3 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     return 1;
 }
 
-
-SEC("sockops")
-int bpftune_conn_tuner_swap(struct bpf_sock_ops *ops)
-{
-	struct bpf_sock *sk = ops->sk;
-	struct conn_state *statep;
-	__u64 pending;
-
-	if (ops->op != BPF_SOCK_OPS_RTT_CB)
-		return 1;
-	if (!sk)
-		return 1;
-	statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
-	if (!statep)
-		return 1;
-	pending = statep->pending_swap;
-	if (!pending)
-		return 1;
-	{
-		__u8 algo = (__u8)((pending - 1) & (NUM_TCP_CONG_ALGS - 1));
-		int sret = set_cong(ops, algo);
-		bpf_printk("swap-attempt cookie=%llu algo=%u pending=%llu ret=%d", bpf_get_socket_cookie(ops), algo, pending, sret);
-		if (!sret) {
-			statep->swap_count++;
-			statep->settle_until = bpf_ktime_get_ns() + T_SETTLE_NS;
-                        statep->last_metric = 0;
-			bpf_printk("swap-exec algo=%u pending=%llu", algo, pending);
-		}
-		statep->pending_swap = 0;
-	}
-	return 1;
-}

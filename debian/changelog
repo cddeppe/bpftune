@@ -1,3 +1,26 @@
+bpftune (0.4.26) UNRELEASED; urgency=medium
+
+  * Merge vote+swap back to a single RTT_CB program.  set_cong is now
+    called inline from the vote path, removing the pending_swap field
+    and the cross-program queue.  Swaps fire in the same RTT_CB event
+    as the decision instead of on a later event.  Program count: 3 -> 2.
+  * METRIC_TRIGGER_SEGS 5000 -> 10000.  The 5K experiment biased the
+    metric: every socket 5K sample is roughly 10x lower than its 25K
+    sample, so 5K samples dominated the leader ranking and cubic
+    took over on n=1.
+  * MIN_LEADER_TRUST=3.  A leader needs at least 3 votes before it
+    can be a swap target.
+  * No downgrade branch.  A socket already on best_i has no better
+    target and is skipped; previously the code targeted second_i, a
+    strict downgrade that could thrash between best and second-best.
+  * SWAP_BAD_FIRST=1, SWAP_BAD_LATER=2.  First rescue fires on a
+    single bad checkpoint (faster rescue for 30s+ videos); subsequent
+    swaps still require two, to prevent thrash.
+  * STATE_VERSION 5 -> 6: pending_swap removed.  State file must be
+    deleted on deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Mon, 14 Sep 2026 05:00:00 +0200
+
 bpftune (0.4.25) UNRELEASED; urgency=medium
 
   * Mid-socket algorithm swap: when a socket is assigned a bottom-half
