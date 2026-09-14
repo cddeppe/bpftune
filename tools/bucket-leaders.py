@@ -100,7 +100,10 @@ for entry in entries:
     if has_leader:
         bi = v.get('best_i', -1)
         bv = v.get('best_v', 0)
+        bcm = v['metrics'][bi]['metric_count'] if 0 <= bi < len(v['metrics']) else 0
         best_str = "%s=%s" % (alg_name(bi), fmt_val(bv))
+        if bcm < TRUST_MIN:
+            best_str += " [untrusted n%d]" % bcm
         if v.get('second_v', 0) != 0:
             si = v.get('second_i', -1)
             sv = v.get('second_v', 0)
