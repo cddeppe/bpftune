@@ -25,6 +25,65 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-14 — 0.4.28 loss term, forced-BBR removed
+
+Tag pending.  All four hosts deployed with state reset.  Previous freeze
+data (through 2026-09-14) was on the 2-term metric and is NOT comparable;
+observation window restarts from 2026-09-14.
+
+### What changed
+
+1. Metric now has three terms: rtt_term + rate_term + loss_term.
+   loss_term = min(retrans/segs_out, LOSS_CAP_BP=200 [2.00%]) / LOSS_CAP_BP
+   * LOSS_SCALE (8M, same ceiling as the other two).  The met log line
+   gains a loss= field.
+
+2. Removed the hardcoded forced-BBR rescue in RETRANS_CB.  It switched
+   any socket above ~1.56% loss to BBR and cleared its RTT_CB flag, so
+   lossy sockets could never vote for any other algorithm — the metric
+   couldn't learn which algorithm handles loss best.  With loss now in
+   the metric, the tuner learns this.  Kept: the TCP_THIN_LINEAR_TIMEOUTS
+   opt-in for lossy sockets.
+
+3. STATE_VERSION 6 -> 7.  State file deleted on every host.
+   Verifier: ESTABLISHED 15238 insns / 1083 states, vote 3055 / 209.
+
+### Observation setup
+
+- /var/log/bpftune-met-YYYY-MM-DD.log on heavy host: continuous met log
+  capture (was /tmp/met.*.log previously; moved to /var/log so it
+  survives reboots).
+- Cron /etc/cron.d/bpftune-loss-hist (heavy host): 04:10 daily, writes
+  a histogram of loss= values from the previous day to
+  /var/log/bpftune-loss-hist-YYYY-MM-DD.txt.
+- Existing daily leaderboard snapshot (04:05) and the 4-slice JSON dump
+  (bpftune-tod cron, 00/06/12/18:05) continue.
+
+### What to read after 24-48h
+
+Histogram at /var/log/bpftune-loss-hist-DATE.txt:
+
+- Mostly loss=0 → the loss term is inert on this traffic; its removal of
+  forced-BBR was a cleanup, not a functional change.
+- Spread from 0 to 8,000,000 → the term is doing work; some sockets
+  penalized.
+- Saturated at 8,000,000 → 2% cap is too low; raise LOSS_CAP_BP.
+
+LOSS_CAP_BP and LOSS_SCALE are principled guesses, not derived from
+data.  Tune after the distribution is observed.
+
+### Question this session is answering
+
+Does the removal of forced-BBR change which algorithms win on lossy
+buckets?  If the leaderboards are identical to what they would have
+been with forced-BBR, the change was neutral and the shortcut wasn't
+actually costing anything.  If buckets that previously showed BBR
+winning now show something else (or tie more), the shortcut was
+biasing the results and we've learned something.
+
+The freeze previously scheduled to end 2026-09-21 now effectively ends
+2026-09-21 with the caveat that its first day's data is post-change.
+
 ## SESSION 2026-09-14 — 0.4.27 tracker re-anchor shipped
 
 Tag `0.4-27-custom`, all four hosts active.  Freeze resumes until 2026-09-21.
