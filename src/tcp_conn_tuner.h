@@ -74,6 +74,14 @@ struct conn_state {
     __u64 best_seen_metric;  /* lowest metric seen on this socket */
     __u64 best_seen_alg;     /* algorithm it was running then */
     __u64 frozen;            /* 1 = no more swaps on this socket */
+    /* Short-trend history.  Along with last_metric these give the
+     * socket's own last three samples.  Used by the flat-socket
+     * gate in the moderate swap tier (0.4.37): if max/min over the
+     * three is < 1.10 the current algorithm is not moving the
+     * socket, and a swap cannot help.  Reset to 0 on every swap
+     * (shape across an algorithm change is not meaningful). */
+    __u64 hist_1;
+    __u64 hist_2;
 };
 
 struct tcp_conn_metric {

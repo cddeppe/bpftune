@@ -1,3 +1,29 @@
+bpftune (0.4.37) UNRELEASED; urgency=medium
+
+  * Flat-socket gate on the moderate swap tier.
+    Over 340 swaps in the 09-14 + 09-15 met logs, binning by the
+    shape of the socket's own last three metric samples shows flat
+    sockets win only 7.9% (90.6% null, 1.6% loss) -- inside the
+    metric's own noise band.  Rising runs 57.9% win, oscillating
+    16.7%, falling 27.3%.  The moderate tier selects for flat:
+    78.5% of its fires are flat sockets vs 21.9% in desperate.  A
+    socket that is deteriorating climbs through 1.5x-2.0x fast and
+    trips the desperate bar at 2.0x; a flat socket sits at a fixed
+    ratio and eventually trips moderate on the 2-bad-check rule.
+  * Add hist_1/hist_2 to struct conn_state; the vote path shifts
+    the previous two samples and the swap path resets them.  Gate
+    the moderate-tier swap on max/min of the three >= 1.10.
+  * Desperate and insufficient-history sockets are untouched:
+    desperate fires on the 2x rule regardless of shape, and a
+    socket with fewer than three samples has not been judged yet
+    (42.4% win rate, the largest source of real wins besides
+    rising).
+  * Sk_storage only (conn_state); the persisted state file layout
+    is unchanged, STATE_VERSION stays at 12, no state file delete
+    needed on deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 20:00:00 +0200
+
 bpftune (0.4.36) UNRELEASED; urgency=medium
 
   * Userspace re-anchor for the tcp_conn_tuner tracker.
