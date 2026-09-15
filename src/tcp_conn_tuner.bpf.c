@@ -452,22 +452,41 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
              * last three samples are flat.  Only the moderate tier
              * is gated; the desperate tier still fires because the
              * socket is 2x off the leader regardless of shape. */
+            /* Classify flat over the valid subset of {last_metric,
+             * hist_1, hist_2}.  Require at least two valid samples.
+             *
+             * SWAP_BAD_FIRST=2 fires the first moderate swap after two
+             * consecutive bad votes.  On a fresh socket or one whose
+             * history was just zeroed by a swap, hist_2 is still 0 at
+             * that moment, so a strict three-sample gate can never
+             * fire -- which is exactly what happened in 0.4.37.  Data
+             * from the 09-14 + 09-15 logs (pre-gate): 2sample-flat
+             * wins 9-10%, same population as 3sample-flat (7.9%).
+             * 2sample-nonflat wins 45-50% and is naturally excluded
+             * by the max/min check.  1sample cannot form a ratio and
+             * falls through. */
             bool is_flat = false;
             {
                 __u64 v0 = statep->last_metric;
                 __u64 v1 = statep->hist_1;
                 __u64 v2 = statep->hist_2;
-                if (v0 != 0 && v0 != ~((__u64)0) &&
-                    v1 != 0 && v1 != ~((__u64)0) &&
-                    v2 != 0 && v2 != ~((__u64)0)) {
-                    __u64 mn = v0, mx = v0;
-                    if (v1 < mn) mn = v1;
-                    if (v1 > mx) mx = v1;
-                    if (v2 < mn) mn = v2;
-                    if (v2 > mx) mx = v2;
-                    if (mx * 100 < mn * 110)
-                        is_flat = true;
+                __u64 mn = 0, mx = 0;
+                int n = 0;
+                if (v0 != 0 && v0 != ~((__u64)0)) {
+                    mn = v0; mx = v0; n = 1;
                 }
+                if (v1 != 0 && v1 != ~((__u64)0)) {
+                    if (n == 0) { mn = v1; mx = v1; }
+                    else { if (v1 < mn) mn = v1; if (v1 > mx) mx = v1; }
+                    n++;
+                }
+                if (v2 != 0 && v2 != ~((__u64)0)) {
+                    if (n == 0) { mn = v2; mx = v2; }
+                    else { if (v2 < mn) mn = v2; if (v2 > mx) mx = v2; }
+                    n++;
+                }
+                if (n >= 2 && mx * 100 < mn * 110)
+                    is_flat = true;
             }
             bool margin_met = (best_alt != ~((__u64)0) &&
                                statep->last_metric != 0 &&
