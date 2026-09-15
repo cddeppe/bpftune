@@ -9,20 +9,104 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `c3a27e3` (0.4.32)
-- Latest release: 0.4.32
+- Latest commit: `1c1a3b9` (0.4.32)
+- Latest release: 0.4.35
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.32** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.32** | runs git push origin |
-| Target | amd64 | **0.4.32** | mostly idle |
-| Builder | aarch64 | **0.4.32** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.35** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.35** | runs git push origin |
+| Target | amd64 | **0.4.35** | mostly idle |
+| Builder | aarch64 | **0.4.35** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
+
+
+## SESSION 2026-09-15 (afternoon) — 0.4.33 to 0.4.35
+
+Three follow-up releases after the reference-drift fix, addressing
+swap-churn behavior observed in the 0.4.32 data.  All four hosts on
+0.4.35; STATE_VERSION 12 (state file deleted on deploy).
+
+### 0.4.33 — shorter settle for desperate and persistent-bad sockets
+
+Settle was uniformly 60s.  Split into T_SETTLE_NORMAL_NS (60s) and
+T_SETTLE_DESPERATE_NS (10s), selected by whether the socket was
+desperate (>= 2x leader) or had accumulated persist_bad >= 2.
+Intent: a stuck long-lived socket should not wait a full minute
+between swap attempts.
+
+### 0.4.34 — moderate margin 1.25x -> 1.50x; post-freeze uses
+socket's own best
+
+Two changes driven by the day's health check:
+
+1. Moderate tier margin raised from 1.25x to 1.50x.  Data: on
+   buckets where the top algorithms were within ~10% (TIGHT x1.0/
+   x1.1), the 1.25-1.50 band was inside the metric's noise.  Over
+   one day that band produced 12 IMP / 15 WRS -- worse than a coin
+   flip.  The new floor keeps the tier for meaningful 1.50-2.00
+   cases.
+
+2. Post-freeze desperate tier now judges against the socket's own
+   best_seen_metric (x2 threshold), not the bucket leader.  Data:
+   frozen socket cookie 2927 cycled eight times through bic / veno /
+   illinois / highspeed / htcp while every algorithm produced 12-14M.
+   The socket was at its own path ceiling, not algorithm-limited.
+   The bucket-relative 2x test kept firing because bucket best_v was
+   5.6M (other sockets ran faster on the same path).  Pre-freeze
+   behavior unchanged: bucket-relative 2x still fires immediately.
+
+### 0.4.35 — collapse the split settle into one constant
+
+Traced 0.4.33's settle logic and found the 60s branch was dead code:
+any moderate swap requires SWAP_BAD_FIRST/LATER = 2 consecutive
+above-margin checks, which is exactly the condition that sets
+persist_bad >= 2.  So every swap took the 10s branch; T_SETTLE_NORMAL_NS
+was unreachable.  Removed persist_bad, PERSIST_BAD_THRESHOLD, and the
+two split constants.  Single T_SETTLE_NS = 10s.  The 2-bad-check
+requirement above already prevents thrash; 10s is >= 300 RTT on a
+30ms path.
+
+### Verifier numbers across the three
+
+| release | ESTABLISHED | vote |
+|---------|-------------|------|
+| 0.4.32  | 15242 / 1083 | 2982 / 188 |
+| 0.4.33  | 15242 / 1083 | 2899 / 186 |
+| 0.4.34  | 15242 / 1083 | 3173 / 207 |
+| 0.4.35  | 15242 / 1083 | 2984 / 190 |
+
+The 0.4.35 cleanup removed the persist_bad logic and its branches;
+the vote program is smaller than 0.4.32.  Well within budget.
+
+### What we know now (from the health check)
+
+- Desperate tier (>= 2x leader) IMP/WRS ~ 67% -- doing its job.
+- Moderate tier at 1.25x IMP/WRS ~ 44% -- worse than a coin flip.
+  That is the case 0.4.34 fixes.
+- Reference drift is fixed: home bucket max_rate_delivered recovered
+  from 1.68M to 48-60M and holds.
+- Freeze fires correctly (3 in a day).
+- Multi-swap sockets (cookie 2927 at 9 swaps, 2192 at 6) were the
+  churn case 0.4.34 bounds.  Watch whether they collapse to <=4
+  after 0.4.35.
+
+### Still open
+
+- Best_seen_metric clamp: a socket whose best_seen is a one-off quiet
+  moment (unrealistically low) will refuse post-freeze swaps even
+  when the socket is genuinely degraded.  Deferred pending log
+  evidence that the case occurs.
+- Post-freeze swap target: currently best_alt_i (bucket-relative).
+  Could in principle select an algorithm this socket already tried.
+  Watch for a frozen socket bouncing between two algorithms.
+- Prefix bucketing (0.4.36 candidate): mobile-carrier IPv6 rotates
+  within /48s and /60s.  Bucketing by prefix would stop re-learning
+  on rotation.  Needs configurable prefix length; operator-dependent.
 
 
 ## SESSION 2026-09-15 — 0.4.32 reference-drift fix
