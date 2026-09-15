@@ -439,19 +439,36 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             bool desperate = (margin_met &&
                               statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT);
 
-            if (now < statep->settle_until) {
+            /* Persist-bad: consecutive above-margin votes.  Not reset
+             * by swaps -- the point is "this socket has been bad for a
+             * while."  Any below-margin vote clears it. */
+            if (margin_met) {
+                if (statep->persist_bad < 255)
+                    statep->persist_bad++;
+            } else {
+                statep->persist_bad = 0;
+            }
+            bool persistent = (statep->persist_bad >= PERSIST_BAD_THRESHOLD);
+
+            /* Settle window: 10s for desperate or persistent-bad, 60s
+             * otherwise.  The short window exists so a socket that is
+             * clearly stuck does not wait a full minute between attempts. */
+            __u64 settle_ns = (desperate || persistent)
+                                ? T_SETTLE_DESPERATE_NS
+                                : T_SETTLE_NORMAL_NS;
+            bool settle_expired = (now >= statep->last_swap_at + settle_ns);
+
+            if (!settle_expired) {
                 /* settle window -- wait */
             } else if (desperate) {
-                /* Desperate tier fires regardless of frozen.  A socket
-                 * at >=2x the leader has met a real change; the freeze
-                 * only insulates against moderate churn. */
+                /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
                 __u8 from_i = s;
                 __u8 to_i = best_alt_i;
                 if (!set_cong(ops, best_alt_i)) {
                     statep->swap_count++;
-                    statep->settle_until = now + T_SETTLE_NS;
+                    statep->last_swap_at = now;
                     statep->last_metric = 0;
                     statep->bad_checkpoints = 0;
                     bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1",
@@ -461,8 +478,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             } else if (margin_met && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     /* FREEZE: go to the algorithm on which this socket
-                     * looked best, then stop trying.  Only fires when
-                     * not desperate, so real change still gets through. */
+                     * looked best, then stop trying. */
                     int fret = 0;
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
                     __u8 tgt8 = (__u8)tgt;
@@ -471,7 +487,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d",
                                bpf_get_socket_cookie(ops), s, tgt8, fret);
                     statep->frozen = 1;
-                    statep->settle_until = now + T_SETTLE_NS;
+                    statep->last_swap_at = now;
                     statep->last_metric = 0;
                     statep->bad_checkpoints = 0;
                 } else {
@@ -486,7 +502,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                             __u8 to_i = best_alt_i;
                             if (!set_cong(ops, best_alt_i)) {
                                 statep->swap_count++;
-                                statep->settle_until = now + T_SETTLE_NS;
+                                statep->last_swap_at = now;
                                 statep->last_metric = 0;
                                 statep->bad_checkpoints = 0;
                                 bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0",
