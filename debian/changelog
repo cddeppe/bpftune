@@ -1,3 +1,18 @@
+bpftune (0.4.33) UNRELEASED; urgency=medium
+
+  * Shorter settle window for desperate and persistent-bad sockets.
+    Desperate tier (>= 2x leader) and sockets above margin on
+    PERSIST_BAD_THRESHOLD (2) consecutive evaluations use
+    T_SETTLE_DESPERATE_NS (10s) instead of T_SETTLE_NORMAL_NS
+    (60s).  A long-lived stuck socket no longer waits a full
+    minute between swap attempts.
+  * conn_state: settle_until -> last_swap_at (raw timestamp;
+    window computed per tick), plus persist_bad counter.
+  * STATE_VERSION 10 -> 11.  State file MUST be deleted on
+    deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 15:00:00 +0200
+
 bpftune (0.4.32) UNRELEASED; urgency=medium
 
   * Reference-drift fix: gate reference updates on sustained-transfer
