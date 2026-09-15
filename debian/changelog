@@ -1,3 +1,22 @@
+bpftune (0.4.35) UNRELEASED; urgency=medium
+
+  * Collapse the split settle window into a single constant.
+    0.4.33 introduced T_SETTLE_NORMAL_NS (60s) / T_SETTLE_DESPERATE_NS
+    (10s), chosen by whether the socket was desperate or had hit
+    persist_bad >= 2.  In practice the 60s branch was unreachable:
+    any moderate swap requires SWAP_BAD_FIRST/LATER = 2 consecutive
+    above-margin checks, which is exactly the condition that sets
+    persist_bad >= 2.  So every swap took the 10s branch, and the
+    60s branch was dead code.
+  * Remove the persist_bad counter, PERSIST_BAD_THRESHOLD and both
+    split constants.  The socket-level truth is: after 2 consecutive
+    bad checks we already know the socket is stuck; a full-minute
+    wait between retries was never useful.
+  * conn_state no longer carries persist_bad.  STATE_VERSION
+    11 -> 12.  State file MUST be deleted on deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 17:00:00 +0200
+
 bpftune (0.4.34) UNRELEASED; urgency=medium
 
   * Moderate-tier margin raised from 1.25x to 1.50x.

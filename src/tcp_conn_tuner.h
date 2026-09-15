@@ -74,10 +74,6 @@ struct conn_state {
     __u64 best_seen_metric;  /* lowest metric seen on this socket */
     __u64 best_seen_alg;     /* algorithm it was running then */
     __u64 frozen;            /* 1 = no more swaps on this socket */
-    __u64 persist_bad;       /* consecutive above-margin votes; not
-                              * reset by swaps, reset by any below-
-                              * margin vote.  >= PERSIST_BAD_THRESHOLD
-                              * unlocks the short settle window. */
 };
 
 struct tcp_conn_metric {
@@ -158,9 +154,7 @@ struct remote_host {
 #define SWAP_BAD_DESPERATE_PCT 200  /* 2.0x leader -> immediate fire */
 #define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
 #define SWAP_MAX       2
-#define T_SETTLE_NORMAL_NS    (60ULL * 1000000000ULL)  /* moderate tier */
-#define T_SETTLE_DESPERATE_NS (10ULL * 1000000000ULL)  /* desperate tier or persistent-bad */
-#define PERSIST_BAD_THRESHOLD 2   /* consecutive above-margin votes to unlock short settle */
+#define T_SETTLE_NS     (10ULL * 1000000000ULL)  /* minimum gap between swaps on one socket */
 #define T_TIME_CHECK_NS  (60ULL * 1000000000ULL)  /* supplementary vote cadence */
 #define TIME_CHECK_MIN_SEGS 1000  /* require progress between checks */
 

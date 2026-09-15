@@ -451,24 +451,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                               statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT &&
                               (!statep->frozen || desperate_post));
 
-            /* Persist-bad: consecutive above-margin votes.  Not reset
-             * by swaps -- the point is "this socket has been bad for a
-             * while."  Any below-margin vote clears it. */
-            if (margin_met) {
-                if (statep->persist_bad < 255)
-                    statep->persist_bad++;
-            } else {
-                statep->persist_bad = 0;
-            }
-            bool persistent = (statep->persist_bad >= PERSIST_BAD_THRESHOLD);
-
-            /* Settle window: 10s for desperate or persistent-bad, 60s
-             * otherwise.  The short window exists so a socket that is
-             * clearly stuck does not wait a full minute between attempts. */
-            __u64 settle_ns = (desperate || persistent)
-                                ? T_SETTLE_DESPERATE_NS
-                                : T_SETTLE_NORMAL_NS;
-            bool settle_expired = (now >= statep->last_swap_at + settle_ns);
+            /* Settle window: fixed minimum gap between swaps on one
+             * socket.  Historically split (60s moderate / 10s
+             * desperate), but the moderate path always arrived with
+             * persist_bad already >= 2 -- 60s was unreachable in
+             * practice.  10s is >= 300 RTT on a 30ms path, enough
+             * for the new algorithm to settle, and the 2-bad-check
+             * requirement above already prevents thrash. */
+            bool settle_expired = (now >= statep->last_swap_at + T_SETTLE_NS);
 
             if (!settle_expired) {
                 /* settle window -- wait */
