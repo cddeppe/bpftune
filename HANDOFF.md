@@ -9,21 +9,90 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `87aa1f6` (0.4.36)
-- Latest release: 0.4.36
+- Latest commit: `7e17444` (0.4.37)
+- Latest release: 0.4.37
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.36** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.36** | runs git push origin |
-| Target | amd64 | **0.4.36** | mostly idle |
-| Builder | aarch64 | **0.4.36** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.37** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.37** | runs git push origin |
+| Target | amd64 | **0.4.37** | mostly idle |
+| Builder | aarch64 | **0.4.37** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-15 (night) — 0.4.37 flat-socket gate on moderate tier
+
+Follow-through on the two diagnostics earlier tonight.  The design
+was settled by the short-trend analysis; this session implemented it.
+
+### What shipped
+
+Struct conn_state gains hist_1/hist_2 (two u64).  Along with the
+existing last_metric these are the socket's own last three samples.
+Vote path shifts them (sentinel-filtered); swap path resets both on
+every exit (desperate, freeze, moderate).  Moderate-tier swap now
+checks:
+
+    max(v0, v1, v2) * 100 < min(v0, v1, v2) * 110  ->  is_flat
+    if (is_flat) suppress; else set_cong()
+
+Desperate is unchanged: it fires on the 2x rule regardless of shape.
+A socket with fewer than three samples has not been judged yet, and
+is not suppressed.
+
+### Why this shape
+
+Recap from the earlier diagnostic: flat sockets win 7.9% on swap
+(90.6% null).  The moderate tier's catchment is 78.5% flat vs 21.9%
+in desperate, because a deteriorating socket climbs through
+1.5x-2.0x fast and trips 2x, while a flat socket sits at a fixed
+ratio and trips the 2-bad-check rule eventually.  Gating on
+"is the socket's own number moving" separates the two without
+touching the thresholds or the metric.
+
+### Expected effect (to be measured 09-16)
+
+    tier          fires/day   win%     current
+    moderate          47      ~30%     11.8%
+    desperate        247      ~35%     unchanged
+
+Falsification test: if d=0 fires drop as expected but win% stays
+near 12%, the gate is filtering the wrong fires and we revert.
+Run /tmp/swap_effectsize.py on 09-16 and compare.
+
+### Verifier
+
+    ESTABLISHED  15242 / 1083   unchanged
+    vote          2984 /  190  ->  3395 / 223
+
++411 insns, +33 states.  The flat check is on the hot path but small.
+
+### No state-format change
+
+hist_1/hist_2 live in sk_storage only.  The persisted tcp_conn_tuner
+.state file holds struct remote_host; nothing in it depends on
+conn_state.  STATE_VERSION stays at 12, no state file delete on
+deploy.  Verified by grep: the state functions touch remote_host
+only.
+
+### Deployed
+
+All four hosts on 0.4.37 as of 2026-09-15 17:29 UTC (vps-3959 and
+ip-172-26-13-90 amd64; heavy and aarch64 builder arm64).  Home-bucket
+tracker still matches array post-deploy (verified via the same dump
+used for 0.4.36).
+
+### Not touched
+
+- Swap tier thresholds (1.5x / 2.0x) unchanged.
+- Desperate tier unchanged.
+- Insufficient-history sockets unchanged.
+- The metric itself unchanged.
 
 ## DIAGNOSTIC 2026-09-15 (later) — short-trend signal validates; flat = do not swap
 
@@ -337,13 +406,10 @@ Not touched this session (still open):
   instead of extremum for best_seen_metric.  NOTE: this is the
   POST-FREEZE REOPEN gate, distinct from the per-socket fire gate
   that the late-2026-09-15 diagnostic rejected (see that section).
-- Moderate tier is a null-firer: 11.8% real win / 83.9% null /
-  4.3% real loss over 93 swaps (09-14 + 09-15).  The old '44-50%
-  IMP/WRS' reading was sign-test noise and is retired.  Root cause
-  identified 2026-09-15 (later): the tier selects for flat sockets
-  (78.5% of its fires vs 21.9% in desperate).  Fix is a flat-gate
-  on moderate only -- see the two DIAGNOSTIC sections from
-  2026-09-15.  Design settled, not implemented.
+- ~~Moderate tier null-firer~~ -- 0.4.37 shipped the flat-gate.
+  Verification against the 09-16 log pending (expect d=0 fires
+  ~47 -> ~10/day and win% ~12% -> ~30%; revert if win% stays at
+  12%).  See the 0.4.37 section.
 - Prefix bucketing for mobile IPv6 (carrier rotates within /48s and
   /60s).  Would need configurable prefix length.  Not started.
 - GitHub release pages for 0.4.30 through 0.4.36 -- tags exist,
