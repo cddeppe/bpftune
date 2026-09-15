@@ -391,6 +391,17 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     now = bpf_ktime_get_ns();
 
     if (statep && !is_close) {
+        /* Shift the short-trend history.  prev is the previous
+         * vote's metric; hist_1/hist_2 hold the two before that.
+         * Filter the 0/~0 sentinels so a poisoned sample does not
+         * poison the window. */
+        {
+            __u64 prev = statep->last_metric;
+            if (prev != 0 && prev != ~((__u64)0)) {
+                statep->hist_2 = statep->hist_1;
+                statep->hist_1 = prev;
+            }
+        }
         statep->last_metric = metric;
         /* Track the best reading this socket has ever produced, and
          * which algorithm it was on at the time.  Used by the freeze
@@ -433,6 +444,31 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             greedy = false;
 
         if (statep && !is_close) {
+            /* Flat-socket gate (0.4.37).  Data: over 340 swaps flat
+             * sockets win 7.9% / null 90.6% / loss 1.6% -- the win
+             * rate is inside the metric's noise band.  The moderate
+             * tier selects for flat (78.5% of its fires vs 21.9% in
+             * desperate).  Suppress the swap when the socket's own
+             * last three samples are flat.  Only the moderate tier
+             * is gated; the desperate tier still fires because the
+             * socket is 2x off the leader regardless of shape. */
+            bool is_flat = false;
+            {
+                __u64 v0 = statep->last_metric;
+                __u64 v1 = statep->hist_1;
+                __u64 v2 = statep->hist_2;
+                if (v0 != 0 && v0 != ~((__u64)0) &&
+                    v1 != 0 && v1 != ~((__u64)0) &&
+                    v2 != 0 && v2 != ~((__u64)0)) {
+                    __u64 mn = v0, mx = v0;
+                    if (v1 < mn) mn = v1;
+                    if (v1 > mx) mx = v1;
+                    if (v2 < mn) mn = v2;
+                    if (v2 > mx) mx = v2;
+                    if (mx * 100 < mn * 110)
+                        is_flat = true;
+                }
+            }
             bool margin_met = (best_alt != ~((__u64)0) &&
                                statep->last_metric != 0 &&
                                statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT);
@@ -472,6 +508,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->swap_count++;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->hist_1 = 0;
+                    statep->hist_2 = 0;
                     statep->bad_checkpoints = 0;
                     bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1",
                                bpf_get_socket_cookie(ops), from_i, to_i,
@@ -491,6 +529,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->hist_1 = 0;
+                    statep->hist_2 = 0;
                     statep->bad_checkpoints = 0;
                 } else {
                     /* Normal-tier swap. */
@@ -502,10 +542,21 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                             __u64 ac = remote_host->metrics[s].metric_count;
                             __u8 from_i = s;
                             __u8 to_i = best_alt_i;
-                            if (!set_cong(ops, best_alt_i)) {
+                            if (is_flat) {
+                                /* Socket is at its own plateau;
+                                 * the current algorithm is not the
+                                 * limiter.  Suppress the swap and
+                                 * reset the bad-check count so the
+                                 * socket must re-demonstrate two
+                                 * consecutive non-flat bad checks
+                                 * before we try again. */
+                                statep->bad_checkpoints = 0;
+                            } else if (!set_cong(ops, best_alt_i)) {
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
                                 statep->last_metric = 0;
+                                statep->hist_1 = 0;
+                                statep->hist_2 = 0;
                                 statep->bad_checkpoints = 0;
                                 bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0",
                                            bpf_get_socket_cookie(ops), from_i, to_i,
