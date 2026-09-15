@@ -1,3 +1,23 @@
+bpftune (0.4.36) UNRELEASED; urgency=medium
+
+  * Userspace re-anchor for the tcp_conn_tuner tracker.
+    The BPF vote path maintains best_i/best_v incrementally and the
+    ESTABLISHED-time rescan refreshes it on new connections, but
+    between those events a non-leader metric can drift to a lower
+    value without being promoted.  Observed on the home bucket:
+    best_i pointed at htcp at 1.79M while dctcp at 608K had n=5 and
+    was never promoted, so swaps targeted a non-leader.
+  * Add a daemon worker thread that every 30s walks remote_host_map,
+    finds the trusted minimum (metric_count >= MIN_LEADER_TRUST) and
+    second-best, and writes best_i/best_v/second_i/second_v back
+    via bpf_map_update_elem.  Read-modify-write preserves the
+    reference-fix fields (rate_high_streak etc.) and every other
+    field in the struct.
+  * No BPF change, no state version change.  The swap path keeps
+    reading the same tracker fields it reads today.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 18:00:00 +0200
+
 bpftune (0.4.35) UNRELEASED; urgency=medium
 
   * Collapse the split settle window into a single constant.

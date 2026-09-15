@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include "tcp_conn_tuner.h"
 #include "tcp_conn_tuner.skel.h"
@@ -55,6 +56,27 @@ int tcp_iter_fd;
 
 static int restore_remote_host_map(struct bpftuner *tuner);
 static int save_remote_host_map(struct bpftuner *tuner);
+
+/* Userspace re-anchor.  The BPF vote path maintains best_i/best_v
+ * incrementally, and the ESTABLISHED-time rescan only refreshes the
+ * tracker when a new connection arrives.  Between those events a
+ * non-leader metric can drift to a lower value without being
+ * promoted, leaving the swap target stale.  This worker, every
+ * REANCHOR_INTERVAL seconds, rescans every bucket metric array and
+ * rewrites the tracker so best_i/best_v/second_i/second_v always
+ * match the array.  No BPF change: the swap path keeps reading the
+ * same fields it reads today.
+ */
+#define REANCHOR_INTERVAL 30
+
+static pthread_t reanchor_tid;
+static volatile int reanchor_stop;
+static int reanchor_started;
+static int reanchor_fd = -1;
+
+static void start_reanchor(struct bpftuner *tuner);
+static void stop_reanchor(void);
+
 int init(struct bpftuner *tuner)
 {
 	struct bpftunable *t;
@@ -99,6 +121,8 @@ int init(struct bpftuner *tuner)
 	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
 	if (err)
 		goto out;
+
+	start_reanchor(tuner);
 
 
 	err = bpftuner_tunables_init(tuner, ARRAY_SIZE(descs), descs,
@@ -181,6 +205,189 @@ void summarize(struct bpftuner *tuner)
 			greedy_count += r.metrics[i].greedy_count;
 		}
 	}
+}
+
+/* Walk every bucket in remote_host_map and force the tracker fields
+ * (best_i/best_v/second_i/second_v) to match the metric array.
+ * Selection rules:
+ *   - skip metrics with metric_count == 0
+ *   - skip metrics whose metric_value is 0 or ~0 (unset sentinel)
+ *   - leader requires metric_count >= MIN_LEADER_TRUST; leader is the
+ *     minimum value among trusted candidates.
+ *   - second-best requires metric_count > 0, excludes the leader, and
+ *     requires value >= best_v so the best_v <= second_v invariant
+ *     that the BPF vote path maintains is preserved.
+ * Only the four tracker fields are written; reference-fix fields
+ * (rate_high_streak/rate_high_max/rtt_low_streak/rtt_low_min) are
+ * carried through unchanged via read-modify-write of the struct.
+ */
+static void reanchor_best(int map_fd)
+{
+	struct in6_addr key, *prev_key = NULL;
+	unsigned int scanned = 0, updated = 0;
+
+	while (!bpf_map_get_next_key(map_fd, prev_key, &key)) {
+		struct remote_host r;
+		__u64 best_i = ~((__u64)0), best_v = 0;
+		__u64 second_i = ~((__u64)0), second_v = 0;
+		__u64 new_bi, new_bv, new_si, new_sv;
+		int i;
+
+		prev_key = &key;
+
+		if (bpf_map_lookup_elem(map_fd, &key, &r))
+			continue;
+		scanned++;
+
+		/* Pass 1: trusted minimum. */
+		for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
+			__u64 v = r.metrics[i].metric_value;
+			__u64 cnt = r.metrics[i].metric_count;
+
+			if (cnt < MIN_LEADER_TRUST)
+				continue;
+			if (v == 0 || v == ~((__u64)0))
+				continue;
+			if (best_v == 0 || v < best_v) {
+				best_i = (__u64)i;
+				best_v = v;
+			}
+		}
+
+		/* Pass 2: second-best. */
+		if (best_v != 0) {
+			for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
+				__u64 v = r.metrics[i].metric_value;
+				__u64 cnt = r.metrics[i].metric_count;
+
+				if ((__u64)i == best_i || cnt == 0)
+					continue;
+				if (v == 0 || v == ~((__u64)0))
+					continue;
+				if (v < best_v)
+					continue;
+				if (second_v == 0 || v < second_v) {
+					second_i = (__u64)i;
+					second_v = v;
+				}
+			}
+		}
+
+		/* No trusted leader: force the tracker to the empty state so
+		 * the swap path sees "no leader" rather than a stale value.
+		 */
+		if (best_v == 0) {
+			new_bi = 0;
+			new_bv = 0;
+			new_si = 0;
+			new_sv = 0;
+		} else {
+			new_bi = best_i;
+			new_bv = best_v;
+			new_si = (second_v == 0) ? 0 : second_i;
+			new_sv = second_v;
+		}
+
+		if (r.best_i == new_bi && r.best_v == new_bv &&
+		    r.second_i == new_si && r.second_v == new_sv)
+			continue;
+
+		bpftune_log(BPFTUNE_LOG_LEVEL,
+			    "reanchor: best_i=%llu best_v=%llu (was %llu/%llu) second_i=%llu second_v=%llu (was %llu/%llu)\n",
+			    (unsigned long long)new_bi,
+			    (unsigned long long)new_bv,
+			    (unsigned long long)r.best_i,
+			    (unsigned long long)r.best_v,
+			    (unsigned long long)new_si,
+			    (unsigned long long)new_sv,
+			    (unsigned long long)r.second_i,
+			    (unsigned long long)r.second_v);
+
+		r.best_i = new_bi;
+		r.best_v = new_bv;
+		r.second_i = new_si;
+		r.second_v = new_sv;
+
+		if (bpf_map_update_elem(map_fd, &key, &r, BPF_ANY)) {
+			bpftune_log(LOG_ERR, "reanchor: update failed: %s\n",
+				    strerror(errno));
+			continue;
+		}
+		updated++;
+	}
+
+	bpftune_log(LOG_DEBUG, "reanchor: cycle scanned=%u updated=%u\n",
+		    scanned, updated);
+}
+
+static void *reanchor_worker(void *arg)
+{
+	int fd = reanchor_fd;
+	int i;
+
+	(void)arg;
+
+	if (fd < 0)
+		return NULL;
+
+	/* Capabilities are per-thread; the voter worker issues BPF map
+	 * syscalls so it needs CAP_SYS_ADMIN in its own effective set. */
+	bpftune_cap_add();
+
+	while (!reanchor_stop) {
+		reanchor_best(fd);
+		/* Sleep in short slices so fini() does not stall more
+		 * than ~1s waiting on pthread_join. */
+		for (i = 0; i < REANCHOR_INTERVAL; i++) {
+			if (reanchor_stop)
+				break;
+			sleep(1);
+		}
+	}
+
+	bpftune_cap_drop();
+	return NULL;
+}
+
+static void start_reanchor(struct bpftuner *tuner)
+{
+	struct bpf_map *map;
+	int fd;
+
+	if (reanchor_started)
+		return;
+
+	map = bpftuner_bpf_map_get(tcp_conn, tuner, remote_host_map);
+	if (!map) {
+		bpftune_log(LOG_ERR, "reanchor: map not found\n");
+		return;
+	}
+	fd = bpf_map__fd(map);
+	if (fd < 0) {
+		bpftune_log(LOG_ERR, "reanchor: bad map fd\n");
+		return;
+	}
+	reanchor_fd = fd;
+	reanchor_stop = 0;
+	if (pthread_create(&reanchor_tid, NULL, reanchor_worker, NULL) != 0) {
+		bpftune_log(LOG_ERR, "reanchor: pthread_create failed: %s\n",
+			    strerror(errno));
+		return;
+	}
+	reanchor_started = 1;
+	bpftune_log(BPFTUNE_LOG_LEVEL,
+		    "reanchor: worker started (interval %ds)\n",
+		    REANCHOR_INTERVAL);
+}
+
+static void stop_reanchor(void)
+{
+	if (!reanchor_started)
+		return;
+	reanchor_stop = 1;
+	pthread_join(reanchor_tid, NULL);
+	reanchor_started = 0;
+	bpftune_log(LOG_DEBUG, "reanchor: worker stopped\n");
 }
 
 #define STATE_DIR     "/var/lib/bpftune"
@@ -312,6 +519,7 @@ out:
 void fini(struct bpftuner *tuner)
 {
 	bpftune_log(LOG_DEBUG, "calling fini for %s\n", tuner->name);
+	stop_reanchor();
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
 	bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
         save_remote_host_map(tuner);
