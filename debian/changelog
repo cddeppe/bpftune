@@ -1,3 +1,38 @@
+bpftune (0.4.38) UNRELEASED; urgency=medium
+
+  * Fix the 0.4.37 flat-gate: relax the required sample count
+    from 3 to 2.
+
+    0.4.37 introduced a flat-socket gate on the moderate swap tier
+    that required all three of {last_metric, hist_1, hist_2} to be
+    populated before it could classify a socket.  Root cause of the
+    failure: SWAP_BAD_FIRST=2 fires the first moderate swap after
+    two consecutive bad votes.  On a fresh socket -- or one whose
+    history was zeroed by a prior swap -- hist_2 is still 0 at the
+    moment the swap fires.  The gate therefore never fired on the
+    exact population it was designed to suppress: 0.4.37 moderate
+    swap rate was unchanged from 0.4.36 (7 fires in 3h vs pre-gate
+    baseline of ~47/day).
+
+    Validation from the 09-14 + 09-15 pre-gate logs, binning swaps
+    by number of samples on the current algorithm:
+
+        2sample-flat      n=85    win ~10%   <- gate now catches
+        2sample-nonflat   n=17    win ~48%   <- max/min check excludes
+        1sample           n=218   win ~38%   <- insufficient, falls
+                                              through (unchanged)
+        3sample           n=57    win mixed  <- unchanged
+
+    Data confirms 2sample-flat is the same population as 3sample-
+    flat by win rate (~10% vs ~8%), well below the tier target.
+    2sample-nonflat stays at 45-50% and is not gated.
+
+  * hist_1/hist_2 remain in struct conn_state; swap-path resets
+    unchanged.  No state-format change: STATE_VERSION stays at 12,
+    no state file delete on deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 22:00:00 +0200
+
 bpftune (0.4.37) UNRELEASED; urgency=medium
 
   * Flat-socket gate on the moderate swap tier.
