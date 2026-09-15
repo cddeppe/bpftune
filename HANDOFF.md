@@ -9,21 +9,97 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `7e17444` (0.4.37)
-- Latest release: 0.4.37
+- Latest commit: `961843a` (0.4.38)
+- Latest release: 0.4.38
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.37** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.37** | runs git push origin |
-| Target | amd64 | **0.4.37** | mostly idle |
-| Builder | aarch64 | **0.4.37** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.38** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.38** | runs git push origin |
+| Target | amd64 | **0.4.38** | mostly idle |
+| Builder | aarch64 | **0.4.38** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-15 (late night) -- 0.4.38: 0.4.37 flat-gate never fired
+
+0.4.37 shipped the flat-socket gate on the moderate tier.  Verified
+three hours later on the heavy host: it did not engage.
+
+### Symptom
+
+Post-0.4.37 d=0 fires in a ~3h window: 7.  Pre-gate baseline was
+~47/day, so ~5.9 per 3h; under the design's expected 78% suppression
+the prediction was ~1.3.  Observed 7 -- 5x above the prediction.
+All 7 classified null (0% win).  5 of the 7 were classified `flat`
+by tools/swap-trend.py.  Firing on flat sockets is exactly what
+0.4.37 was supposed to prevent.
+
+### Root cause
+
+SWAP_BAD_FIRST=2 fires the first moderate swap after two consecutive
+bad votes.  is_flat required all three of {last_metric, hist_1,
+hist_2} to be valid.  On a fresh socket -- or one whose history was
+zeroed by a prior swap -- hist_2 is still 0 at the moment the swap
+fires.  n == 3 was literally unreachable on the first swap of every
+socket, which is most moderate swaps.
+
+Confirmed in the raw log: every offending cookie shows exactly two
+`met` lines immediately preceding the `swap` line.  (3697: 2 met
+then swap; 3726: 2 met then swap; 3731's three separate swaps each
+preceded by exactly 2 met lines.)
+
+### Fix: require n >= 2, not n == 3
+
+Bin swaps by sample count on the current algorithm over the
+09-14 + 09-15 pre-gate logs:
+
+    class            n     win%
+    2sample-flat    85     ~10%     <- gate now catches
+    2sample-nonflat 17     ~48%     <- max/min check excludes
+    1sample        218     ~38%     <- insufficient, falls through
+    3sample         57     mixed    <- unchanged
+
+2sample-flat is the same population as 3sample-flat by win rate
+(both ~10%), well below what the moderate tier should target.
+2sample-nonflat keeps a 45-50% win rate and is not suppressed.
+1sample cannot form a ratio and stays "insufficient" per the
+original design.
+
+### Verifier
+
+    ESTABLISHED  amd64 15242 / 1083   unchanged
+                   arm64 17851 / 1218   unchanged
+    vote         amd64 3395 / 223 -> 3918 / 264
+                   arm64  2707 /  181 (0.4.36) -> 4022 / 296
+
+The n>=2 form unrolls into three independent slot-validity checks,
+larger than the 0.4.37 && chain, but still trivial against budget.
+
+### Deployed
+
+All four hosts on 0.4.38 as of 2026-09-15 ~17:00 UTC.  Home bucket
+verified matching array post-deploy (instances 1093,
+best_i=12 / best_v=4680454 = trusted-min, MATCH True).
+
+### Verification pending (same protocol as 0.4.37)
+
+Post-0.4.38, expect d=0 at ~1.3/hr on the heavy host.  Full-day
+check against the 09-16 log:
+
+    metric           pre-gate    predicted
+    d=0 fires/day      ~47          ~10
+    d=0 win%          11.7%        ~30%
+    d=1 fires/day     ~247        unchanged
+
+If d=0 is still >=2/hr, the n>=2 change also is not reaching the
+decision and the problem is gate placement, not the threshold.  If
+d=0 drops but win% stays near 12%, the shape signal itself was
+overfit and 0.4.37 + 0.4.38 get reverted together.
 
 ## SESSION 2026-09-15 (night) — 0.4.37 flat-socket gate on moderate tier
 
@@ -408,10 +484,11 @@ Not touched this session (still open):
   instead of extremum for best_seen_metric.  NOTE: this is the
   POST-FREEZE REOPEN gate, distinct from the per-socket fire gate
   that the late-2026-09-15 diagnostic rejected (see that section).
-- ~~Moderate tier null-firer~~ -- 0.4.37 shipped the flat-gate.
-  Verification against the 09-16 log pending (expect d=0 fires
-  ~47 -> ~10/day and win% ~12% -> ~30%; revert if win% stays at
-  12%).  See the 0.4.37 section.
+- ~~Moderate tier null-firer~~ -- 0.4.37 shipped the flat-gate but
+  it never fired (n==3 unreachable on first swaps).  0.4.38 relaxed
+  to n>=2.  Verification against the 09-16 log pending: expect d=0
+  fires ~47 -> ~10/day and win% ~12% -> ~30%; revert 0.4.37+0.4.38
+  together if win% stays at 12%.  See the 0.4.38 section.
 - Prefix bucketing for mobile IPv6 (carrier rotates within /48s and
   /60s).  Would need configurable prefix length.  Not started.
 - GitHub release pages for 0.4.30 through 0.4.36 -- tags exist,
@@ -1289,3 +1366,7 @@ Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
 - **Verify actual file content before editing.** `sed -n 'A,Bp' file | cat -A` first.
 - **`make clean` before every build.** Non-negotiable.
 - **SHA-pinned URLs** for target hosts without a repo clone.
+- **Cross-arch releases build in parallel.** Both builders share
+  the mount.  Kick off amd64 and arm64 compiles simultaneously,
+  then deploy all four hosts from the mount.  0.4.38 was built
+  serially and wasted ~10 minutes of wall clock.
