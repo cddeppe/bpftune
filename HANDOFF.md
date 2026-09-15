@@ -7,22 +7,117 @@ per gateway), not just single-path datacenters.
 
 ## Repo & fleet
 
-- Fork: https://github.com/cddeppe/bpftune  (active branch: `diag/metric-terms`)
-- `main` untouched since 0.4.9 (tag `0.4-9-custom`). Everything since lives on the branch.
-- Latest commit: `0eb764c`
-- Latest tag: `0.4-26-custom`
+- Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
+- `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
+- Latest commit: `c3a27e3` (0.4.32)
+- Latest release: 0.4.32
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.26** | capture → /tmp/met.log |
-| Builder | amd64 | **0.4.26** | runs git push origin |
-| Target | amd64 | **0.4.26** | |
-| Builder | aarch64 | **0.4.26** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.32** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.32** | runs git push origin |
+| Target | amd64 | **0.4.32** | mostly idle |
+| Builder | aarch64 | **0.4.32** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
+
+
+## SESSION 2026-09-15 — 0.4.32 reference-drift fix
+
+Reference updates gated on sustained-transfer evidence; streak promotion
+fixes up-lock.  All four hosts on 0.4.32; state file deleted on deploy
+(STATE_VERSION 9 -> 10).
+
+### The bug
+
+Home bucket 82.43.215.97 max_rate_delivered pinned at 1,683,564 (~1.68
+Mbps).  Yesterday 15-33 Mbps.  Overnight, no streaming, dragged down.
+
+Two failure modes, same root:
+
+1. Down-drift.  Control-plane traffic (DNS ~1 segment, SSH keepalive ~2,
+   ctrl-API ~50) delivers 88K-350K.  Its heal-down rule (rate < ref/3)
+   pulled max_rate_delivered toward those rates.
+2. Up-lock.  Once collapsed, real traffic at 5-10 Mbps sat above
+   ref * 2 = 3.36 Mbps, so the outlier-rejection rule refused it.
+   No population could raise the ref.
+
+Consequence: rate_term = (max_rate_delivered - rate_delivered) /
+max_rate_delivered, clamped to >= 0, was zero for every socket on that
+bucket.  Leaderboards since the collapse were RTT-only.
+
+### The fix (three parts, shipped together)
+
+1. Gate.  Reference updates only apply when the socket demonstrated
+   sustained transfer.  Segment-rung votes (>= 10K segments) pass
+   naturally.  Time-check votes still fire at TIME_CHECK_MIN_SEGS (1000,
+   ~24 KB/s) but the ref only moves at the new REF_TIME_CHECK_MIN_SEGS
+   (2000, ~390 Kbps sustained).  Control sockets never reach 2000.
+2. Streak promotion.  Consecutive readings above ref * 2 (rate) or below
+   ref / 2 (rtt) accumulate.  At REF_HIGH_STREAK_N (5) in a row, promote
+   the ref to the max (rate) or min (rtt) of the streak.  Single
+   anomalous readings are still rejected.
+3. Heal-down gated too.  Both heal-up (rtt) and heal-down (rate) only
+   run when the gate is open.
+
+struct remote_host gained rate_high_streak, rate_high_max, rtt_low_streak,
+rtt_low_min.
+
+### Design decisions left implicit by the brief
+
+- STATE_CB (close-path) votes get allow_ref = false.  They are neither
+  segment-rung nor time-check and cannot build a streak of 5 anyway.
+- When allow_ref_update == false, the streak counters are frozen too.
+  Otherwise a control-plane reading would reset a data socket's streak
+  and "5 in a row" would rarely fire on mixed buckets.
+
+### Verifier numbers (0.4.32)
+
+- ESTABLISHED: 15,242 insns / 1,083 total / 224 peak.
+- Vote: 2,982 insns / 188 total / 185 peak.
+
+The vote program got SMALLER (was ~3,457 / ~234).  Verifier collapsed the
+gated ref block to fewer states than the old parallel if/else chain.  Not
+a regression.
+
+### Verification on the heavy host (2026-09-15)
+
+Deploy at 07:51 UTC, state deleted, all four hosts on 0.4.32.  One video,
+bpftool map dump polled once per minute:
+
+| t (UTC) | min_rtt | max_rate_delivered | instances |
+|---------|---------|--------------------|-----------|
+| 07:52   | 0       | 0                  | 15        |
+| 07:53   | 28664   | 22.4M              | 27        |
+| 07:54   | 28664   | 96.6M              | 27        |
+| 07:56   | 28664   | 87.7M              | 32        |
+| 07:57   | 28664   | 96.6M              | 35        |
+| 07:58   | 28664   | 92.1M              | 36        |
+| 08:00   | 28664   | 92.1M              | 41        |
+| 08:01   | 28664   | 87.1M              | 45        |
+| 08:02   | 28479   | 78.0M              | 47        |
+
+Ref 0 -> 78M in 10 minutes.  +/-10% oscillation is the gated heal-down
+path reacting to momentary low-momentum sockets.  instances grew 15 -> 47
+with the ref stable: the gate filtered the small-socket traffic that used
+to drag it.
+
+bucket-leaders.py home bucket: dctcp=4.1M(n27) leads lp=6.6M(n1) and
+scalable=6.8M(n3).  LEAD (x1.6).  Those values need a live rate_term;
+RTT-only cannot produce them.
+
+### Watch-list
+
+- Does max_rate_delivered recover to 15-33M on subsequent quiet-then-busy
+  cycles, or does it settle wherever the last streak left it?
+- Streak threshold (5) too aggressive on bursty paths?  If ref
+  over-promotes then heals down repeatedly, consider 7-10.
+- REF_TIME_CHECK_MIN_SEGS (2000) lets too much legitimate low-bandwidth
+  traffic move the ref?  If a 1M-long-lived chat stream holds ref low,
+  raise it.
 
 
 ## SESSION 2026-09-14 — 0.4.29 continuous monitoring, branch cleanup
