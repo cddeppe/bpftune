@@ -25,6 +25,137 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## DIAGNOSTIC 2026-09-15 (late) — effect-size analysis; moderate tier is a null-firer
+
+After 0.4.36 shipped and the tracker read correctly, we looked at why
+the moderate tier (1.5x - 2.0x) has read as a coin flip IMP/WRS since
+0.4.30.  It is not a coin flip; it is mostly a null-mover, and the
+IMP/WRS counter was hiding that.
+
+### sign-IMP was measuring noise
+
+The IMP/WRS counter sign-tests post/pre against 1.0.  The metric's own
+noise band spans ~+-5-10%, so the ~2/3 of swaps that land in the
+0.9-1.1 ratio band get labeled by sign alone -- post=5,000,001 vs
+pre=5,000,000 is a "WRS", the reverse is an "IMP".  Those observations
+carry no information about the swap.
+
+Re-bin by effect size:
+
+    ratio          label        meaning
+    < 0.5          big_win      algorithm unlocked the pipe
+    0.5 - 0.9      mod_win      solid improvement
+    0.9 - 1.1      null         no meaningful change (noise)
+    1.1 - 1.5      mod_loss     real regression
+    1.5 - 2.0      big_loss     clear regression
+    > 2.0          severe_loss  severe regression
+
+Over the 09-14 and 09-15 logs, 340 observed swaps:
+
+    bin            n       pct
+    big_win        49      14.4%
+    mod_win        48      14.1%
+    null          225      66.2%
+    mod_loss       17       5.0%
+    big_loss        1       0.3%
+    severe_loss     0       0.0%
+
+    old sign test : IMP=219 (64.4%)  WRS=121 (35.6%)
+    effect-size   : win=97 (28.5%)   null=225 (66.2%)  loss=18 (5.3%)
+
+The sign-IMP counter overstates the real win rate by ~2.3x.  Every
+"moderate 50% IMP" / "desperate 67% IMP" reading we have cited since
+0.4.30 was comparing signed noise against a 1.0 boundary.  sign-IMP
+is retired as a metric; use effect-size bins.
+
+### The tiers are doing very different things
+
+    tier               n     win%    null%   loss%   win:loss
+    moderate (d=0)     93    11.8%   83.9%   4.3%      2.7:1
+    desperate (d=1)   247    34.8%   59.5%   5.7%      6.1:1
+
+Desperate is doing its job: it wins 3x as often per fire at the same
+loss rate.  Moderate fires ~47 swaps/day to produce ~5.5 real
+improvements and ~2 real regressions, and every one of those 47
+fires costs a cwnd reset and injects a sample into the bucket EMAs
+that feed the tracker.  The moderate tier is a net drag, not a
+neutral: the ratio is positive but the sample count and cwnd cost
+are not.
+
+### Regressions do not cluster
+
+18 losses >1.1 across the two days span (from,to) pairs 4->13, 13->3,
+6->9, 13->11, 5->3, 3->6, 6->3, 12->5, 7->6, 2->11, 10->12, 8->3,
+15->12, 15->6.  No pair appears twice.  A direction gate on the
+algorithm pair is not supported by this data.
+
+### 0.4.36 did not change the tier's win rate
+
+Timestamp-split today's log at the 0.4.36 deploy (heavy host boot
+wall 1789385486 = monotonic 0; deploy at monotonic 94887):
+
+    tier   window     n    win%   null%   loss%
+    d=0    pre       36    11.1%   88.9%    0.0%
+    d=0    post      13     7.7%   92.3%    0.0%
+    d=1    pre      125    31.2%   62.4%    6.4%
+    d=1    post      55    36.4%   61.8%    1.8%
+
+Moderate n=13 post-fix -> one event, not interpretable.  Desperate
+trends marginally better on both win and loss, but n=55 means the
+1.8% loss is one observation.  Honest read: the tracker fix corrected
+the swap DESTINATION; the moderate tier's problem was never the
+destination, it is WHETHER to fire.  Orthogonal problems.
+
+### Rejected: per-socket best_seen as a moderate-tier fire gate
+
+The idea of suppressing moderate swaps when the socket is at its own
+demonstrated best was tested against 09-15 data.  For each swap,
+pre / alltime_low for that socket:
+
+    hr_bucket      n     win%
+    1.00-1.05    200    63.0% (sign)  <- 87% of all swaps
+    1.05-1.10      9    55.6%
+    1.10-1.20      4    50.0%
+    1.20-1.50     11    72.7%
+    1.50-2.00      2   100.0%
+    3.00+          3   100.0%
+
+87% of swaps fire with pre/alltime_low ~ 1.00 -- the socket is at its
+own floor.  That floor is the best the CURRENT algorithm could do;
+after a swap the socket can go 10x lower (cookie 2880: 5.45M -> 19K).
+So alltime_low is not a ceiling and using it as a fire gate would
+suppress almost every swap, wins included.  Do NOT implement this.
+
+Note: this does NOT resolve the existing best_seen outlier item for
+the POST-FREEZE REOPEN gate (last_metric >= best_seen * 2), which is
+a different question -- it decides whether a frozen socket should
+re-enter the desperate tier, not whether a moderate swap should fire.
+That item remains open below.
+
+### Proposed next step: a fire-time signal from short trend
+
+The one signal in reach that could plausibly separate the 12% real
+moderate wins from the 84% nulls, without new kernel access, is the
+shape of the socket's own metric over its last few checkpoints:
+
+  - flat at X for N checkpoints  -> at path plateau, don't swap
+  - oscillating X <-> 2X         -> variation present, algorithm
+                                    might still be limiter
+  - monotonically rising         -> deteriorating, current alg
+                                    is failing this socket
+
+needs: last 3-5 metric samples per socket, already available if
+conn_state keeps two more numbers.  NOT YET DESIGNED.  Do not code
+this without first establishing, from existing logs, whether short-
+trend actually separates the win rows from the null rows.
+
+### Tools
+
+/tmp/swap_effectsize.py on the heavy host re-bins a day of met log
+swaps by effect size.  /tmp/swap_headroom.py computes per-socket
+headroom at fire time (the analysis above).  Both are throwaway
+scripts -- copy to tools/ if they get reused.
+
 ## SESSION 2026-09-15 (evening) — 0.4.36 userspace re-anchor
 
 The health check exposed a real tracker bug on the home bucket
@@ -107,9 +238,15 @@ Not touched this session (still open):
   sample was a lucky quiet moment refuses post-freeze swaps forever
   because the gate is last_metric >= best_seen * 2.  Observed on
   cookie 2927 (15 swaps despite freeze).  Candidate: signal-average
-  instead of extremum for best_seen_metric.
-- Moderate tier IMP/WRS 44-50%.  The 1.25x band was raised to 1.50x
-  in 0.4.34.  Watching whether the 1.50-2.00 band beats a coin flip.
+  instead of extremum for best_seen_metric.  NOTE: this is the
+  POST-FREEZE REOPEN gate, distinct from the per-socket fire gate
+  that the late-2026-09-15 diagnostic rejected (see that section).
+- Moderate tier is a null-firer: 11.8% real win / 83.9% null /
+  4.3% real loss over 93 swaps (09-14 + 09-15).  The old '44-50%
+  IMP/WRS' reading was sign-test noise and is retired.  See the
+  'DIAGNOSTIC 2026-09-15 (late)' section for the effect-size data,
+  the rejected best_seen fire-gate, and the proposed short-trend
+  signal.  Not yet fixed.
 - Prefix bucketing for mobile IPv6 (carrier rotates within /48s and
   /60s).  Would need configurable prefix length.  Not started.
 - GitHub release pages for 0.4.30 through 0.4.36 -- tags exist,
