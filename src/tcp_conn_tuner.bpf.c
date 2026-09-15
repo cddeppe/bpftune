@@ -223,6 +223,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     __u8 s;
     bool is_close;
     __u64 now;
+    bool allow_ref = false;
+    __u64 tc_progress = 0;
 
     switch (ops->op) {
     case BPF_SOCK_OPS_RTT_CB: {
@@ -252,9 +254,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             if (now - statep->last_time_check < T_TIME_CHECK_NS ||
                 segs < statep->time_check_segs + TIME_CHECK_MIN_SEGS)
                 return 1;
+            tc_progress = segs - statep->time_check_segs;
             statep->last_time_check = now;
             statep->time_check_segs = segs;
             time_check = true;
+            /* Vote fires at TIME_CHECK_MIN_SEGS (1000) but the
+             * reference only moves at REF_TIME_CHECK_MIN_SEGS (2000):
+             * control-plane sockets cannot sustain that. */
+            allow_ref = (tc_progress >= REF_TIME_CHECK_MIN_SEGS);
         }
         if (!time_check) {
             smin = (__u64)tps->rtt_min.s[0].v;
@@ -276,6 +283,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             }
             if (next < METRIC_TRIGGER_SEGS)
                 return 1;
+            /* Segment-rung vote: next >= METRIC_TRIGGER_SEGS (10K),
+             * so the socket demonstrated sustained transfer. */
+            allow_ref = true;
         }
         break;
     }
@@ -353,6 +363,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 rtt_term = 0, rate_term = 0, loss_term = 0;
         __u64 heal_rtt = 0, heal_rate = 0;
         metric = tcp_metric_calc(remote_host, min_rtt, avg_rtt, rate_delivered,
+                                 allow_ref,
                                  &rtt_term, &rate_term, &heal_rtt, &heal_rate);
         {
             __u64 __rtx = (__u64)tp->total_retrans;
