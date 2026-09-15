@@ -25,6 +25,102 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## DIAGNOSTIC 2026-09-15 (later) — short-trend signal validates; flat = do not swap
+
+Follow-up to the effect-size analysis.  We tested whether the shape of
+a socket's own metric over its last few votes predicts whether a swap
+will help.  It does, decisively.
+
+### Method
+
+For each swap in the 09-14 + 09-15 met logs, take the socket's own
+last N metric samples before the swap, classify by shape:
+
+    flat          max/min < 1.10 over the window
+    rising        >= 70% of steps increase
+    falling       >= 70% of steps decrease
+    oscillating   none of the above
+    insufficient  fewer than N pre-samples in the log
+
+Bin the outcome (big_win / mod_win / null / loss) by class.
+
+### Result (N=3, 340 swaps)
+
+    class          n     win%   null%   loss%
+    flat         127     7.9%   90.6%    1.6%
+    rising        19    57.9%   36.8%    5.3%
+    falling       11    27.3%   72.7%    0.0%
+    oscillating   18    16.7%   66.7%   16.7%
+    insufficient 165    42.4%   50.3%    7.3%
+
+Flat is dead: 7.9% win, 90.6% null.  A flat socket has demonstrated
+that its current algorithm is not moving it; a swap has ~1/12 chance
+of helping, and that 1/12 is inside the metric's own noise band.
+
+Rising is a strong positive signal (57.9%).  Sockets that are
+deteriorating are exactly the ones a swap should target.
+
+N=3, 4, 6 give the same qualitative picture.  Threshold is robust.
+
+Not a lifespan confound: window spans are median 80s (flat), 130s
+(rising), 139s (oscillating) at N=3, 220s (oscillating) at N=6.
+Class is a shape property, not a socket-age artifact.
+
+### The moderate tier selects for flat
+
+    tier             flat%   non-flat%
+    moderate (d=0)   78.5%      21.5%
+    desperate (d=1)  21.9%      78.1%
+
+A socket that is deteriorating climbs through the 1.5x-2.0x band
+quickly and trips the desperate bar at 2.0x.  A socket that is flat
+sits at some fixed ratio forever and eventually trips moderate on the
+2-bad-check rule.  The moderate tier is what flat sockets reach, by
+construction.  This fully explains why it has been reading as a coin
+flip -- the tier's catchment, not its logic, is broken.
+
+### Recommendation
+
+Suppress flat swaps in the MODERATE tier only.
+
+    moderate          current    minus flat
+    n                     93          20
+    win%                11.8%         30%
+    win:loss            2.75:1       1.5:1
+    fires/day             47          ~10
+
+The 78% reduction in moderate fires is worth the small loss of
+flat-class "wins" (7.9% rate, inside noise).  The cwnd resets avoided
+are real; the wins lost are not.
+
+Do NOT gate:
+  - desperate.  Its flat subpopulation is 21.9%, much smaller, and the
+    "this socket is clearly bad" principle stands even without
+    history.
+  - insufficient.  42.4% win rate, the single largest source of real
+    wins besides rising.  These are the socket's first "is this
+    algorithm working?" verdict -- history is unavailable, not absent
+    for good reason.
+
+### Implementation sketch (not done)
+
+Two u64 in conn_state to hold the last two metric samples (last_metric
+already holds the current one) plus a u64 sample counter.  On each
+vote: shift, update counter.  Gate:
+
+    if (sample_count >= 3 &&
+        max3 / min3 < 1.10 &&
+        <we are in the moderate tier>)
+            suppress swap
+
+Reset the shift register on swap (algorithm changed; history across
+the change is not meaningful).
+
+Cost: conn_state grows 80 -> 104 bytes.  STATE_VERSION bump required.
+
+Not implemented.  Design is settled; implementation is next-session
+work.
+
 ## DIAGNOSTIC 2026-09-15 (late) — effect-size analysis; moderate tier is a null-firer
 
 After 0.4.36 shipped and the tracker read correctly, we looked at why
@@ -243,10 +339,11 @@ Not touched this session (still open):
   that the late-2026-09-15 diagnostic rejected (see that section).
 - Moderate tier is a null-firer: 11.8% real win / 83.9% null /
   4.3% real loss over 93 swaps (09-14 + 09-15).  The old '44-50%
-  IMP/WRS' reading was sign-test noise and is retired.  See the
-  'DIAGNOSTIC 2026-09-15 (late)' section for the effect-size data,
-  the rejected best_seen fire-gate, and the proposed short-trend
-  signal.  Not yet fixed.
+  IMP/WRS' reading was sign-test noise and is retired.  Root cause
+  identified 2026-09-15 (later): the tier selects for flat sockets
+  (78.5% of its fires vs 21.9% in desperate).  Fix is a flat-gate
+  on moderate only -- see the two DIAGNOSTIC sections from
+  2026-09-15.  Design settled, not implemented.
 - Prefix bucketing for mobile IPv6 (carrier rotates within /48s and
   /60s).  Would need configurable prefix length.  Not started.
 - GitHub release pages for 0.4.30 through 0.4.36 -- tags exist,
