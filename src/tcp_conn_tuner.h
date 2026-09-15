@@ -105,6 +105,14 @@ struct remote_host {
     __u64 best_v;
     __u64 second_i;
     __u64 second_v;
+    /* Reference-refresh streak state.  A single far-better-than-
+     * reference reading is treated as an outlier; REF_HIGH_STREAK_N
+     * in a row promote the reference to the best of the streak.
+     * Frozen while allow_ref_update is false (control-plane votes). */
+    __u64 rate_high_streak;   /* consecutive readings > ref * REF_OUTLIER_FACTOR */
+    __u64 rate_high_max;      /* max of those readings */
+    __u64 rtt_low_streak;     /* consecutive readings < ref / REF_OUTLIER_FACTOR */
+    __u64 rtt_low_min;        /* min of those readings */
     struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
 };
 
@@ -170,6 +178,20 @@ struct remote_host {
 #define REF_HEAL_FACTOR 3
 #define REF_HEAL_DIV 16
 
+/* Reference-update gate.  Segment-rung votes (>= 10K segments)
+ * demonstrate sustained throughput and pass naturally.  Time-check
+ * votes still fire at TIME_CHECK_MIN_SEGS, but may only move the
+ * references when the socket has advanced by REF_TIME_CHECK_MIN_SEGS
+ * (~390 Kbps sustained).  Control-plane traffic (DNS, keepalive,
+ * ctrl-API) never comes close, so it cannot drift the references in
+ * either direction. */
+#define REF_TIME_CHECK_MIN_SEGS  2000
+/* Consecutive far-better-than-reference readings that promote the
+ * reference.  One anomalous reading is still rejected;
+ * REF_HIGH_STREAK_N in a row are treated as evidence and promote the
+ * reference to the max of the rate streak / min of the rtt streak. */
+#define REF_HIGH_STREAK_N        5
+
 /* The metric we calcuate compares current connection min_rtt and rate_delivered to
  * the min rtt and max rate delivered we have observed for the remote host.
  * The idea is that we want to reward congestion control algorithms that minimize
@@ -202,6 +224,7 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                                              __u64 min_rtt,
                                              __u64 avg_rtt,
                                              __u64 rate_delivered,
+                                             bool allow_ref_update,
                                              __u64 *rtt_term_out,
                                              __u64 *rate_term_out,
                                              __u64 *heal_rtt_out,
@@ -213,27 +236,64 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
         __u64 heal_rtt = 0;
         __u64 heal_rate = 0;
 
-        if (!r->min_rtt) {
-                r->min_rtt = min_rtt;
-        } else if (min_rtt < r->min_rtt) {
-                /* New low: accept unless more than REF_OUTLIER_FACTOR
-                 * better than current (reject sudden outliers). */
-                if (min_rtt >= r->min_rtt / REF_OUTLIER_FACTOR)
+        if (allow_ref_update) {
+                /* min_rtt: single far-low reading is an outlier;
+                 * REF_HIGH_STREAK_N in a row promote to the min of
+                 * the streak.  Progressive improvements (below ref
+                 * but within REF_OUTLIER_FACTOR) accepted directly. */
+                if (!r->min_rtt) {
                         r->min_rtt = min_rtt;
-        } else if (min_rtt > r->min_rtt * REF_HEAL_FACTOR) {
-                /* Far above reference: heal it upward. */
-                r->min_rtt += (min_rtt - r->min_rtt) / REF_HEAL_DIV;
-                heal_rtt = r->min_rtt;
-        }
-        if (!r->max_rate_delivered) {
-                r->max_rate_delivered = rate_delivered;
-        } else if (rate_delivered > r->max_rate_delivered) {
-                if (rate_delivered <= r->max_rate_delivered * REF_OUTLIER_FACTOR)
+                        r->rtt_low_streak = 0;
+                        r->rtt_low_min = 0;
+                } else if (min_rtt < r->min_rtt / REF_OUTLIER_FACTOR) {
+                        r->rtt_low_streak++;
+                        if (r->rtt_low_min == 0 || min_rtt < r->rtt_low_min)
+                                r->rtt_low_min = min_rtt;
+                        if (r->rtt_low_streak >= REF_HIGH_STREAK_N) {
+                                r->min_rtt = r->rtt_low_min;
+                                r->rtt_low_streak = 0;
+                                r->rtt_low_min = 0;
+                        }
+                } else if (min_rtt < r->min_rtt) {
+                        r->min_rtt = min_rtt;
+                        r->rtt_low_streak = 0;
+                        r->rtt_low_min = 0;
+                } else {
+                        r->rtt_low_streak = 0;
+                        r->rtt_low_min = 0;
+                        if (min_rtt > r->min_rtt * REF_HEAL_FACTOR) {
+                                r->min_rtt += (min_rtt - r->min_rtt) / REF_HEAL_DIV;
+                                heal_rtt = r->min_rtt;
+                        }
+                }
+
+                /* max_rate_delivered: symmetric. */
+                if (!r->max_rate_delivered) {
                         r->max_rate_delivered = rate_delivered;
-        } else if (rate_delivered * REF_HEAL_FACTOR < r->max_rate_delivered) {
-                /* Far below ceiling: heal it downward. */
-                r->max_rate_delivered -= (r->max_rate_delivered - rate_delivered) / REF_HEAL_DIV;
-                heal_rate = r->max_rate_delivered;
+                        r->rate_high_streak = 0;
+                        r->rate_high_max = 0;
+                } else if (rate_delivered > r->max_rate_delivered * REF_OUTLIER_FACTOR) {
+                        r->rate_high_streak++;
+                        if (rate_delivered > r->rate_high_max)
+                                r->rate_high_max = rate_delivered;
+                        if (r->rate_high_streak >= REF_HIGH_STREAK_N) {
+                                r->max_rate_delivered = r->rate_high_max;
+                                r->rate_high_streak = 0;
+                                r->rate_high_max = 0;
+                        }
+                } else if (rate_delivered > r->max_rate_delivered) {
+                        r->max_rate_delivered = rate_delivered;
+                        r->rate_high_streak = 0;
+                        r->rate_high_max = 0;
+                } else {
+                        r->rate_high_streak = 0;
+                        r->rate_high_max = 0;
+                        if (rate_delivered * REF_HEAL_FACTOR < r->max_rate_delivered) {
+                                r->max_rate_delivered -=
+                                        (r->max_rate_delivered - rate_delivered) / REF_HEAL_DIV;
+                                heal_rate = r->max_rate_delivered;
+                        }
+                }
         }
         if (r->min_rtt) {
                 __u64 dev = avg_rtt > r->min_rtt ? avg_rtt - r->min_rtt : 0;

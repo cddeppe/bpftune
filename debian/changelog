@@ -1,3 +1,35 @@
+bpftune (0.4.32) UNRELEASED; urgency=medium
+
+  * Reference-drift fix: gate reference updates on sustained-transfer
+    evidence, and allow the reference to recover upward via a streak
+    of 5 consecutive far-better readings.
+    - Down-drift observed: DNS, ctrl-API, SSH keepalives deliver
+      tiny rates (88K-350K).  Their heal-down rule (rate < ref/3)
+      pulled max_rate_delivered toward control-plane rates.
+      Overnight on the home bucket this collapsed the ref from
+      ~20M to 1.68M.
+    - Up-lock observed: once collapsed, real traffic at 5-10M sits
+      above ref*2 = 3.36M, so the outlier-rejection rule refused to
+      accept it.  Nothing could move the ref up.
+    - Fix part 1: new REF_TIME_CHECK_MIN_SEGS (2000) gates
+      time-check reference updates.  Segment-rung votes (>= 10K
+      segments) pass naturally.  Control-plane sockets cannot
+      reach 2000.
+    - Fix part 2: streak promotion.  Consecutive readings far past
+      the ref (rate > ref*2, or rtt < ref/2) accumulate; at
+      REF_HIGH_STREAK_N (5) in a row, promote the reference to the
+      max (rate) or min (rtt) of the streak.  A single anomalous
+      reading is still rejected.
+    - Fix part 3: the same gate applies to the heal-down (rate)
+      and heal-up (rtt) paths.  Control sockets cannot drag the
+      reference in either direction.
+  * struct remote_host gains rate_high_streak, rate_high_max,
+    rtt_low_streak, rtt_low_min.
+  * STATE_VERSION 9 -> 10.  State file MUST be deleted on
+    deploy.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 12:00:00 +0200
+
 bpftune (0.4.31) UNRELEASED; urgency=medium
 
   * Per-socket freeze after FREEZE_AFTER_SWAPS (4) swaps.
