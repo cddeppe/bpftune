@@ -63,7 +63,7 @@ touching the thresholds or the metric.
 
 Falsification test: if d=0 fires drop as expected but win% stays
 near 12%, the gate is filtering the wrong fires and we revert.
-Run /tmp/swap_effectsize.py on 09-16 and compare.
+Run tools/swap-effectsize.py on 09-16 and compare.
 
 ### Verifier
 
@@ -316,10 +316,12 @@ trend actually separates the win rows from the null rows.
 
 ### Tools
 
-/tmp/swap_effectsize.py on the heavy host re-bins a day of met log
-swaps by effect size.  /tmp/swap_headroom.py computes per-socket
-headroom at fire time (the analysis above).  Both are throwaway
-scripts -- copy to tools/ if they get reused.
+tools/swap-effectsize.py re-bins a day of met log swaps by effect
+size (the analysis above).  tools/swap-trend.py classifies each
+socket's own trajectory at swap time; see the short-trend section.
+The per-socket headroom computation that rejected the best_seen
+fire gate was a one-off; its logic is described above and in the
+short-trend section, but the script itself was not kept.
 
 ## SESSION 2026-09-15 (evening) — 0.4.36 userspace re-anchor
 
@@ -1253,10 +1255,15 @@ every netns. `tools/bucket-leaders.py` flattens them — needs a map-ID column.
 
 ## Tools
 `tools/bucket-leaders.py` — top-3 algorithms per bucket with sample counts.
+`tools/swap-effectsize.py` — bin swaps by effect size (win/null/loss).
+`tools/swap-trend.py` — classify each socket's trajectory at swap time.
+
 Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
 `raw.githubusercontent.com/<branch>/...` doesn't work):
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/bucket-leaders.py -o /usr/local/bin/bucket-leaders.py
-    sudo chmod +x /usr/local/bin/bucket-leaders.py
+    sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-effectsize.py -o /usr/local/bin/swap-effectsize.py
+    sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-trend.py -o /usr/local/bin/swap-trend.py
+    sudo chmod +x /usr/local/bin/bucket-leaders.py /usr/local/bin/swap-effectsize.py /usr/local/bin/swap-trend.py
 
 ## Open questions
 1. Reference drift churn — home bucket `max_rate` moves 7M→47M across reads,
