@@ -1,3 +1,26 @@
+bpftune (0.4.34) UNRELEASED; urgency=medium
+
+  * Moderate-tier margin raised from 1.25x to 1.50x.
+    Observed: on buckets where top algorithms are within ~10%
+    of each other (TIGHT x1.0/x1.1), the 1.25x-1.50x band is
+    inside the metric's noise.  Swaps fired in that band landed
+    below a coin flip (12 IMP / 15 WRS over one day).  Raising
+    the floor to 1.50x keeps the tier for meaningful moderate
+    cases (1.50-2.00x) and drops the noise band.
+  * Post-freeze desperate tier now judges against the socket's
+    own best_seen_metric, not the bucket leader.  Observed: a
+    frozen socket (cookie 2927) cycled eight more times through
+    bic/veno/illinois/highspeed/htcp while every algorithm
+    produced 12-14M -- the socket was at its path ceiling, not
+    algorithm-limited.  The bucket-relative 2x test kept firing
+    because the bucket best_v was 5.6M (other sockets ran
+    faster on the same path).  Now: a frozen socket only gets a
+    post-freeze desperate swap if last_metric >= best_seen * 2.
+    Pre-freeze behavior unchanged.
+  * No struct changes.  STATE_VERSION unchanged.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Tue, 15 Sep 2026 16:00:00 +0200
+
 bpftune (0.4.33) UNRELEASED; urgency=medium
 
   * Shorter settle window for desperate and persistent-bad sockets.

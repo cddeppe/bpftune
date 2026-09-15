@@ -147,7 +147,7 @@ struct remote_host {
  * MAX_SWAPS times, move it.  After a swap, suppress re-judgement
  * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
  * ssthresh, so early samples on the new algorithm are a cold start. */
-#define SWAP_MARGIN_PCT 125     /* last_metric >= best_alt * 125 / 100 fires */
+#define SWAP_MARGIN_PCT 150     /* last_metric >= best_alt * 150 / 100 fires */
 #define SWAP_BAD_FIRST      2   /* checkpoints before first swap */
 #define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
 /* After this many swaps, freeze: go to the algorithm on which

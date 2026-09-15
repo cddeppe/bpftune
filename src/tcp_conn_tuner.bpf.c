@@ -436,8 +436,20 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             bool margin_met = (best_alt != ~((__u64)0) &&
                                statep->last_metric != 0 &&
                                statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT);
+            /* Post-freeze, "desperate" is judged relative to this
+             * socket's own best_seen_metric rather than the bucket
+             * leader.  A frozen socket that stays at ~best_seen (even
+             * if far above the bucket best_v) is not broken -- no
+             * algorithm will move it, and swapping just costs a cwnd
+             * reset for nothing.  Only a genuine collapse --
+             * last_metric >= best_seen * 2 -- reopens the desperate
+             * tier for a frozen socket.  Pre-freeze behavior is
+             * unchanged: bucket-relative 2x still fires immediately. */
+            bool desperate_post = (statep->last_metric * 100 >=
+                                   statep->best_seen_metric * 200);
             bool desperate = (margin_met &&
-                              statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT);
+                              statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT &&
+                              (!statep->frozen || desperate_post));
 
             /* Persist-bad: consecutive above-margin votes.  Not reset
              * by swaps -- the point is "this socket has been bad for a
