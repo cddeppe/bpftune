@@ -9,21 +9,111 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `1c1a3b9` (0.4.32)
-- Latest release: 0.4.35
+- Latest commit: `87aa1f6` (0.4.36)
+- Latest release: 0.4.36
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.35** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.35** | runs git push origin |
-| Target | amd64 | **0.4.35** | mostly idle |
-| Builder | aarch64 | **0.4.35** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.36** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.36** | runs git push origin |
+| Target | amd64 | **0.4.36** | mostly idle |
+| Builder | aarch64 | **0.4.36** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-15 (evening) — 0.4.36 userspace re-anchor
+
+The health check exposed a real tracker bug on the home bucket
+82.43.215.97.  Observed dump (67 instances, several algorithms with
+4-5 votes each -- not a fresh bucket):
+
+    best_i=2 (htcp)  best_v=1,798,336
+    second_i=1 (bbr) second_v=6,368,457
+    alg=3 (dctcp) n=5 val=608,817   <- true minimum, ignored
+
+Three problems: the tracker was 3x off, second_i == best_i in an
+earlier dump (structurally impossible), and both candidates had
+multiple votes so this was not a small-sample artifact.
+
+Root cause.  The tracker is maintained in two places, both
+event-driven: (a) the vote path incrementally promotes non-leaders
+when they vote and their value drops below best_v, (b) the
+ESTABLISHED-time rescan (0.4.27) rescans the metric array but only
+fires on new connections.  Between an ESTABLISHED and the next one,
+a non-leader EMA can drift down without triggering the promote
+path.  Dctcp reached 608K with n=5 and was never promoted.  The
+tracker is guaranteed consistent with the array only at the instant
+ESTABLISHED runs.
+
+Why not fix it in BPF.  Tried an inline 16-way unrolled scan in the
+vote path (draft attempt).  Verifier exploded: 222,524 insns /
+20,363 states (from 2,984 / 190).  Loads, but would slow every
+socket and leave no headroom.  Backed out.
+
+The fix.  Userspace re-anchor in the daemon
+(src/tcp_conn_tuner.c).  A worker thread sleeps 30s, walks every
+bucket in remote_host_map, and writes the correct
+best_i/best_v/second_i/second_v back via bpf_map_update_elem.
+Read-modify-write: reference-fix fields (rate_high_streak/max,
+rtt_low_streak/min) and every other field carried through unchanged.
+
+Selection rules mirror the BPF side:
+- skip metric_count == 0 and metric_value 0 / ~0 sentinel
+- leader: minimum value among metrics with metric_count >=
+  MIN_LEADER_TRUST (3)
+- second: metric_count > 0, excludes the leader, requires value
+  >= best_v so the best_v <= second_v invariant the vote path
+  maintains is preserved
+- if no trusted leader: force best_i/best_v/second_i/second_v = 0
+  so the swap path sees "no leader" instead of stale values
+
+The BPF program is unchanged.  The swap decision keeps reading
+best_i/second_i exactly as before.
+
+Wiring.  pthread_create from init() after both cgroup attaches
+succeed; pthread_join from fini() before save_remote_host_map.
+Worker takes its own thread caps (caps are per-thread).  Sleep is
+sliced at 1s so fini() does not stall.
+
+Constants.  REANCHOR_INTERVAL 30 in tcp_conn_tuner.c.  Anchored to
+the same MIN_LEADER_TRUST the BPF side uses.
+
+No STATE_VERSION bump (v12 unchanged), no state file delete needed
+on deploy.
+
+Verifier numbers, unchanged from 0.4.35:
+    ESTABLISHED 15242 / 1083
+    vote         2984 / 190
+(arm64 builder reports 17851 / 1218 and 2707 / 181 -- per-arch
+verifier counting; no BPF source changed so these are the same as
+whatever 0.4.35 produced there.)
+
+Verification on the heavy host, two dumps 60s apart, identical:
+    instances=182 best_i=3 best_v=2923333 second_i=4 second_v=3241955
+      alg=3 n=23 val=2923333
+      alg=4 n=2  val=3241955
+best_i points at the trusted minimum, second_i is distinct, and
+second_v >= best_v.  Stable across the two reads; the worker writes
+only when values change so there is no churn.
+
+Deployed to all four hosts.
+
+Not touched this session (still open):
+- best_seen_metric outlier problem.  A socket whose single best
+  sample was a lucky quiet moment refuses post-freeze swaps forever
+  because the gate is last_metric >= best_seen * 2.  Observed on
+  cookie 2927 (15 swaps despite freeze).  Candidate: signal-average
+  instead of extremum for best_seen_metric.
+- Moderate tier IMP/WRS 44-50%.  The 1.25x band was raised to 1.50x
+  in 0.4.34.  Watching whether the 1.50-2.00 band beats a coin flip.
+- Prefix bucketing for mobile IPv6 (carrier rotates within /48s and
+  /60s).  Would need configurable prefix length.  Not started.
+- GitHub release pages for 0.4.30 through 0.4.36 -- tags exist,
+  pages do not.  Cosmetic.
 
 ## SESSION 2026-09-15 (afternoon) — 0.4.33 to 0.4.35
 
