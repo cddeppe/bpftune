@@ -9,21 +9,114 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `961843a` (0.4.38)
-- Latest release: 0.4.38
+- Latest commit: `61c9ce3` (0.4.40)
+- Latest release: 0.4.40
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.38** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.38** | runs git push origin |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.40** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.39** | runs git push origin (0.4.40 .deb staged on /mnt/backup) |
 | Target | amd64 | **0.4.38** | mostly idle |
-| Builder | aarch64 | **0.4.38** | builds arm64 |
+| Builder | aarch64 | **0.4.40** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-16 (late) - 0.4.39 diagnostic + 0.4.40 util gate
+
+Followed the 2026-09-16 discovery that the live trace showed the
+kernel app_limited flag on ~96% of sockets.  Turned that into a
+per-vote measurement, then a fix.
+
+### 0.4.39 - diagnostic printk (snd_cwnd / packets_out)
+
+Added a second printk to the vote path:
+
+    cwnd cookie=N snd_cwnd=X pkts_out=Y
+
+Joined by cookie to the existing met line.  Split across two lines
+because the met line is already at the 12-argument limit.  No
+metric logic change, no struct change, no state change.
+
+Result, four samples over ~40 minutes on heavy:
+
+    paired votes    app-limited      cwnd-bound
+    117             47.0%            6.0%
+    274             53.6%            5.1%
+    435             50.1%            4.8%
+
+Mean median utilization ~0.08-0.10.  Half of all votes are cast by
+sockets using <10% of their cwnd-permitted window.  Stable across
+4x the sample.  Per-algorithm not readable yet (n too small) but
+the aggregate confirms: most votes measure the rate the app
+supplied, not the algorithm's capability.  That is exactly the
+dilution that explains the 34-65% spread between best and worst
+algorithm on busy buckets, versus the 200%+ a genuine algorithmic
+difference would show.
+
+### 0.4.40 - utilization gate on the EMA update
+
+Skip the bucket metric_value EMA update for votes where
+
+    packets_out * 100 < snd_cwnd * METRIC_MIN_UTIL_PCT   (10)
+
+BBR is exempt (rate-based, snd_cwnd deliberately large by design).
+snd_cwnd == 0 (no window info on the hook) is allowed.  metric_count
+still increments; coverage / MIN_LEADER_TRUST semantics unchanged.
+
+Verifier: ESTABLISHED 15242/1083 unchanged; vote 3860/267 ->
+3875/271.  Cost of the gate is +15 insns.
+
+### Both fixes were preceded by verifier-limit failures
+
+The first 0.4.40 draft also skipped sentinel metrics (0 / ~0) in
+the ESTABLISHED min loop.  That blew the vote program to the
+1M instruction limit -- 21034 states, 79x the 267-state baseline.
+The 16-way unrolled min loop cannot tolerate a per-iteration
+branch with unprovable value ranges.  Reverted.  Both consumers
+of minindex already check the value sentinel or metric_count
+before use, so no filter was needed in the first place.
+
+Lesson for future work: the ESTABLISHED min loop and any 16-way
+unrolled code are verifier-fragile.  Do not add per-iteration
+branches.  Verify with bpftool load before assuming.
+
+### Falsification checkpoint (written before the 09-17 data lands)
+
+0.4.40 is a bet on structural reasoning, not a measured
+improvement.  The reasoning: votes where the socket is not using
+its window rank algorithms on a quantity they did not set;
+skipping those from the EMA should sharpen the ranking.
+
+Test on the 09-17 log against the 09-16 post-gate window:
+
+  - expect the 34-65% best/worst spread on home-bucket
+    leaderboards to widen toward 100%+ if cwnd-bound votes
+    discriminate algorithms
+  - expect moderate-tier swap win% not to fall
+  - expect desperate-tier win% not to fall
+
+If swap outcomes get worse on 09-17, revert 0.4.40 alone.
+0.4.38/0.4.39 stay regardless.
+
+If outcomes and spread are both unchanged, cwnd-bound votes do
+not discriminate either -- the metric is at its floor for this
+workload and we need a different observable.
+
+### Deployed
+
+heavy and aarch64 builder on 0.4.40 as of 2026-09-16 18:21 UTC.
+569 met / 569 cwnd post-restart, vote path confirmed live.
+vps-3959 on 0.4.39, 0.4.40 .deb staged on /mnt/backup.
+ip-172-26-13-90 (idle amd64 target) still on 0.4.38.
+
+### Diagnostic value: done
+
+The 0.4.39 cwnd printk has served its purpose.  0.4.41 should
+stop emitting it (or rate-limit it) to keep log size down.
 
 ## SESSION 2026-09-15 (late night) -- 0.4.38: 0.4.37 flat-gate never fired
 
@@ -1370,3 +1463,8 @@ Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
   the mount.  Kick off amd64 and arm64 compiles simultaneously,
   then deploy all four hosts from the mount.  0.4.38 was built
   serially and wasted ~10 minutes of wall clock.
+- **`rm -f src/*.skel.h src/*.bpf.o src/*.o` before `make clean`.**
+  The Makefile's .skel.h regeneration does not depend on .bpf.o;
+  a stale .skel.h embeds the previous bytecode into the .so and
+  the new change never reaches the running daemon.  Hit on 0.4.38
+  and 0.4.39.  Non-negotiable.
