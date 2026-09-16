@@ -378,6 +378,17 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                    bpf_get_socket_cookie(ops), bpf_ntohl(ops->remote_port),
                    s, (__u64)tp->segs_out + tp->segs_in, metric, rtt_term, rate_term,
                    loss_term, min_rtt, remote_host->min_rtt, avg_rtt);
+        /* 0.4.39 diagnostic: window state at vote time.  When
+         * packets_out << snd_cwnd the app is not filling the
+         * cwnd-permitted window -- the app_limited case the live
+         * trace showed dominant.  Votes in that state under-report
+         * the algorithm: delivery_rate reflects the app, not the
+         * path.  The met line above is at the 12-argument printk
+         * limit, so this lives on its own line and joins by cookie.
+         * No metric logic change; diagnostic only. */
+        bpf_printk("cwnd cookie=%llu snd_cwnd=%llu pkts_out=%llu",
+                   bpf_get_socket_cookie(ops),
+                   (__u64)tp->snd_cwnd, (__u64)tp->packets_out);
         if (heal_rtt)
             bpf_printk("heal_rtt smrtt=%llu newref=%llu",
                        (unsigned long long)min_rtt,

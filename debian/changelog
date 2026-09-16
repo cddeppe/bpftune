@@ -1,3 +1,32 @@
+bpftune (0.4.39) UNRELEASED; urgency=medium
+
+  * Diagnostic: emit snd_cwnd and packets_out on each vote.
+
+    The live trace on the heavy host showed the kernel's app_limited
+    flag set on ~96% of sockets.  If that holds, most votes measure
+    the app's supplied rate rather than the path's capacity, and the
+    per-algorithm bucket EMAs would converge on the app's rate
+    instead of the algorithm's capability.  The observed 34-65%
+    spread between best and worst algorithm on busy buckets
+    (versus the 200%+ a genuine difference would show) is
+    consistent with this dilution, but is not by itself enough to
+    prove it.
+
+    Fix can't be designed until the size of the problem is known,
+    and the app_limited flag is not exposed to BPF.  packets_out vs
+    snd_cwnd is the proxy: when packets_out << snd_cwnd the app has
+    not filled the window the algorithm permits.  Both fields are
+    on bpf_tcp_sock and already in scope at the vote site.
+
+    A second printk line joins by cookie to the existing met line.
+    Split because the met line is already at the 12-argument printk
+    limit.  Doubles the met log volume for the duration of the
+    diagnostic.
+
+    No metric logic change.  No struct change.  No state file change.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Wed, 16 Sep 2026 17:00:00 +0200
+
 bpftune (0.4.38) UNRELEASED; urgency=medium
 
   * Fix the 0.4.37 flat-gate: relax the required sample count
