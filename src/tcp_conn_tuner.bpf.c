@@ -172,6 +172,15 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
             __u64 min2 = ~((__u64)0);
             for (i = 0; i < NUM_TCP_CONN_METRICS; i++) {
                 __u64 v = remote_host->metrics[i].metric_value;
+                /* Sentinel metrics (0 unset, ~0 poisoned) may win
+                 * the min loop here and be reported as minindex,
+                 * but both consumers check before writing: the
+                 * ESTABLISHED path requires metric_count > 0, and
+                 * the vote path tracker update is guarded by its
+                 * own v != 0 && v != ~0 test.  A skip filter here
+                 * blew the verifier to the 1M instruction limit
+                 * (16-way unrolled loop, unprovable ranges), so it
+                 * is intentionally omitted. */
                 if (v < metric_min) {
                     min2 = metric_min;
                     metric_min = v;
@@ -604,13 +613,33 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     }
 
     {
-        __u64 __div = m->metric_count + 1;
-        if (__div > METRIC_AVG_CAP)
-            __div = METRIC_AVG_CAP;
-        if (metric > m->metric_value)
-            m->metric_value += (metric - m->metric_value) / __div;
-        else
-            m->metric_value -= (m->metric_value - metric) / __div;
+        /* 0.4.40: skip the EMA update for app-limited votes.
+         * A vote where the socket is not using its window
+         * measures the app's supplied rate, not the algorithm's
+         * capability.  BBR is exempt (rate-based, snd_cwnd
+         * deliberately large).  If snd_cwnd is 0 there is no
+         * signal; allow the update rather than leave the metric
+         * permanently unranked. */
+        bool do_update = false;
+        if (s == ALG_BBR_INDEX || tp->snd_cwnd == 0) {
+            do_update = true;
+        } else {
+            /* util >= METRIC_MIN_UTIL_PCT, expressed without a
+             * 64-bit divide (the verifier chokes on variable /
+             * variable).  packets_out >= snd_cwnd * threshold/100. */
+            if ((__u64)tp->packets_out * 100 >=
+                (__u64)tp->snd_cwnd * METRIC_MIN_UTIL_PCT)
+                do_update = true;
+        }
+        if (do_update) {
+            __u64 __div = m->metric_count + 1;
+            if (__div > METRIC_AVG_CAP)
+                __div = METRIC_AVG_CAP;
+            if (metric > m->metric_value)
+                m->metric_value += (metric - m->metric_value) / __div;
+            else
+                m->metric_value -= (m->metric_value - metric) / __div;
+        }
     }
     {
         __u64 v = m->metric_value;
