@@ -144,6 +144,16 @@ struct remote_host {
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
+/* 0.4.40: utilization gate on the bucket EMA update.  A vote
+ * where the socket is not filling its cwnd-permitted window
+ * measures the rate the app supplied, not the rate the
+ * algorithm permitted; scoring the algorithm on it ranks on a
+ * quantity the algorithm did not set.  Measured on the heavy
+ * host 2026-09-16: median util 0.08-0.10, ~50% of votes under
+ * 0.10, only ~5% above 0.50.  BBR is exempt (rate-based, keeps
+ * snd_cwnd large by design and paces separately). */
+#define METRIC_MIN_UTIL_PCT 10
+#define ALG_BBR_INDEX 1
 /* Mid-socket swap policy.  Compare the current algorithm bucket EMA
  * against the best alternative bucket EMA - not a single socket
  * sample against an average.  If the ratio holds for SWAP_AFTER_BAD

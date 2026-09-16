@@ -1,3 +1,39 @@
+bpftune (0.4.40) UNRELEASED; urgency=medium
+
+  * Utilization gate on the bucket EMA update.
+
+    0.4.39's diagnostic showed half the votes on the heavy host
+    were cast by sockets not using their cwnd-permitted window:
+    packets_out/snd_cwnd median 0.08-0.10, ~50% under 0.10, only
+    ~5% above 0.50.  On those votes the delivered rate is the
+    rate the app supplied, not the rate the algorithm permitted,
+    so the vote ranks algorithms on a quantity they did not set.
+    That is consistent with the 34-65% spread between best and
+    worst algorithm on busy buckets, versus the ~200% a genuine
+    difference would show.
+
+    The EMA update in the vote path now skips sockets whose
+    packets_out/snd_cwnd is below 10%.  metric_count still
+    increments so coverage / MIN_LEADER_TRUST semantics are
+    unchanged; only the metric_value EMA is not updated.
+
+    BBR is exempt.  BBR deliberately keeps snd_cwnd large and
+    paces separately, so packets_out/snd_cwnd is low on a busy
+    BBR socket.  snd_cwnd == 0 (no cwnd info on the hook) is
+    also treated as allowed.
+
+    Sentinel metrics (0 unset, ~0 poisoned) can still win the
+    ESTABLISHED min loop, same as before; both consumers of
+    minindex already check metric_count > 0 or the value
+    sentinel before use, so no filter is needed in the loop.
+    An earlier draft added a skip filter and blew the verifier
+    to the 1M instruction limit (16-way unrolled loop with
+    unprovable value ranges); it was reverted.
+
+    No struct change.  No state file change.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Wed, 16 Sep 2026 20:00:00 +0200
+
 bpftune (0.4.39) UNRELEASED; urgency=medium
 
   * Diagnostic: emit snd_cwnd and packets_out on each vote.
