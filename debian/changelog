@@ -1,3 +1,39 @@
+bpftune (0.4.41) UNRELEASED; urgency=medium
+
+  * Skip origin-facing sockets in the vote path.
+
+    A TCP proxy has two socket directions.  Client-facing (we send
+    video to the user) is the one our CC controls.  Origin-facing (we
+    receive video from a CDN) is not -- our CC on that socket governs
+    HTTP requests and ACKs, not the download rate.  The tuner treated
+    both identically; 0.4.39's diagnostic showed 57.7% of 09-16 swaps
+    were origin-facing (88% on 09-17 morning).
+
+    Vote path now skips sockets where segs_out * 4 < segs_in, i.e.
+    where we are primarily receiving.  Client-facing sockets have
+    segs_out >= segs_in and are unaffected.
+
+  * Suppress moderate-tier swaps on a client-facing socket that is
+    already in motion (falling or oscillating).
+
+    Falling (metric dropping = delivered rate lifting) is the classic
+    shape of an ABR probe: the player requested a higher rendition and
+    the socket is climbing to meet it.  Swapping resets cwnd, shows a
+    dip to the ABR measurement window, and the higher rendition is
+    reverted.  Oscillating (metric bouncing) means a cwnd reset lands
+    mid-swing and makes the next swing worse.
+
+    Measured client-facing: falling n=6 win 0% loss 33%; oscillating
+    n=17 win 12% loss 24%.  Both below the tier baseline (d=1 ~34%).
+
+    After the origin gate above, every socket reaching the swap
+    decision is sending-dominant, so no separate client-side check is
+    required for this gate.
+
+  * No struct change.  No state file change.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Thu, 17 Sep 2026 14:30:00 +0200
+
 bpftune (0.4.40) UNRELEASED; urgency=medium
 
   * Utilization gate on the bucket EMA update.

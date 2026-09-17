@@ -351,6 +351,16 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     s = statep->state & (NUM_TCP_CONG_ALGS - 1);
     if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
         return 1;
+    /* 0.4.41: skip sockets where we are primarily receiving.  On an
+     * origin-facing socket the tuner receives video from a CDN and
+     * only sends requests and ACKs; the local CC state does not
+     * control the download rate, so a vote there scores on a
+     * quantity the algorithm did not set and a swap cannot help.
+     * Measured 2026-09-16: 57.7% of swaps were origin-facing; on
+     * 2026-09-17 morning, 88%.  Client-facing sockets have
+     * segs_out >= segs_in; only those are scored. */
+    if ((__u64)tp->segs_out * 4 < (__u64)tp->segs_in)
+        return 1;
     if (is_close)
         bpf_printk("closport port=%u rport=%u segs=%llu",
                    ops->local_port, bpf_ntohl(ops->remote_port),
@@ -508,6 +518,60 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                 if (n >= 2 && mx * 100 < mn * 110)
                     is_flat = true;
             }
+            /* 0.4.41: classify a socket that is already in motion
+             * (falling on its own, or oscillating) so we do not reset
+             * cwnd mid-motion.  Two shapes, same reason:
+             *
+             *   falling  -- the socket's own metric is dropping, i.e.
+             *               its delivered rate is lifting.  The classic
+             *               shape of an ABR probe: the player requested
+             *               a higher rendition and the socket is
+             *               climbing to meet it.  A swap here shows a
+             *               brief dip to the ABR measurement window
+             *               and gets the higher rendition reverted.
+             *
+             *   oscillating -- the metric is bouncing.  A cwnd reset
+             *               mid-oscillation makes the next swing worse
+             *               rather than better.
+             *
+             * Measured on client-facing swaps (2026-09-16 + 09-17):
+             * falling n=6 win 0%  loss 33%;  oscillating n=17 win
+             * 12% loss 24%.  Both below the tier baseline (~34% d=1).
+             *
+             * Requires at least two valid samples.  Falling requires a
+             * >=5% drop between the last two; oscillating requires
+             * >10% spread and neither the rising nor falling shape.
+             * Single-sample sockets fall through (nothing to judge).
+             * After the origin gate above, every socket reaching this
+             * point is sending-dominant, so no client-side check is
+             * needed here. */
+            bool is_moving = false;
+            {
+                __u64 v0 = statep->last_metric;
+                __u64 v1 = statep->hist_1;
+                __u64 v2 = statep->hist_2;
+                bool ok0 = (v0 != 0 && v0 != ~((__u64)0));
+                bool ok1 = (v1 != 0 && v1 != ~((__u64)0));
+                bool ok2 = (v2 != 0 && v2 != ~((__u64)0));
+                /* falling: last two valid samples, latest down >=5% */
+                if (ok0 && ok1 && v1 * 105 > v0 * 100)
+                    is_moving = true;
+                /* oscillating: three valid samples with >10% spread and
+                 * no monotonic direction */
+                if (!is_moving && ok0 && ok1 && ok2) {
+                    __u64 mn = v0, mx = v0;
+                    if (v1 < mn) mn = v1;
+                    if (v1 > mx) mx = v1;
+                    if (v2 < mn) mn = v2;
+                    if (v2 > mx) mx = v2;
+                    if (mx * 100 >= mn * 110) {
+                        bool rising = (v2 < v1 && v1 < v0);
+                        bool falling = (v2 > v1 && v1 > v0);
+                        if (!rising && !falling)
+                            is_moving = true;
+                    }
+                }
+            }
             bool margin_met = (best_alt != ~((__u64)0) &&
                                statep->last_metric != 0 &&
                                statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT);
@@ -581,14 +645,16 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                             __u64 ac = remote_host->metrics[s].metric_count;
                             __u8 from_i = s;
                             __u8 to_i = best_alt_i;
-                            if (is_flat) {
-                                /* Socket is at its own plateau;
-                                 * the current algorithm is not the
-                                 * limiter.  Suppress the swap and
-                                 * reset the bad-check count so the
-                                 * socket must re-demonstrate two
-                                 * consecutive non-flat bad checks
-                                 * before we try again. */
+                            if (is_flat || is_moving) {
+                                /* Flat: at own plateau, algorithm is
+                                 * not the limiter.  Moving: socket is
+                                 * recovering (falling) or bouncing
+                                 * (oscillating) on its own -- a cwnd
+                                 * reset would interrupt that, not help
+                                 * it.  Either way do not swap; reset
+                                 * the bad-check count so the socket
+                                 * must re-demonstrate rather than
+                                 * firing the moment the motion stops. */
                                 statep->bad_checkpoints = 0;
                             } else if (!set_cong(ops, best_alt_i)) {
                                 statep->swap_count++;
