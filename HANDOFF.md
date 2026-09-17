@@ -25,6 +25,102 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-17 (morning) - origin-side swaps cannot help
+
+Discovered while investigating whether the d=1 win rate decline
+across 09-14 (40.3%) -> 09-15 (31.9%) -> 09-16 (26.1%) was real.
+It is partly a population artifact.
+
+### The finding
+
+On 09-16, of 239 swaps in the heavy log, 138 (57.7%) were on
+origin-facing sockets.  On 09-17 morning, 22 of 25 (88%) were.
+
+Origin-facing sockets are ones where the proxy is receiving data
+(video from a CDN).  Congestion control on such a socket controls
+how fast the *proxy sends HTTP requests and ACKs* upstream -- NOT
+how fast the CDN sends data down.  A swap on an origin-facing
+socket changes a CC state variable that does not influence the
+flow being tuned.  It cannot improve anything.
+
+The tuner treats every socket identically.  No direction filter
+exists in the vote path:
+
+    grep -nE "local_port|remote_port|segs_in|segs_out" \
+         src/tcp_conn_tuner.bpf.c
+
+local_port and remote_port appear only inside bpf_printk.  The
+vote path fires on BPF_SOCK_OPS_RTT_CB for any full socket, gated
+only on tp->segs_out + tp->segs_in >= METRIC_MIN_SEGS -- total
+segments in both directions, no directional weighting.
+
+The metric calculation makes this worse: the vote trigger is a
+sum of both directions, but rate_delivered / rate_interval_us is
+a measure of *our sending rate*.  On an origin-facing socket that
+quantity is small and unrelated to how fast the CDN delivers to
+us.  The metric is measuring the wrong direction there.
+
+### Why this matters
+
+- Aggregate d=1 win% is dominated by origin-side swaps whose
+  outcome is structurally fixed.  The 26.1% (09-16) and 20.0%
+  (09-17 morning) readings are not swap quality -- they are
+  mostly noise over a population where nothing can change.
+- Client-facing-only d=1 win% is the number to read for 0.4.40
+  validation.  n was 1 on 09-17 morning, too small.
+- bucket-leaders.py shows origin buckets (142.251.*, 2606:1a40:3::1,
+  etc.) whose leaderboard entries are meaningless.  We have been
+  looking at some of those for days.
+
+### Proposed fix (NOT shipped)
+
+One conditional at the top of the vote path:
+
+    if ((__u64)tp->segs_out * 4 < (__u64)tp->segs_in)
+        return 1;
+
+No loop, no variable division, verifier-safe.  Removes ~60-90% of
+swaps on a large class of sockets where swaps cannot win.
+
+Do NOT ship on top of the in-flight 0.4.40 test.  0.4.40's outcome
+test has to close first, otherwise a d=1 change cannot be
+attributed to either release.
+
+### Reading swaps from now on
+
+Use tools/swap-outcomes-bydir.py (added with this entry).  It
+splits the day's swaps into client-facing (rport != 443) and
+origin-facing (rport == 443) and reports each tier's win/null/loss.
+Read the client-facing row.
+
+### Backing data
+
+09-16 full day:
+    total 239
+    client-facing  101 (42.3%)   d=0=8  d=1=93
+    origin-facing  138 (57.7%)   d=0=7  d=1=131
+
+09-17 07:23 UTC (partial):
+    total  25
+    client-facing   3 (12.0%)
+    origin-facing  22 (88.0%)    d=0=0  d=1=19 win=15.8%
+    client d=1: n=1 (not meaningful)
+
+### Home bucket spread: 09-17 morning regression
+
+Home bucket spread 50.7% (deploy+2h) -> 57.6% -> 65.6% during
+09-16 evening, then 29.0% NARROW at 07:23 09-17.  The worst
+value (lp=8144453) was byte-identical between the evening and
+morning readings -- lp's EMA had not been updated since the last
+evening vote.  The spread narrowed because the best rose
+(htcp=6.3M vs veno=4.9M), not because the worst moved.
+
+Not enough data to conclude.  Possibilities: morning traffic is a
+different population; the cwnd-bound votes cluster on the home
+bucket and homogenize; lp's filtered vote count is too low to
+move the EMA.  Re-check after a full day of 0.4.40 traffic.  If
+spread stays below 40%, treat 0.4.40 with suspicion.
+
 ## SESSION 2026-09-16 (late) - 0.4.39 diagnostic + 0.4.40 util gate
 
 Followed the 2026-09-16 discovery that the live trace showed the
@@ -1426,6 +1522,7 @@ every netns. `tools/bucket-leaders.py` flattens them — needs a map-ID column.
 ## Tools
 `tools/bucket-leaders.py` — top-3 algorithms per bucket with sample counts.
 `tools/swap-effectsize.py` — bin swaps by effect size (win/null/loss).
+`tools/swap-outcomes-bydir.py` — split swaps by direction; read client-facing.
 `tools/swap-trend.py` — classify each socket's trajectory at swap time.
 
 Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
@@ -1433,6 +1530,7 @@ Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/bucket-leaders.py -o /usr/local/bin/bucket-leaders.py
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-effectsize.py -o /usr/local/bin/swap-effectsize.py
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-trend.py -o /usr/local/bin/swap-trend.py
+    sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-outcomes-bydir.py -o /usr/local/bin/swap-outcomes-bydir.py
     sudo chmod +x /usr/local/bin/bucket-leaders.py /usr/local/bin/swap-effectsize.py /usr/local/bin/swap-trend.py
 
 ## Open questions
