@@ -1,5 +1,6 @@
-bpftune (0.4.42) UNRELEASED; urgency=medium
+bpftune (0.4.43) unstable; urgency=medium
 
+  [ Christophe Deppe ]
   * Fix the 0.4.41 origin-side gate: use data_segs_*, not segs_*.
 
     0.4.41 added a check to skip sockets where we are primarily
@@ -17,7 +18,10 @@ bpftune (0.4.42) UNRELEASED; urgency=medium
   * No other change.  Moving-socket suppression (also 0.4.41) is
     unaffected.
 
- -- Christophe Deppe <cddeppe@users.noreply.github.com>  Thu, 17 Sep 2026 17:00:00 +0200
+  [ bpftune ]
+  * histogram-based delivered-rate reference (p99, population-decayed)
+
+ -- bpftune <builder@example.com>  Thu, 17 Sep 2026 19:57:36 +0200
 
 bpftune (0.4.41) UNRELEASED; urgency=medium
 

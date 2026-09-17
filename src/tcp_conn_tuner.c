@@ -74,6 +74,47 @@ static volatile int reanchor_stop;
 static int reanchor_started;
 static int reanchor_fd = -1;
 
+/* ------------------------------------------------------------------
+ * Rate-histogram maintenance (0.4.43).
+ *   (1) Decay:  halve all bins when total > RATE_HIST_HALVE_TOTAL.
+ *   (2) p99:    cumulative scan; find the bin whose count first
+ *               reaches RATE_HIST_PCT% of total; convert to B/s.
+ *   (3) Write p99 back into the bucket as max_rate_delivered.
+ * Sole producer of max_rate_delivered since 0.4.43.
+ * ------------------------------------------------------------------ */
+static void rate_hist_decay(struct rate_hist *h)
+{
+	__u64 new_total = 0;
+	int i;
+
+	if (h->total <= RATE_HIST_HALVE_TOTAL)
+		return;
+	for (i = 0; i < RATE_HIST_BINS; i++) {
+		h->bins[i] >>= 1;
+		new_total += h->bins[i];
+	}
+	h->total = new_total;
+}
+
+static unsigned long long rate_hist_p99(const struct rate_hist *h)
+{
+	__u64 target, cum = 0;
+	int i;
+
+	if (h->total == 0)
+		return 0;
+	target = (h->total / 100) * RATE_HIST_PCT
+	       + ((h->total % 100) * RATE_HIST_PCT) / 100;
+	for (i = 0; i < RATE_HIST_BINS; i++) {
+		cum += h->bins[i];
+		if (cum >= target)
+			break;
+	}
+	if (i >= RATE_HIST_BINS)
+		i = RATE_HIST_BINS - 1;
+	return 1ULL << (i + 10);
+}
+
 static void start_reanchor(struct bpftuner *tuner);
 static void stop_reanchor(void);
 
@@ -288,10 +329,26 @@ static void reanchor_best(int map_fd)
 			new_sv = second_v;
 		}
 
-		if (r.best_i == new_bi && r.best_v == new_bv &&
-		    r.second_i == new_si && r.second_v == new_sv)
-			continue;
+		{
+			__u64 ref_before = r.max_rate_delivered;
 
+			/* 0.4.43: refresh max_rate_delivered from histogram.
+			 * Runs before the 'unchanged' early-continue so that a
+			 * stable bucket still refreshes its reference, and so
+			 * the histogram-derived value is written back to the map.
+			 */
+			rate_hist_decay(&r.rate);
+			{
+				unsigned long long p99 = rate_hist_p99(&r.rate);
+				if (p99 != r.max_rate_delivered)
+					r.max_rate_delivered = p99;
+			}
+
+			if (ref_before == r.max_rate_delivered &&
+				r.best_i == new_bi && r.best_v == new_bv &&
+				r.second_i == new_si && r.second_v == new_sv)
+					continue;
+		}
 		bpftune_log(BPFTUNE_LOG_LEVEL,
 			    "reanchor: best_i=%llu best_v=%llu (was %llu/%llu) second_i=%llu second_v=%llu (was %llu/%llu)\n",
 			    (unsigned long long)new_bi,
@@ -393,8 +450,7 @@ static void stop_reanchor(void)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 12
-
+#define STATE_VERSION 13
 struct state_header {
         __u32 magic;
         __u32 version;
