@@ -1,3 +1,10 @@
+bpftune (0.4.44) UNRELEASED; urgency=medium
+
+  * per-alg proof counters (tier-1 4K/30Mbps, tier-2 8K/100Mbps);
+    STATE_VERSION 14
+
+ -- root <root@vps-3959.up-network.ch>  Thu, 17 Sep 2026 22:50:27 +0200
+
 bpftune (0.4.43) unstable; urgency=medium
 
   [ Christophe Deppe ]

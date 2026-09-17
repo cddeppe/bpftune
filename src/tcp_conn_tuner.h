@@ -67,6 +67,13 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
 #define RATE_HIST_HALVE_TOTAL 100000ULL
 #define RATE_HIST_PCT         99
 
+/* 0.4.44 proof thresholds (bytes/sec).  "Good" = a rate that carries
+ * 4K-class video; "proved" = 8K-class.  Converted from client-side
+ * Mbps figures / 8.  A socket is scored per (socket, alg) at the
+ * moment it first crosses each tier while running that alg. */
+#define PROOF_GOOD_BPS   3750000ULL    /*  30 Mbps */
+#define PROOF_PROVED_BPS 12500000ULL   /* 100 Mbps */
+
 /*
  * Log2-binned delivered-rate histogram.  Bin i covers
  *   [2^i KB/s, 2^(i+1) KB/s).
@@ -99,6 +106,16 @@ struct conn_state {
      * (shape across an algorithm change is not meaningful). */
     __u64 hist_1;
     __u64 hist_2;
+	/* 0.4.44 proof tracking.  One bit per algorithm.  touched is set
+	 * on first contact with an alg (initial selection or swap-in);
+	 * good / proved are set the first time the socket's delivered
+	 * rate crosses the matching tier while on that alg.  cleaned is
+	 * a one-shot flag so the close decrement runs exactly once even
+	 * if STATE_CB fires on multiple transitions. */
+	__u64 touched_bitmap;
+	__u64 good_bitmap;
+	__u64 proved_bitmap;
+	__u64 cleaned;
 };
 
 struct tcp_conn_metric {
@@ -106,6 +123,13 @@ struct tcp_conn_metric {
     __u64 greedy_count;
     __u64 metric_count;
     __u64 metric_value;
+	/* 0.4.44 proof tracking.  sockets_alive counts sockets currently
+	 * on this alg; decremented at socket close for every alg the
+	 * socket ever touched.  sockets_good / sockets_proved count the
+	 * subset that crossed each tier at some point while on this alg. */
+	__u16 sockets_alive;
+	__u16 sockets_good;
+	__u16 sockets_proved;
 };
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
