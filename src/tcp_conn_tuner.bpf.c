@@ -71,28 +71,37 @@ static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
 	return remote_host;
 }
 
-static __always_inline int set_cong(struct bpf_sock_ops *ops, __u8 i)
+static __always_inline int set_cong(struct bpf_sock_ops *ops,
+                                    struct remote_host *remote_host,
+                                    __u8 i)
 {
-        int ret;
+	int ret;
 
-        ret = bpf_setsockopt(ops, SOL_TCP, TCP_CONGESTION, (void *)congs[i],
-                             sizeof(congs[i]));
-        if (ret)
-                return ret;
-        tcp_cong_choices[i & (NUM_TCP_CONG_ALGS - 1)]++;
-        /* update state */
-        struct bpf_sock *sk = ops->sk;
-        struct conn_state *statep;
+	ret = bpf_setsockopt(ops, SOL_TCP, TCP_CONGESTION, (void *)congs[i],
+	                     sizeof(congs[i]));
+	if (ret)
+		return ret;
+	tcp_cong_choices[i & (NUM_TCP_CONG_ALGS - 1)]++;
+	/* update state */
+	struct bpf_sock *sk = ops->sk;
+	struct conn_state *statep;
 
-        if (!sk)
-                return 0;
-        statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
-                                    BPF_SK_STORAGE_GET_F_CREATE);
-        if (statep) {
-                statep->state = (__u64)i;
-                statep->bad_checkpoints = 0;
-        }
-        return 0;
+	if (!sk)
+		return 0;
+	statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
+	                            BPF_SK_STORAGE_GET_F_CREATE);
+	if (statep) {
+		/* 0.4.44: count socket against alg on first contact. */
+		__u8 idx = i & (NUM_TCP_CONG_ALGS - 1);
+		__u64 bit = 1ULL << idx;
+		if (remote_host && !(statep->touched_bitmap & bit)) {
+			statep->touched_bitmap |= bit;
+			remote_host->metrics[idx].sockets_alive++;
+		}
+		statep->state = (__u64)i;
+		statep->bad_checkpoints = 0;
+	}
+	return 0;
 }
 
 __u64 tcp_thin_lto_choices;
@@ -163,7 +172,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
         if (remote_host->selection_count < 2 * NUM_TCP_CONN_METRICS) {
             __u8 forced = remote_host->selection_count & (NUM_TCP_CONN_METRICS - 1);
             remote_host->selection_count++;
-            if (set_cong(ops, forced))
+            if (set_cong(ops, remote_host, forced))
                 remote_host->metrics[forced].metric_value = ~((__u64)0);
             return 1;
         }
@@ -206,7 +215,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                 s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
 
             s &= (NUM_TCP_CONG_ALGS - 1);
-            if (set_cong(ops, s))
+            if (set_cong(ops, remote_host, s))
                 remote_host->metrics[s].metric_value = ~((__u64)0);
         }
     }
@@ -348,6 +357,38 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     statep = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
     if (!statep)
         return 1;
+	/* 0.4.44: decrement proof counters once per socket.
+	 * Only runs on STATE_CB close (is_close).  Placed before the
+	 * METRIC_MIN_SEGS / origin-facing early returns below so that
+	 * short-lived and receive-dominant sockets decrement too --
+	 * otherwise the sockets we most care about never decrement.
+	 * cleaned flag is idempotent across the FIN_WAIT1 /
+	 * CLOSE_WAIT double-fire. */
+	if (is_close && !statep->cleaned) {
+		/* Shift accumulator: constant step (bit <<= 1 per
+		 * iteration) rather than a variable shift amount.
+		 * #pragma unroll flattens to 16 straight-line blocks.
+		 * Close is a cold path so the size is fine. */
+		__u64 bit = 1;
+		for (int b = 0; b < NUM_TCP_CONG_ALGS; b++) {
+			/* Guarded decrement: if the remote_host entry was
+			 * LRU-evicted + recreated while this socket lived,
+			 * its counters were reset to 0; an unguarded --
+			 * would wrap to 2^64-1.  Guard costs nothing in
+			 * the common case. */
+			if ((statep->touched_bitmap & bit) &&
+			    remote_host->metrics[b].sockets_alive > 0)
+				remote_host->metrics[b].sockets_alive--;
+			if ((statep->good_bitmap & bit) &&
+			    remote_host->metrics[b].sockets_good > 0)
+				remote_host->metrics[b].sockets_good--;
+			if ((statep->proved_bitmap & bit) &&
+			    remote_host->metrics[b].sockets_proved > 0)
+				remote_host->metrics[b].sockets_proved--;
+			bit <<= 1;
+		}
+		statep->cleaned = 1;
+	}
     s = statep->state & (NUM_TCP_CONG_ALGS - 1);
     if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
         return 1;
@@ -384,6 +425,31 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     rate_delivered = rate_interval_us ?
         (rate_delivered * mss * 1000000ULL) / rate_interval_us : 0;
 
+	/* 0.4.44: proof tracking.  Non-close votes only.  If the
+	 * socket's delivered rate crosses a tier on the alg it is
+	 * currently running, mark the (socket, alg) bit and bump the
+	 * per-alg counter.  Bits are per-alg so a swap does not have
+	 * to reset anything -- each alg the socket has ever touched
+	 * keeps its own bit, and the close handler decrements them
+	 * all. */
+	if (!is_close) {
+		__u64 bit = 1ULL << (s & (NUM_TCP_CONG_ALGS - 1));
+		if (rate_delivered >= PROOF_PROVED_BPS && !(statep->proved_bitmap & bit)) {
+			statep->proved_bitmap |= bit;
+			remote_host->metrics[s].sockets_proved++;
+			if (!(statep->good_bitmap & bit)) {
+				statep->good_bitmap |= bit;
+				remote_host->metrics[s].sockets_good++;
+			}
+			bpf_printk("proof cookie=%llu alg=%d rate=%llu tier=2",
+			           bpf_get_socket_cookie(ops), s, rate_delivered);
+		} else if (rate_delivered >= PROOF_GOOD_BPS && !(statep->good_bitmap & bit)) {
+			statep->good_bitmap |= bit;
+			remote_host->metrics[s].sockets_good++;
+			bpf_printk("proof cookie=%llu alg=%d rate=%llu tier=1",
+			           bpf_get_socket_cookie(ops), s, rate_delivered);
+		}
+	}
     m = &remote_host->metrics[s];
 
     {
@@ -615,7 +681,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                 __u64 ac = remote_host->metrics[s].metric_count;
                 __u8 from_i = s;
                 __u8 to_i = best_alt_i;
-                if (!set_cong(ops, best_alt_i)) {
+                if (!set_cong(ops, remote_host, best_alt_i)) {
                     statep->swap_count++;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
@@ -634,7 +700,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
                     __u8 tgt8 = (__u8)tgt;
                     if (statep->best_seen_metric != 0 && tgt8 != s)
-                        fret = set_cong(ops, tgt8);
+                        fret = set_cong(ops, remote_host, tgt8);
                     bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d",
                                bpf_get_socket_cookie(ops), s, tgt8, fret);
                     statep->frozen = 1;
@@ -664,7 +730,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                  * must re-demonstrate rather than
                                  * firing the moment the motion stops. */
                                 statep->bad_checkpoints = 0;
-                            } else if (!set_cong(ops, best_alt_i)) {
+                            } else if (!set_cong(ops, remote_host, best_alt_i)) {
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
                                 statep->last_metric = 0;
