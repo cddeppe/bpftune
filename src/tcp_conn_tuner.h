@@ -63,6 +63,23 @@ const char congs[NUM_TCP_CONG_ALGS][CONG_MAXNAME] = {
     "bic", "highspeed", "hybla", "nv"
 };
 
+#define RATE_HIST_BINS        32
+#define RATE_HIST_HALVE_TOTAL 100000ULL
+#define RATE_HIST_PCT         99
+
+/*
+ * Log2-binned delivered-rate histogram.  Bin i covers
+ *   [2^i KB/s, 2^(i+1) KB/s).
+ * Each vote increments one bin.  The userspace reanchor worker
+ * decays the histogram when total > RATE_HIST_HALVE_TOTAL, computes
+ * p99, and writes the result as max_rate_delivered.  BPF never reads
+ * the bins; it only appends.
+ */
+struct rate_hist {
+	__u32 bins[RATE_HIST_BINS];
+	__u64 total;
+};
+
 struct conn_state {
     __u64 state;
     __u64 swap_count;
@@ -117,10 +134,9 @@ struct remote_host {
      * reference reading is treated as an outlier; REF_HIGH_STREAK_N
      * in a row promote the reference to the best of the streak.
      * Frozen while allow_ref_update is false (control-plane votes). */
-    __u64 rate_high_streak;   /* consecutive readings > ref * REF_OUTLIER_FACTOR */
-    __u64 rate_high_max;      /* max of those readings */
-    __u64 rtt_low_streak;     /* consecutive readings < ref / REF_OUTLIER_FACTOR */
-    __u64 rtt_low_min;        /* min of those readings */
+    __u64 rtt_low_streak;	/* RTT side -- unchanged this release */
+    __u64 rtt_low_min;
+    struct rate_hist rate;   /* rate side: histogram replaces streaks */
     struct tcp_conn_metric metrics[NUM_TCP_CONN_METRICS];
 };
 
@@ -285,32 +301,31 @@ static __always_inline __u64 tcp_metric_calc(struct remote_host *r,
                         }
                 }
 
-                /* max_rate_delivered: symmetric. */
-                if (!r->max_rate_delivered) {
-                        r->max_rate_delivered = rate_delivered;
-                        r->rate_high_streak = 0;
-                        r->rate_high_max = 0;
-                } else if (rate_delivered > r->max_rate_delivered * REF_OUTLIER_FACTOR) {
-                        r->rate_high_streak++;
-                        if (rate_delivered > r->rate_high_max)
-                                r->rate_high_max = rate_delivered;
-                        if (r->rate_high_streak >= REF_HIGH_STREAK_N) {
-                                r->max_rate_delivered = r->rate_high_max;
-                                r->rate_high_streak = 0;
-                                r->rate_high_max = 0;
-                        }
-                } else if (rate_delivered > r->max_rate_delivered) {
-                        r->max_rate_delivered = rate_delivered;
-                        r->rate_high_streak = 0;
-                        r->rate_high_max = 0;
-                } else {
-                        r->rate_high_streak = 0;
-                        r->rate_high_max = 0;
-                        if (rate_delivered * REF_HEAL_FACTOR < r->max_rate_delivered) {
-                                r->max_rate_delivered -=
-                                        (r->max_rate_delivered - rate_delivered) / REF_HEAL_DIV;
-                                heal_rate = r->max_rate_delivered;
-                        }
+                                /* max_rate_delivered: histogram append (0.4.43).
+                 *
+                 * BPF no longer writes max_rate_delivered.  Each vote appends
+                 * to a log2-binned histogram; the userspace reanchor worker
+                 * recomputes p99 every 30s and writes the result back.  The
+                 * old bucket-scoped streak counter could never fire on a
+                 * bucket with thousands of instances, so the reference only
+                 * fell.  Histogram is population-scale-invariant.
+                 */
+                if (rate_delivered > 0) {
+                    __u64 kb = rate_delivered >> 10;
+                    if (kb > 0) {
+                        __u32 idx = 0;
+                        __u64 k = kb;
+                        if (k >> 32) { idx += 32; k >>= 32; }
+                        if (k >> 16) { idx += 16; k >>= 16; }
+                        if (k >> 8)  { idx += 8;  k >>= 8;  }
+                        if (k >> 4)  { idx += 4;  k >>= 4;  }
+                        if (k >> 2)  { idx += 2;  k >>= 2;  }
+                        if (k >> 1)  { idx += 1; }
+                        if (idx > RATE_HIST_BINS - 1)
+                            idx = RATE_HIST_BINS - 1;
+                        r->rate.bins[idx]++;
+                        r->rate.total++;
+                    }
                 }
         }
         if (r->min_rtt) {
