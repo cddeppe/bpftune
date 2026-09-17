@@ -9,15 +9,15 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `61c9ce3` (0.4.40)
-- Latest release: 0.4.40
+- Latest commit: `f11fb63` (0.4.42)
+- Latest release: 0.4.42
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.40** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.39** | runs git push origin (0.4.40 .deb staged on /mnt/backup) |
-| Target | amd64 | **0.4.38** | mostly idle |
-| Builder | aarch64 | **0.4.40** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.42** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.42** | runs git push origin (0.4.40 .deb staged on /mnt/backup) |
+| Target | amd64 | **0.4.42** | mostly idle |
+| Builder | aarch64 | **0.4.42** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -120,6 +120,146 @@ different population; the cwnd-bound votes cluster on the home
 bucket and homogenize; lp's filtered vote count is too low to
 move the EMA.  Re-check after a full day of 0.4.40 traffic.  If
 spread stays below 40%, treat 0.4.40 with suspicion.
+
+## SESSION 2026-09-17 (evening) - STOP: swap engine needs a fresh look
+
+Read this first. Three releases (0.4.40, 0.4.41, 0.4.42) in one
+session.  Each was defensible on its own reasoning; the pattern is
+that none resolved the underlying uncertainty, and each added a
+confound to the next measurement.  This is the handoff.
+
+### Fleet (end of session)
+
+All four hosts on 0.4.42.  Latest commit f11fb63.
+
+### What shipped today, what it did
+
+**0.4.40 — util gate on the bucket EMA.**
+Skip the metric_value EMA update when the socket is using <10% of
+its cwnd (packets_out*100 < snd_cwnd*10).  Rationale: 0.4.39's
+diagnostic showed ~50% of votes came from sockets not using their
+window; those score the algorithm on a rate the app supplied, not
+the rate the algorithm permitted.
+
+Observed (client-facing only, midsamp, rport != 443):
+    09-16 vs 09-17 at 5K/10K/25K/100K thresholds: +20-25%
+    1K: +4% (expected; slow-start physics dominate)
+Effect held as sample grew through 09-17; did not collapse.
+
+**0.4.41 — origin gate + moving-socket suppression.**
+(1) Vote path skips sockets where segs_out*4 < segs_in.
+(2) Moderate-tier swap suppressed on falling/oscillating
+    client-facing sockets.
+
+Origin gate did NOT work: 95.5% of swaps post-deploy were still
+origin-facing.  See 0.4.42.
+
+**0.4.42 — origin gate uses data_segs_*, not segs_*.**
+segs_out includes pure ACKs; on a receiving socket ACKs dominate,
+so the ratio stayed above threshold and the gate never fired.
+Switched to data_segs_out/data_segs_in (excludes ACKs).
+
+Leak persists.  Sample origin swap: 1166 segments, snd_cwnd=14,
+pkts_out=0.  The data_segs ratio had not differentiated at
+evaluation time even at >1000 segments; the check may not have a
+reliable signal on short HTTPS exchanges.  Root cause NOT
+identified.
+
+### Hard facts (verified, do not re-derive)
+
+1. Tracker reanchor (0.4.36): works.  Home bucket matches array.
+
+2. Flat gate (0.4.38): fires as designed.  d=0 fires ~47/day ->
+   ~7.7/day.  Matched prediction.
+
+3. Metric is blind on ~50% of votes.  Cwnd-bound (util >= 10%)
+   is ~5-10% of client-facing votes; app-limited (<10%) is ~50%.
+
+4. Origin-facing was ~80% of swaps pre-0.4.41 (88% on some
+   morning windows).  Post-0.4.42 leak at low volume (n=2 at last
+   check).  The population is real; the gate does not fully stop it.
+
+5. Client-facing rate progression (midsamp, rport != 443) is the
+   closest proxy we have to the ABR decision input.  Use it as the
+   primary user-visible metric; the swap-outcome tallies are
+   contaminated and small-n.
+
+6. Home bucket spread across all 16 algorithms: 30-65% most
+   readings, 65.6% peak, 29-51% post-0.4.40.  Far below what a
+   genuine algorithmic difference would produce.  Metric
+   discriminates weakly.
+
+### Unanswerable from this setup
+
+1. **Did the aggregate improve?**  Day-over-day is confounded by
+   traffic mix and time of day.  A/B impossible (one traffic
+   source).  Same-host alternation too slow for 5-20% effects.
+
+2. **Do client-facing swaps help?**  Clean sample ~20/day.  Never
+   measured with n large enough to trust.
+
+3. **Is the tuner causing ABR to settle lower over the day?**
+   Client-side quality (rendition, buffer) is not visible from
+   any host we control.  Pattern (streams settle to 1080p and only
+   recover on manual override) is consistent with either ABR
+   hysteresis unrelated to us, or our swaps perturbing ABR probes.
+   Cannot distinguish without client-side telemetry.
+
+4. **Can the metric rank algorithms under this workload?**  Util
+   gate widened the spread modestly and unstably.
+
+### The decision the next agent should make
+
+Not "does 0.4.42 work" -- should the mid-socket swap engine
+exist at all?
+
+- Keep: desperate tier wins ~34% aggregate.  But contaminated by
+  origin-side swaps whose outcome is structurally fixed.
+- Disable: four releases refining it, no user-visible effect
+  demonstrated.  Fires 50-100 swaps/day.
+- Middle ground: keep connect-time algorithm selection
+  (coverage-based, already working), disable mid-socket swaps
+  until a clean measurement exists.  Removes the entire class of
+  confounds; loses whatever the swaps actually provide (unknown).
+
+### What would actually help
+
+1. Add data_segs_out and data_segs_in to the cwnd diagnostic
+   printk.  Required to verify or reject the origin gate; the
+   ratio is currently invisible.  One-line printk change.
+
+2. One uninterrupted week of the current build, no changes.  If
+   ABR settle-lower is tuner-caused, it becomes visible in
+   client-facing rate progression over 5-7 days.  Any further
+   code change destroys the observation window.
+
+3. A client-side probe.  If a small agent could report YouTube's
+   chosen rendition and buffer health, the ABR-perturbation
+   question becomes directly answerable.  Out of scope for the
+   kernel tuner but the only path to a definitive answer.
+
+### Do NOT re-derive
+
+- Metric is app-limited on ~50% of votes; that dilutes ranking.
+- Origin-facing swaps cannot help; ~80% of swaps were origin-side.
+- Client-facing filtering required for every analysis.
+- Flat gate works.  Tracker reanchor works.
+- Day-over-day comparisons of this workload cannot resolve
+  sub-20% effects.
+
+### Notes for the next session
+
+- `tools/swap-outcomes-bydir.py` splits swaps by direction.  Use
+  it.  `tools/swap-effectsize.py` does NOT filter by direction and
+  reports misleading aggregate numbers on the current workload.
+- `tools/bucket-spread.py` shows the full 16-algorithm spread;
+  bucket-leaders.py truncates to top-3 and was hiding the story.
+- 3-arg heredoc `python3 - <<'PYEOF'` breaks under paste.  Write
+  the script to a file with `cat > /tmp/x.py <<'PYEOF'` and run
+  it as a separate command.
+- `rm -f src/*.skel.h src/*.bpf.o src/*.o` before `make clean` is
+  mandatory; the Makefile's .skel.h regeneration does not depend
+  on .bpf.o.
 
 ## SESSION 2026-09-16 (late) - 0.4.39 diagnostic + 0.4.40 util gate
 
