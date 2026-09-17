@@ -1,3 +1,24 @@
+bpftune (0.4.42) UNRELEASED; urgency=medium
+
+  * Fix the 0.4.41 origin-side gate: use data_segs_*, not segs_*.
+
+    0.4.41 added a check to skip sockets where we are primarily
+    receiving, gated on segs_out * 4 < segs_in.  segs_out includes
+    pure ACKs; on a receiving socket ACKs dominate segs_out, so the
+    ratio stayed above the threshold and the gate never fired.
+    Measured on 09-17 post-deploy: 95.5% of swaps still origin-facing.
+
+    Switch to data_segs_out / data_segs_in, which exclude pure ACKs
+    and measure actual data direction.  Verified against a live ss
+    dump: origin socket segs_out=2709/segs_in=9564 but
+    data_segs_out=126/data_segs_in=9492 (fires); client socket the
+    mirror (does not fire).
+
+  * No other change.  Moving-socket suppression (also 0.4.41) is
+    unaffected.
+
+ -- Christophe Deppe <cddeppe@users.noreply.github.com>  Thu, 17 Sep 2026 17:00:00 +0200
+
 bpftune (0.4.41) UNRELEASED; urgency=medium
 
   * Skip origin-facing sockets in the vote path.

@@ -351,15 +351,23 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     s = statep->state & (NUM_TCP_CONG_ALGS - 1);
     if ((__u64)tp->segs_out + tp->segs_in < METRIC_MIN_SEGS)
         return 1;
-    /* 0.4.41: skip sockets where we are primarily receiving.  On an
+    /* 0.4.42: skip sockets where we are primarily receiving.  On an
      * origin-facing socket the tuner receives video from a CDN and
      * only sends requests and ACKs; the local CC state does not
      * control the download rate, so a vote there scores on a
      * quantity the algorithm did not set and a swap cannot help.
      * Measured 2026-09-16: 57.7% of swaps were origin-facing; on
-     * 2026-09-17 morning, 88%.  Client-facing sockets have
-     * segs_out >= segs_in; only those are scored. */
-    if ((__u64)tp->segs_out * 4 < (__u64)tp->segs_in)
+     * 2026-09-17 morning, 88%.
+     *
+     * Uses data_segs_* not segs_*.  segs_out counts pure ACKs, and
+     * on a receiving socket ACKs dominate segs_out, so the first cut
+     * (segs_out * 4 < segs_in) never fired -- 0.4.41 measured 95.5%
+     * origin-facing post-deploy, unchanged from before the gate.
+     * data_segs_out excludes ACKs and measures actual data direction:
+     * origin socket segs_out=2709/segs_in=9564 but
+     * data_segs_out=126/data_segs_in=9492; client socket the mirror.
+     * Client-facing sockets have data_segs_out >= data_segs_in. */
+    if ((__u64)tp->data_segs_out * 4 < (__u64)tp->data_segs_in)
         return 1;
     if (is_close)
         bpf_printk("closport port=%u rport=%u segs=%llu",
