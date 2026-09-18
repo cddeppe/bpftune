@@ -250,26 +250,97 @@ def data_build(logpath):
 
 
 def data_system():
-    return {
+    out = {
         "kernel":     sh_noshell(["uname", "-r"]).strip(),
         "default_cc": sh_noshell(["sysctl", "-n",
                                   "net.ipv4.tcp_congestion_control"]).strip(),
     }
+    try:
+        out["cpu_count"] = os.cpu_count()
+    except Exception:
+        pass
+    try:
+        la = os.getloadavg()
+        out["load_1"] = round(la[0], 2)
+        out["load_5"] = round(la[1], 2)
+        out["load_15"] = round(la[2], 2)
+    except Exception:
+        pass
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+        if len(parts) >= 4 and "/" in parts[3]:
+            a, b = parts[3].split("/")
+            out["procs_running"] = int(a)
+            out["procs_total"] = int(b)
+    except Exception:
+        pass
+    try:
+        with open("/proc/uptime") as f:
+            out["host_uptime_s"] = int(float(f.read().split()[0]))
+    except Exception:
+        pass
+    try:
+        mi = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                bits = rest.strip().split()
+                if bits:
+                    try:
+                        mi[k] = int(bits[0]) * 1024
+                    except ValueError:
+                        pass
+        total = mi.get("MemTotal")
+        avail = mi.get("MemAvailable")
+        if avail is None:
+            avail = mi.get("MemFree")
+        if total and avail is not None:
+            out["mem_total_bytes"] = total
+            out["mem_avail_bytes"] = avail
+            out["mem_used_bytes"]  = total - avail
+            out["mem_used_pct"]    = round(
+                100.0 * (total - avail) / total, 1)
+    except Exception:
+        pass
+    return out
 
 
 def data_tunables():
+    """Return grouped sysctls. bpftune touches related keys in pairs
+    (rmem/wmem, netdev_budget/*_usecs) - grouping keeps them together
+    in the browser and terminal, so related settings land in the same
+    column instead of being split by the grid auto-flow."""
     j = sh_noshell(["journalctl", "-u", "bpftune", "--no-pager", "-q"])
     names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
-    out = []
+    items = []
     for n in names:
         v = sh_noshell(["sysctl", "-n", n]).strip()
         if not v:
             continue
-        short = n[4:]
+        short = n[4:]   # drop "net."
         if "allowed_congestion_control" in n:
             v = "%d algorithms" % len(v.split())
-        out.append({"name": short, "value": v})
-    return out
+        items.append({"key": short, "value": v})
+
+    def gkey(short):
+        # ipv4.tcp_rmem       -> ipv4.tcp
+        # ipv4.tcp_wmem       -> ipv4.tcp
+        # core.netdev_budget  -> core.netdev
+        parts = short.split(".", 2)
+        if len(parts) < 2:
+            return short
+        return parts[0] + "." + parts[1].split("_", 1)[0]
+
+    groups = {}
+    order = []
+    for it in items:
+        g = gkey(it["key"])
+        if g not in groups:
+            groups[g] = []
+            order.append(g)
+        groups[g].append(it)
+    return [{"group": g, "items": groups[g]} for g in order]
 
 
 def data_buckets(hosts, n=8):
@@ -344,12 +415,12 @@ def _proof_events(text):
         was ever formally proved.
 
       * midsamp samples - `midsamp cookie=X ... srate=Z` lines. These
-        do NOT carry alg=N. Attribution is inferred from the nearest
-        `met cookie=X ... alg=N` line for the same cookie, within a
-        time window. Without the window, samples get credited to the
+        rarely carry alg=N (log format varies) so attribution is
+        inferred from the nearest `met cookie=X ... alg=N` line within
+        a time window. Without the window, samples get credited to the
         algorithm that last touched a cookie, which is stale after a
         swap and produces values that cannot belong to the named
-        algorithm (e.g. veno reported at 420 Mb/s).
+        algorithm.
 
     Because these are different populations, sampled_avg may exceed
     proven_max on the same row - that is expected, not a bug. Within
@@ -665,6 +736,44 @@ def _full(title, lines):
     return out
 
 
+def _system_lines(s):
+    rows = []
+    rows.append(f"kernel       {s.get('kernel','')}")
+    rows.append(f"default CC   {s.get('default_cc','')}")
+    if s.get("cpu_count") is not None:
+        rows.append(f"cpu cores    {s['cpu_count']}")
+    if s.get("load_1") is not None:
+        rows.append("load avg     %.2f %.2f %.2f"
+                    % (s["load_1"], s["load_5"], s["load_15"]))
+    if s.get("procs_total") is not None:
+        rows.append("processes    %s running / %s total"
+                    % (s.get("procs_running", 0), s["procs_total"]))
+    if s.get("host_uptime_s") is not None:
+        dt = s["host_uptime_s"]
+        dd, r = divmod(dt, 86400)
+        hh, r = divmod(r, 3600)
+        mm = r // 60
+        rows.append("host uptime  %s%dh %dm" % (("%dd " % dd) if dd else "",
+                                                hh, mm))
+    if s.get("mem_total_bytes"):
+        used = s.get("mem_used_bytes", 0)
+        tot  = s["mem_total_bytes"]
+        rows.append("memory       %.1f / %.1f GB  (%.0f%%)"
+                    % (used / 1e9, tot / 1e9, s.get("mem_used_pct", 0)))
+    return rows
+
+
+def _tun_lines(tunables):
+    out = []
+    for g in tunables:
+        out.append(f"  [{g['group']}]")
+        for it in g["items"]:
+            out.append(f"    {it['key']:<28} {it['value']}")
+    if not out:
+        out = ["  (none seen in journal for this boot)"]
+    return out
+
+
 def render_text(d):
     b = d["build"]
     lines = []
@@ -675,10 +784,6 @@ def render_text(d):
     lines.append(f"log        {b['log_path'] or '(not found)'}")
     log_lines = lines
 
-    sysmap = [
-        f"kernel       {d['system']['kernel']}",
-        f"default CC   {d['system']['default_cc']}",
-    ]
     print(DRULE * (FULL + 2))
     ts = datetime.fromtimestamp(d["generated_ts"], timezone.utc)\
                 .strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -686,12 +791,10 @@ def render_text(d):
     print(DRULE * (FULL + 2))
     print()
     for row in _twocol("BUILD / SERVICE", log_lines,
-                       "SYSTEM FACTS",    sysmap):
+                       "SYSTEM FACTS",    _system_lines(d["system"])):
         print(row)
     print()
-    tun = [f"  {t['name']:<34} {t['value']}" for t in d["tunables"]] or \
-          ["  (none seen in journal for this boot)"]
-    for row in _full("BPFTUNE-MANAGED TUNABLES", tun):
+    for row in _full("BPFTUNE-MANAGED TUNABLES", _tun_lines(d["tunables"])):
         print(row)
     print()
     bk = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}"
@@ -1495,7 +1598,6 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
 
-  /* ---- proof leaderboard: inline bar cells ---- */
   .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
   .proof-tbl td:nth-child(4),
   .proof-tbl td:nth-child(5),
@@ -1591,29 +1693,37 @@ INDEX_HTML = r"""<!doctype html>
   .bigstats .big.loss .v { color: var(--bad); }
   .bigstats .big.null { border-color: var(--border-strong); }
 
+  /* grouped tunables cells: related sysctls live together */
   .tun-grid {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 4px 20px;
+    gap: 14px 26px;
     font-size: 12.5px;
   }
   @media (min-width: 700px) {
     .tun-grid { grid-template-columns: 1fr 1fr; }
   }
-  .tun-grid .row {
-    display: flex; justify-content: space-between; gap: 10px;
+  .tun-group { min-width: 0; }
+  .tun-group .gname {
+    font-size: 10.5px; color: var(--muted-2);
+    text-transform: uppercase; letter-spacing: .06em;
+    margin: 0 0 4px;
+    font-family: var(--mono);
+  }
+  .tun-group .grow {
+    display: flex; justify-content: space-between; gap: 14px;
     padding: 3px 0; border-bottom: 1px solid var(--border);
     align-items: baseline;
-  }
-  .tun-grid .row:last-child { border-bottom: none; }
-  .tun-grid .k {
-    color: var(--muted); font-family: var(--mono); font-size: 11.5px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .tun-grid .v {
     font-family: var(--mono); font-size: 11.5px;
+  }
+  .tun-group .grow:last-child { border-bottom: none; }
+  .tun-group .grow .k {
+    color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    color: var(--fg);
+  }
+  .tun-group .grow .v {
+    color: var(--fg); text-align: right;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
   .cellbar {
@@ -1915,6 +2025,13 @@ INDEX_HTML = r"""<!doctype html>
     if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
     return Math.round(b) + " B";
   }
+  function fmtUptime(s) {
+    if (s == null) return "-";
+    var d = Math.floor(s / 86400);
+    var h = Math.floor((s % 86400) / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    return (d ? d + "d " : "") + h + "h " + m + "m";
+  }
   function relTime(epochSec) {
     if (!epochSec) return "";
     var dt = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
@@ -1943,27 +2060,58 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderSystem(s) {
-    var rows = [
-      ["kernel",     s.kernel,     "hi"],
-      ["default cc", s.default_cc, "hi"],
-    ];
+    var rows = [];
+    if (s.kernel)     rows.push(["kernel", s.kernel, "hi"]);
+    if (s.default_cc) rows.push(["default cc", s.default_cc, "hi"]);
+    if (s.cpu_count != null) rows.push(["cpu", s.cpu_count + " cores"]);
+    if (s.load_1 != null) {
+      rows.push(["load",
+        s.load_1.toFixed(2) + " / " + s.load_5.toFixed(2) +
+        " / " + s.load_15.toFixed(2)]);
+    }
+    if (s.procs_total != null) {
+      rows.push(["processes",
+        (s.procs_running == null ? "?" : s.procs_running) +
+        " running / " + s.procs_total + " total"]);
+    }
+    if (s.host_uptime_s != null) {
+      rows.push(["host uptime", fmtUptime(s.host_uptime_s)]);
+    }
+    if (s.mem_total_bytes != null && s.mem_total_bytes > 0) {
+      var used = (s.mem_used_bytes != null)
+                 ? s.mem_used_bytes
+                 : (s.mem_total_bytes - (s.mem_avail_bytes || 0));
+      var pct = (s.mem_used_pct != null)
+                ? s.mem_used_pct.toFixed(0) + "%"
+                : "";
+      rows.push(["memory",
+        fmtBytes(used) + " / " + fmtBytes(s.mem_total_bytes) +
+        (pct ? "  " + pct : "")]);
+    }
     setHTML("lv-system", rows.map(function (r) {
       return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
              '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
     }).join(""));
   }
 
-  function renderTunables(t) {
+  function renderTunables(groups) {
     var cnt = $("lv-tun-cnt");
-    if (cnt) cnt.textContent = t.length + " keys";
-    if (!t.length) {
+    if (!groups || !groups.length) {
+      if (cnt) cnt.textContent = "";
       setHTML("lv-tunables",
               '<div class="placeholder">(none seen in journal this boot)</div>');
       return;
     }
-    setHTML("lv-tunables", t.map(function (r) {
-      return '<div class="row"><span class="k">' + esc(r.name) + '</span>' +
-             '<span class="v">' + esc(r.value) + '</span></div>';
+    var total = 0;
+    groups.forEach(function (g) { total += g.items.length; });
+    if (cnt) cnt.textContent = total + " keys · " + groups.length + " groups";
+    setHTML("lv-tunables", groups.map(function (g) {
+      var rows = g.items.map(function (it) {
+        return '<div class="grow"><span class="k">' + esc(it.key) +
+               '</span><span class="v">' + esc(it.value) + '</span></div>';
+      }).join("");
+      return '<div class="tun-group"><div class="gname">' +
+             esc(g.group) + '</div>' + rows + '</div>';
     }).join(""));
   }
 
@@ -2013,7 +2161,6 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-proof", '<div class="placeholder">(none in tail)</div>');
       return;
     }
-    /* global peak so all bars compare on one scale */
     var peak = 1;
     rows.forEach(function (r) {
       [r.proven_max, r.sampled_avg, r.sampled_max].forEach(function (v) {
