@@ -1043,6 +1043,21 @@ def emit_bucket(bid, rows, algs, now):
             cols += [f"mv_{a}" for a in algs]
         ts, out = bin_series(rows, lo, width, cols)
         doc["series"][rng] = dict({"ts": ts}, **out)
+
+    if rows:
+        last = rows[-1]
+        doc["last"] = {
+            "collected_ts": int(to_float(last.get("collected_ts")) or 0),
+            "best_alg":     last.get("best_alg") or "",
+            "best_i":       to_float(last.get("best_i")),
+            "instances":    to_float(last.get("instances")),
+            "ref_rate":     to_float(last.get("ref_rate")),
+            "min_rtt":      to_float(last.get("min_rtt")),
+            "rate_best_i":  to_float(last.get("rate_best_i")),
+            "rate_best_v":  to_float(last.get("rate_best_v")),
+            "tcp_rmem_max": to_float(last.get("tcp_rmem_max")),
+            "re":           {a: to_float(last.get("re_" + a)) for a in algs},
+        }
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
     write_json("bucket_%s.json" % safe, doc)
 
@@ -1114,82 +1129,314 @@ def emit_fleet(buckets, now):
 
 
 INDEX_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>bpftune</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 13px/1.4 system-ui, sans-serif; margin: 0; padding: 16px;
-         background: #fafafa; color: #111; }
-  @media (prefers-color-scheme: dark) {
-    body { background: #111; color: #ddd; }
-    .live pre { background: #1a1a1a; color: #ddd; border-color: #333; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa;
+    --fg: #1c1f24;
+    --muted: #6b7280;
+    --muted-2: #9aa0a6;
+    --border: #e5e7eb;
+    --border-strong: #d1d5db;
+    --card-bg: #ffffff;
+    --code-bg: #fbfbfd;
+    --shadow: 0 1px 2px rgba(16,24,40,.04);
+    --accent: #2f6feb;
+    --accent-dim: #2f6feb26;
+    --radius: 8px;
+    --gap: 16px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
-  header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-           margin-bottom: 12px; }
-  h1 { font-size: 16px; margin: 0; }
-  h2 { font-size: 14px; margin: 24px 0 6px; }
-  select { font: inherit; padding: 2px 6px; }
-  .wrap { max-width: 1240px; margin: 0 auto; }
-  .muted { color: #888; }
-  .live { margin-bottom: 16px; }
-  .live pre {
-    font: 12px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: #fff; color: #111;
-    border: 1px solid #ddd; border-radius: 4px;
-    padding: 10px 12px;
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d11;
+      --fg: #e6e8eb;
+      --muted: #8b929b;
+      --muted-2: #6b7280;
+      --border: #1c2028;
+      --border-strong: #2a2f39;
+      --card-bg: #111419;
+      --code-bg: #0a0c10;
+      --shadow: 0 1px 2px rgba(0,0,0,.35);
+      --accent: #5b9bff;
+      --accent-dim: #5b9bff26;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1180px; margin: 0 auto;
+    padding: 24px 20px 64px;
+  }
+
+  header.topbar {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding-bottom: 16px; margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    font-weight: 600; font-size: 15px; letter-spacing: -0.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .brand .mark {
+    width: 8px; height: 8px; border-radius: 2px; background: var(--accent);
+  }
+  .controls {
+    display: flex; gap: 16px; margin-left: auto; align-items: center;
+    flex-wrap: wrap;
+  }
+  .control {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  select {
+    font: inherit; font-size: 12.5px;
+    text-transform: none; letter-spacing: normal;
+    color: var(--fg); background: var(--card-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-width: 0;
+  }
+  select:focus { outline: 2px solid var(--accent-dim); outline-offset: 0; }
+
+  .pill {
+    display: inline-flex; align-items: center;
+    font-size: 11px; color: var(--muted);
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-family: var(--mono);
+  }
+  .pill.flash { color: var(--accent); }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: var(--gap);
+  }
+  .card > h2 {
+    margin: 0 0 14px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card > h2 .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+    flex-shrink: 0;
+  }
+  .card > h2 .sub {
+    margin-left: 6px; color: var(--muted-2);
+    font-weight: 500; letter-spacing: .02em; text-transform: none;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .card > h2 .right {
+    margin-left: auto; color: var(--muted-2);
+    font-weight: 400; text-transform: none;
+    letter-spacing: 0; font-family: var(--mono); font-size: 11px;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px 20px;
+  }
+  .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .stat .k {
+    font-size: 10.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .stat .v {
+    font-size: 15px; font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .stat .v.mono { font-family: var(--mono); font-size: 13px; }
+
+  .rates {
+    margin-top: 14px; padding-top: 14px;
+    border-top: 1px dashed var(--border);
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  .rates .k {
+    font-size: 10.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .rates .v {
+    font-family: var(--mono); font-size: 12.5px;
+    color: var(--fg);
+  }
+
+  pre.live {
+    margin: 0;
+    padding: 14px 16px;
+    border-radius: 6px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    font: 11.5px/1.45 var(--mono);
+    color: var(--fg);
     overflow-x: auto;
     white-space: pre;
-    margin: 0;
-    max-height: 80vh;
+    max-height: none;
   }
-  .live h2 { margin-top: 0; }
+
+  .chart-card canvas { display: block; }
+  .chart-card.rate canvas { min-height: 260px; }
+  .chart-card.small canvas { min-height: 140px; }
+
+  .footer {
+    margin-top: 32px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted-2); font-size: 11px;
+    display: flex; gap: 12px; flex-wrap: wrap;
+  }
+  .footer .sep { color: var(--border-strong); }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 16px 12px 48px; }
+    .card { padding: 12px; }
+    .controls { gap: 10px; }
+    .stat .v { font-size: 14px; }
+  }
 </style>
+</head>
+<body>
 <div class="wrap">
-  <header>
-    <h1>bpftune</h1>
-    <label>bucket <select id="bucket"></select></label>
-    <label>range <select id="range"></select></label>
-    <span id="gen" class="muted">initial</span>
+
+  <header class="topbar">
+    <div class="brand"><span class="mark"></span>bpftune</div>
+    <div class="controls">
+      <label class="control">bucket
+        <select id="bucket"></select>
+      </label>
+      <label class="control">range
+        <select id="range"></select>
+      </label>
+      <span id="gen" class="pill">initial</span>
+    </div>
   </header>
 
-  <div class="live">
-    <h2>live state (from bpftune-cli.py, 30s refresh)</h2>
-    <pre id="livepre">loading...</pre>
+  <section class="card" id="card-now">
+    <h2>
+      <span class="dot"></span>now
+      <span class="sub" id="nowbucket">-</span>
+      <span class="right" id="nowupdated"></span>
+    </h2>
+    <div class="stats">
+      <div class="stat"><span class="k">instances</span>
+        <span class="v mono" id="n_inst">-</span></div>
+      <div class="stat"><span class="k">reference rate</span>
+        <span class="v mono" id="n_ref">-</span></div>
+      <div class="stat"><span class="k">min rtt</span>
+        <span class="v mono" id="n_rtt">-</span></div>
+      <div class="stat"><span class="k">best algorithm</span>
+        <span class="v" id="n_best">-</span></div>
+      <div class="stat"><span class="k">rate-best</span>
+        <span class="v mono" id="n_rbest">-</span></div>
+      <div class="stat"><span class="k">tcp_rmem max</span>
+        <span class="v mono" id="n_rmem">-</span></div>
+    </div>
+    <div class="rates">
+      <span class="k">rate_ema</span>
+      <span class="v" id="n_rates">-</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>
+      <span class="dot"></span>live state
+      <span class="sub">fleet &middot; bpftune-cli.py &middot; 30s</span>
+    </h2>
+    <pre class="live" id="livepre">loading&hellip;</pre>
+  </section>
+
+  <section class="card chart-card rate">
+    <h2><span class="dot"></span>rate_ema per algorithm</h2>
+    <canvas id="rate"></canvas>
+  </section>
+
+  <section class="card chart-card small">
+    <h2><span class="dot"></span>reference rate</h2>
+    <canvas id="ref"></canvas>
+  </section>
+
+  <section class="card chart-card small">
+    <h2><span class="dot"></span>tcp_rmem max (bytes)</h2>
+    <canvas id="rmem"></canvas>
+  </section>
+
+  <section class="card chart-card">
+    <h2><span class="dot"></span>divergence &mdash; win rate with 95% Wilson CI</h2>
+    <canvas id="div"></canvas>
+  </section>
+
+  <section class="card chart-card small">
+    <h2><span class="dot"></span>swaps per bin</h2>
+    <canvas id="swaps"></canvas>
+  </section>
+
+  <section class="card chart-card">
+    <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
+    <canvas id="fleet"></canvas>
+  </section>
+
+  <div class="footer">
+    <span>bpftune dashboard</span>
+    <span class="sep">|</span>
+    <span>collected_ts is the only date-safe column</span>
+    <span class="sep">|</span>
+    <span id="footgen">-</span>
   </div>
 
-  <h2>rate_ema per algorithm</h2>
-  <canvas id="rate" height="90"></canvas>
-
-  <h2>reference rate</h2>
-  <canvas id="ref" height="50"></canvas>
-
-  <h2>tcp_rmem max (bytes)</h2>
-  <canvas id="rmem" height="50"></canvas>
-
-  <h2>divergence outcomes - win rate with 95% Wilson CI</h2>
-  <canvas id="div" height="70"></canvas>
-
-  <h2>swaps per bin</h2>
-  <canvas id="swaps" height="50"></canvas>
-
-  <h2>rate-board coverage, last 24h (% of bins with a leader)</h2>
-  <canvas id="fleet" height="70"></canvas>
 </div>
 
 <script>
 (function () {
   var el = document.getElementById("gen");
-  if (el) el.textContent = "html+js ok @ " + new Date().toISOString().slice(11, 19);
+  if (el) el.textContent = "html @ " + new Date().toISOString().slice(11, 19);
 })();
 </script>
 
 <script>
 (function () {
+  var PALETTE = [
+    "#4e79a7", "#f28e2c", "#e15759", "#76b7b2",
+    "#59a14f", "#edc949", "#af7aa1", "#ff9da7",
+    "#9c755f", "#bab0ab", "#1b9e77", "#d95f02",
+    "#7570b3", "#e7298a", "#66a61e", "#e6ab02"
+  ];
+
   var gen = document.getElementById("gen");
+  var footgen = document.getElementById("footgen");
+
   function status(msg, isErr) {
     if (gen) {
       gen.textContent = msg;
-      gen.style.color = isErr ? "red" : "";
+      gen.style.color = isErr ? "#e15759" : "";
+      if (!isErr) {
+        gen.classList.add("flash");
+        setTimeout(function () { gen.classList.remove("flash"); }, 300);
+      }
     }
   }
   function err(msg, e) {
@@ -1201,10 +1448,37 @@ INDEX_HTML = r"""<!doctype html>
     return new Promise(function (resolve, reject) {
       var s = document.createElement("script");
       s.src = url;
-      s.onload = function () { resolve(); };
+      s.onload = resolve;
       s.onerror = function () { reject(new Error("failed to load " + url)); };
       document.head.appendChild(s);
     });
+  }
+
+  function applyChartDefaults() {
+    var dark = window.matchMedia &&
+               window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var grid = dark ? "rgba(255,255,255,.06)" : "rgba(20,30,50,.06)";
+    var tick = dark ? "#8b929b" : "#6b7280";
+    Chart.defaults.font.family =
+      "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+    Chart.defaults.font.size = 11;
+    Chart.defaults.color = tick;
+    Chart.defaults.borderColor = grid;
+    Chart.defaults.elements.line.borderWidth = 1.5;
+    Chart.defaults.elements.point.radius = 0;
+    Chart.defaults.elements.point.hoverRadius = 3;
+    Chart.defaults.animation = false;
+    Chart.defaults.plugins.legend.labels.boxWidth = 10;
+    Chart.defaults.plugins.legend.labels.boxHeight = 10;
+    Chart.defaults.plugins.legend.labels.padding = 8;
+    Chart.defaults.plugins.legend.labels.usePointStyle = false;
+    Chart.defaults.plugins.tooltip.backgroundColor = dark ? "#1c2028" : "#fff";
+    Chart.defaults.plugins.tooltip.borderColor = dark ? "#2a2f39" : "#e5e7eb";
+    Chart.defaults.plugins.tooltip.borderWidth = 1;
+    Chart.defaults.plugins.tooltip.titleColor = dark ? "#e6e8eb" : "#1c1f24";
+    Chart.defaults.plugins.tooltip.bodyColor = dark ? "#e6e8eb" : "#1c1f24";
+    Chart.defaults.plugins.tooltip.padding = 8;
+    Chart.defaults.plugins.tooltip.cornerRadius = 6;
   }
 
   function liveRefresh() {
@@ -1218,11 +1492,6 @@ INDEX_HTML = r"""<!doctype html>
       var pre = document.getElementById("livepre");
       if (pre) pre.textContent = "(current.txt unavailable: " + e.message + ")";
     });
-  }
-
-  var PALETTE = [];
-  for (var i = 0; i < 16; i++) {
-    PALETTE.push("hsl(" + Math.round(i * 360 / 16) + ",70%,55%)");
   }
 
   var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
@@ -1248,8 +1517,10 @@ INDEX_HTML = r"""<!doctype html>
           return {x: ts[k] * 1000, y: y};
         }),
         borderColor: colors[i % colors.length],
+        backgroundColor: colors[i % colors.length],
         pointRadius: 0,
-        borderWidth: 1.4,
+        borderWidth: 1.5,
+        tension: 0.15,
         spanGaps: true,
       };
     });
@@ -1258,21 +1529,99 @@ INDEX_HTML = r"""<!doctype html>
   function timeOpts(extra) {
     var base = {
       responsive: true,
+      maintainAspectRatio: false,
       animation: false,
       interaction: {mode: "nearest", intersect: false},
       scales: {
-        x: {type: "time", time: {tooltipFormat: "MM-dd HH:mm"}},
-        y: {beginAtZero: false},
+        x: {
+          type: "time",
+          time: {tooltipFormat: "MMM d, HH:mm"},
+          grid: {display: false},
+          ticks: {maxRotation: 0, autoSkipPadding: 24},
+        },
+        y: {
+          beginAtZero: false,
+          grid: {drawTicks: false},
+          ticks: {maxTicksLimit: 6, padding: 6},
+        },
       },
-      plugins: {legend: {labels: {boxWidth: 8, font: {size: 10}}}},
+      plugins: {
+        legend: {display: false},
+        tooltip: {displayColors: true, boxPadding: 4},
+      },
     };
     return Object.assign(base, extra || {});
+  }
+
+  function fmtMbps(v) {
+    return (v === null || v === undefined) ? "-" : (v / 125000).toFixed(1);
+  }
+  function fmtN(v) {
+    return (v === null || v === undefined)
+      ? "-" : Math.round(v).toLocaleString();
+  }
+  function fmtRTT(v) {
+    return (v === null || v === undefined) ? "-" : (v / 1000).toFixed(1) + " ms";
+  }
+  function fmtBytes(b) {
+    if (b === null || b === undefined) return "-";
+    if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
+    return Math.round(b) + " B";
+  }
+  function relTime(epochSec) {
+    if (!epochSec) return "";
+    var dt = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
+    if (dt < 60) return dt + "s ago";
+    if (dt < 3600) return Math.floor(dt / 60) + "m ago";
+    if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
+    return Math.floor(dt / 86400) + "d ago";
+  }
+  function setText(id, s) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = s;
+  }
+
+  function renderNow() {
+    var doc = state.bucketDoc;
+    if (!doc) return;
+    var bid = document.getElementById("bucket").value;
+    setText("nowbucket", bid);
+    var L = doc.last || {};
+    setText("n_inst", fmtN(L.instances));
+    setText("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
+    setText("n_rtt",  fmtRTT(L.min_rtt));
+    setText("n_best", L.best_alg || "-");
+    setText("n_rmem", fmtBytes(L.tcp_rmem_max));
+    setText("nowupdated", L.collected_ts ? "updated " + relTime(L.collected_ts) : "");
+
+    var algs = state.meta.algs;
+    var rates = [];
+    for (var i = 0; i < algs.length; i++) {
+      var a = algs[i];
+      var v = (L.re && L.re[a] != null) ? L.re[a] : null;
+      if (v != null && v > 0) rates.push({a: a, v: v});
+    }
+    rates.sort(function (x, y) { return y.v - x.v; });
+
+    if (rates.length) {
+      setText("n_rbest",
+              rates[0].a + "  " + fmtMbps(rates[0].v) + " Mb/s");
+      var line = rates.slice(0, 8).map(function (x) {
+        return x.a + " " + fmtMbps(x.v);
+      }).join("  ·  ");
+      setText("n_rates", line);
+    } else {
+      setText("n_rbest", "-");
+      setText("n_rates", "(no live rates for this bucket)");
+    }
   }
 
   function renderBucket() {
     var doc = state.bucketDoc, algs = state.meta.algs;
     var rng = document.getElementById("range").value;
-    var s = doc.series[rng], ts = s.ts;
+    var s = doc.series[rng];
+    var ts = s.ts;
 
     mk("rate", {
       type: "line",
@@ -1280,21 +1629,35 @@ INDEX_HTML = r"""<!doctype html>
         return "re_" + a;
       }), s, ts, PALETTE)},
       options: timeOpts({
-        plugins: {legend: {position: "right",
-                           labels: {boxWidth: 8, font: {size: 10}}}},
+        plugins: {
+          legend: {
+            display: true,
+            position: "right",
+            align: "start",
+            labels: {
+              boxWidth: 8, boxHeight: 8,
+              padding: 8,
+              font: {size: 10.5},
+            },
+          },
+        },
       }),
     });
 
     mk("ref", {
       type: "line",
-      data: {datasets: lineData(["ref_rate"], s, ts, ["#c33"])},
-      options: timeOpts(),
+      data: {datasets: lineData(["ref_rate"], s, ts, ["#e15759"])},
+      options: timeOpts({
+        plugins: {legend: {display: false}},
+      }),
     });
 
     mk("rmem", {
       type: "line",
-      data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#37a"])},
-      options: timeOpts({plugins: {legend: {display: false}}}),
+      data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#4e79a7"])},
+      options: timeOpts({
+        plugins: {legend: {display: false}},
+      }),
     });
   }
 
@@ -1304,13 +1667,14 @@ INDEX_HTML = r"""<!doctype html>
     if (!d) return;
     var ts = d.ts;
 
-    function mkLine(key, color, dash) {
+    function mkLine(key, label, color, dash) {
       return {
-        label: key,
+        label: label,
         data: d[key].map(function (y, k) {
           return {x: ts[k] * 1000, y: y};
         }),
         borderColor: color,
+        backgroundColor: color,
         borderDash: dash || [],
         pointRadius: 0,
         borderWidth: 1.5,
@@ -1321,15 +1685,30 @@ INDEX_HTML = r"""<!doctype html>
     mk("div", {
       type: "line",
       data: {datasets: [
-        mkLine("d1_rate", "#2a7"),
-        mkLine("d1_lo",   "#2a7", [4, 3]),
-        mkLine("d1_hi",   "#2a7", [4, 3]),
-        mkLine("d0_rate", "#a72"),
-        mkLine("d0_lo",   "#a72", [4, 3]),
-        mkLine("d0_hi",   "#a72", [4, 3]),
+        mkLine("d1_rate", "diverges=1", "#59a14f"),
+        mkLine("d1_lo",   "d1 95% lo",  "#59a14f", [4, 3]),
+        mkLine("d1_hi",   "d1 95% hi",  "#59a14f", [4, 3]),
+        mkLine("d0_rate", "diverges=0", "#e15759"),
+        mkLine("d0_lo",   "d0 95% lo",  "#e15759", [4, 3]),
+        mkLine("d0_hi",   "d0 95% hi",  "#e15759", [4, 3]),
       ]},
       options: timeOpts({
-        scales: {x: {type: "time"}, y: {min: 0, max: 1}},
+        scales: {
+          x: {type: "time", grid: {display: false},
+              ticks: {maxRotation: 0}},
+          y: {min: 0, max: 1, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 5,
+                      callback: function (v) { return Math.round(v * 100) + "%"; }}},
+        },
+        plugins: {
+          legend: {
+            display: true, position: "right", align: "start",
+            labels: {boxWidth: 8, boxHeight: 8, padding: 8,
+                     font: {size: 10.5}, filter: function (item) {
+                       return !/_lo$|_hi$/.test(item.text);
+                     }},
+          },
+        },
       }),
     });
 
@@ -1337,10 +1716,21 @@ INDEX_HTML = r"""<!doctype html>
       type: "bar",
       data: {
         labels: ts.map(function (t) { return new Date(t * 1000); }),
-        datasets: [{label: "swaps", data: d.swaps, backgroundColor: "#69c"}],
+        datasets: [{
+          label: "swaps",
+          data: d.swaps,
+          backgroundColor: "#4e79a7",
+          borderColor: "#4e79a7",
+          borderRadius: 2,
+          maxBarThickness: 14,
+        }],
       },
-      options: Object.assign(timeOpts(), {
-        scales: {x: {type: "time"}, y: {beginAtZero: true}},
+      options: timeOpts({
+        scales: {
+          x: {type: "time", grid: {display: false}},
+          y: {beginAtZero: true, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 5}},
+        },
         plugins: {legend: {display: false}},
       }),
     });
@@ -1352,12 +1742,25 @@ INDEX_HTML = r"""<!doctype html>
       type: "bar",
       data: {
         labels: f.buckets,
-        datasets: [{label: "% bins with leader",
-                    data: f.coverage_24h, backgroundColor: "#4a8"}],
+        datasets: [{
+          label: "% bins with leader",
+          data: f.coverage_24h,
+          backgroundColor: "#59a14f",
+          borderColor: "#59a14f",
+          borderRadius: 2,
+          maxBarThickness: 12,
+        }],
       },
       options: {
-        responsive: true, animation: false, indexAxis: "y",
-        scales: {x: {min: 0, max: 100}},
+        responsive: true, maintainAspectRatio: false,
+        animation: false, indexAxis: "y",
+        scales: {
+          x: {min: 0, max: 100, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 6,
+                      callback: function (v) { return v + "%"; }}},
+          y: {grid: {display: false}, ticks: {font: {size: 10.5},
+              autoSkip: false}},
+        },
         plugins: {legend: {display: false}},
       },
     });
@@ -1367,6 +1770,7 @@ INDEX_HTML = r"""<!doctype html>
     return j("data/bucket_" + id + ".json").then(function (doc) {
       state.bucketDoc = doc;
       renderBucket();
+      renderNow();
     });
   }
 
@@ -1374,14 +1778,14 @@ INDEX_HTML = r"""<!doctype html>
     liveRefresh();
     setInterval(liveRefresh, 30000);
 
-    status("loading Chart.js...");
+    status("loading charts\u2026");
     loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
       .then(function () {
-        status("loading date adapter...");
         return loadScript("https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js");
       })
       .then(function () {
-        status("loading data...");
+        applyChartDefaults();
+        status("loading data\u2026");
         return Promise.all([
           j("data/meta.json"),
           j("data/swaps.json"),
@@ -1412,7 +1816,10 @@ INDEX_HTML = r"""<!doctype html>
         rs.innerHTML = rhtml;
         rs.value = "24h";
 
-        status("generated " + new Date(state.meta.generated_ts * 1000).toISOString());
+        var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
+                        .replace("T", " ").slice(0, 19) + "Z";
+        status("updated " + relTime(state.meta.generated_ts));
+        setText("footgen", "rendered " + stamp);
 
         bs.onchange = function () { loadBucket(bs.value); };
         rs.onchange = function () { renderBucket(); renderSwaps(); };
@@ -1431,6 +1838,8 @@ INDEX_HTML = r"""<!doctype html>
   boot();
 })();
 </script>
+</body>
+</html>
 """
 
 
