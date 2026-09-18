@@ -13,6 +13,7 @@ calendar date from boot_ts.
 """
 from __future__ import annotations
 
+import csv
 import os
 import subprocess
 import sys
@@ -59,6 +60,29 @@ def write_file(path, text, mode=0o644):
     os.replace(tmp, path)
 
 
+def _append_swaps_column(path, new_col):
+    """Append a column to swaps.csv in place, empty for existing rows.
+    Preserves history. Consumers that treat empty as null (DictReader,
+    the renderer) do not need a change."""
+    with open(path, newline="") as f:
+        rd = csv.reader(f)
+        try:
+            header = next(rd)
+        except StopIteration:
+            return
+        rows = list(rd)
+    new_header = header + [new_col]
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(new_header)
+        for r in rows:
+            while len(r) < len(header):
+                r.append("")
+            w.writerow(r + [""])
+    os.replace(tmp, path)
+
+
 def migrate():
     if os.path.exists(BUCKETS_LEGACY) and not os.path.exists(BUCKETS_V1):
         os.rename(BUCKETS_LEGACY, BUCKETS_V1)
@@ -72,8 +96,11 @@ def migrate():
         with open(SWAPS, newline="") as f:
             first = f.readline().strip()
         cols = first.split(",") if first else []
-        if "collected_ts" in cols:
-            say("  swaps.csv already schema v2")
+        if "socket_rate_before" in cols:
+            say("  swaps.csv already schema v3 (has socket_rate_before)")
+        elif "collected_ts" in cols:
+            _append_swaps_column(SWAPS, "socket_rate_before")
+            say("  appended socket_rate_before column to swaps.csv")
         elif "ts_epoch" in cols:
             os.rename(SWAPS, SWAPS_V1)
             say("  migrated swaps.csv -> swaps.v1.csv (schema v1)")
@@ -1131,6 +1158,7 @@ def _parse_swaps_from(text, now_epoch):
             "rb_alg": rb_alg,
             "diverges": "1" if (mt_alg and rb_alg and mt_alg != rb_alg) else "0",
             "outcome": outcome,
+            "socket_rate_before": pre if pre is not None else "",
         })
         n += 1
     return n
