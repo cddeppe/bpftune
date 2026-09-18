@@ -550,8 +550,6 @@ def emit_fleet(buckets, now):
 INDEX_HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <title>bpftune</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
 <style>
   :root { color-scheme: light dark; }
   body { font: 13px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; }
@@ -567,7 +565,7 @@ INDEX_HTML = r"""<!doctype html>
     <h1 style="font-size:16px;margin:0">bpftune</h1>
     <label>bucket <select id="bucket"></select></label>
     <label>range <select id="range"></select></label>
-    <span id="gen" class="muted"></span>
+    <span id="gen" class="muted">initial</span>
   </header>
 
   <h2>rate_ema per algorithm</h2>
@@ -590,190 +588,244 @@ INDEX_HTML = r"""<!doctype html>
 </div>
 
 <script>
-const PALETTE = Array.from({length: 16}, (_, i) =>
-  `hsl(${Math.round(i * 360 / 16)},70%,55%)`);
-
-const state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
-const charts = {};
-
-function mk(id, cfg) {
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(document.getElementById(id), cfg);
-}
-
-async function j(url) {
-  const r = await fetch(url, {cache: "no-store"});
-  if (!r.ok) throw new Error(`${url}: ${r.status}`);
-  return r.json();
-}
-
-function lineData(cols, series, ts, colors) {
-  return cols.map((c, i) => ({
-    label: c,
-    data: (series[c] || []).map((y, k) => ({x: ts[k] * 1000, y})),
-    borderColor: colors[i % colors.length],
-    pointRadius: 0,
-    borderWidth: 1.4,
-    spanGaps: true,
-  }));
-}
-
-function timeOpts(extra) {
-  const base = {
-    responsive: true,
-    animation: false,
-    interaction: {mode: "nearest", intersect: false},
-    scales: {
-      x: {type: "time", time: {tooltipFormat: "MM-dd HH:mm"}},
-      y: {beginAtZero: false},
-    },
-    plugins: {legend: {labels: {boxWidth: 8, font: {size: 10}}}},
-  };
-  return Object.assign(base, extra || {});
-}
-
-function renderBucket() {
-  const doc = state.bucketDoc, algs = state.meta.algs;
-  const rng = document.getElementById("range").value;
-  const s = doc.series[rng], ts = s.ts;
-
-  mk("rate", {
-    type: "line",
-    data: {datasets: lineData(algs.map(a => `re_${a}`), s, ts, PALETTE)},
-    options: timeOpts({
-      plugins: {legend: {position: "right",
-                         labels: {boxWidth: 8, font: {size: 10}}}},
-    }),
-  });
-
-  mk("ref", {
-    type: "line",
-    data: {datasets: lineData(["ref_rate"], s, ts, ["#c33"])},
-    options: timeOpts(),
-  });
-
-  mk("rmem", {
-    type: "line",
-    data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#37a"])},
-    options: timeOpts({plugins: {legend: {display: false}}}),
-  });
-}
-
-function renderSwaps() {
-  const doc = state.swaps, rng = document.getElementById("range").value;
-  const d = doc[rng];
-  if (!d) return;
-  const ts = d.ts;
-
-  const mkLine = (key, color, dash) => ({
-    label: key,
-    data: d[key].map((y, k) => ({x: ts[k] * 1000, y})),
-    borderColor: color,
-    borderDash: dash || [],
-    pointRadius: 0,
-    borderWidth: 1.5,
-    spanGaps: true,
-  });
-
-  mk("div", {
-    type: "line",
-    data: {datasets: [
-      mkLine("d1_rate", "#2a7"),
-      mkLine("d1_lo",   "#2a7", [4, 3]),
-      mkLine("d1_hi",   "#2a7", [4, 3]),
-      mkLine("d0_rate", "#a72"),
-      mkLine("d0_lo",   "#a72", [4, 3]),
-      mkLine("d0_hi",   "#a72", [4, 3]),
-    ]},
-    options: timeOpts({
-      scales: {x: {type: "time"}, y: {min: 0, max: 1}},
-    }),
-  });
-
-  mk("swaps", {
-    type: "bar",
-    data: {
-      labels: ts.map(t => new Date(t * 1000)),
-      datasets: [{label: "swaps", data: d.swaps, backgroundColor: "#69c"}],
-    },
-    options: Object.assign(timeOpts(), {
-      scales: {x: {type: "time"}, y: {beginAtZero: true}},
-      plugins: {legend: {display: false}},
-    }),
-  });
-}
-
-function renderFleet() {
-  const f = state.fleet;
-  mk("fleet", {
-    type: "bar",
-    data: {
-      labels: f.buckets,
-      datasets: [{label: "% bins with leader",
-                  data: f.coverage_24h, backgroundColor: "#4a8"}],
-    },
-    options: {
-      responsive: true, animation: false, indexAxis: "y",
-      scales: {x: {min: 0, max: 100}},
-      plugins: {legend: {display: false}},
-    },
-  });
-}
-
-async function loadBucket(id) {
-  state.bucketDoc = await j(`data/bucket_${id}.json`);
-  renderBucket();
-}
-
-async function boot() {
-  state.meta  = await j("data/meta.json");
-  state.swaps = await j("data/swaps.json");
-  state.fleet = await j("data/fleet.json");
-
-  const bs = document.getElementById("bucket");
-  bs.innerHTML = state.meta.buckets
-    .map(b => `<option value="${b.id}">${b.id} (${b.points})</option>`)
-    .join("");
-  bs.value = state.meta.default_bucket;
-
-  const rs = document.getElementById("range");
-  rs.innerHTML = state.meta.ranges
-    .map(r => `<option value="${r}">${r}</option>`).join("");
-  rs.value = "24h";
-
-  document.getElementById("gen").textContent =
-    "generated " + new Date(state.meta.generated_ts * 1000).toISOString();
-
-  bs.onchange = () => loadBucket(bs.value);
-  rs.onchange = () => { renderBucket(); renderSwaps(); };
-
-  await loadBucket(state.meta.default_bucket);
-  renderSwaps();
-  renderFleet();
-}
-
-window.addEventListener("error", function (e) {
+(function () {
   var el = document.getElementById("gen");
-  if (el) {
-    el.textContent = "ERROR: " + e.message + " @" + e.filename + ":" + e.lineno;
-    el.style.color = "red";
+  if (el) el.textContent = "html+js ok @ " + new Date().toISOString().slice(11, 19);
+})();
+</script>
+
+<script>
+(function () {
+  var gen = document.getElementById("gen");
+  function status(msg, isErr) {
+    if (gen) {
+      gen.textContent = msg;
+      gen.style.color = isErr ? "red" : "";
+    }
   }
-});
-window.addEventListener("unhandledrejection", function (e) {
-  var el = document.getElementById("gen");
-  if (el) {
-    var r = e.reason;
-    el.textContent = "REJECT: " + ((r && r.message) || r);
-    el.style.color = "red";
+  function err(msg, e) {
+    status(msg, true);
+    if (e) { console.error(msg, e); }
   }
-});
-window.addEventListener("load", function () {
-  if (typeof Chart === "undefined") {
-    var el = document.getElementById("gen");
-    if (el) { el.textContent = "Chart.js failed to load from CDN"; el.style.color = "red"; }
+
+  function loadScript(url) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = url;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { reject(new Error("failed to load " + url)); };
+      document.head.appendChild(s);
+    });
   }
-});
-boot();
+
+  var PALETTE = [];
+  for (var i = 0; i < 16; i++) {
+    PALETTE.push("hsl(" + Math.round(i * 360 / 16) + ",70%,55%)");
+  }
+
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
+  var charts = {};
+
+  function mk(id, cfg) {
+    if (charts[id]) { charts[id].destroy(); }
+    charts[id] = new Chart(document.getElementById(id), cfg);
+  }
+
+  function j(url) {
+    return fetch(url, {cache: "no-store"}).then(function (r) {
+      if (!r.ok) { throw new Error(url + ": " + r.status); }
+      return r.json();
+    });
+  }
+
+  function lineData(cols, series, ts, colors) {
+    return cols.map(function (c, i) {
+      return {
+        label: c,
+        data: (series[c] || []).map(function (y, k) {
+          return {x: ts[k] * 1000, y: y};
+        }),
+        borderColor: colors[i % colors.length],
+        pointRadius: 0,
+        borderWidth: 1.4,
+        spanGaps: true,
+      };
+    });
+  }
+
+  function timeOpts(extra) {
+    var base = {
+      responsive: true,
+      animation: false,
+      interaction: {mode: "nearest", intersect: false},
+      scales: {
+        x: {type: "time", time: {tooltipFormat: "MM-dd HH:mm"}},
+        y: {beginAtZero: false},
+      },
+      plugins: {legend: {labels: {boxWidth: 8, font: {size: 10}}}},
+    };
+    return Object.assign(base, extra || {});
+  }
+
+  function renderBucket() {
+    var doc = state.bucketDoc, algs = state.meta.algs;
+    var rng = document.getElementById("range").value;
+    var s = doc.series[rng], ts = s.ts;
+
+    mk("rate", {
+      type: "line",
+      data: {datasets: lineData(algs.map(function (a) {
+        return "re_" + a;
+      }), s, ts, PALETTE)},
+      options: timeOpts({
+        plugins: {legend: {position: "right",
+                           labels: {boxWidth: 8, font: {size: 10}}}},
+      }),
+    });
+
+    mk("ref", {
+      type: "line",
+      data: {datasets: lineData(["ref_rate"], s, ts, ["#c33"])},
+      options: timeOpts(),
+    });
+
+    mk("rmem", {
+      type: "line",
+      data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#37a"])},
+      options: timeOpts({plugins: {legend: {display: false}}}),
+    });
+  }
+
+  function renderSwaps() {
+    var doc = state.swaps, rng = document.getElementById("range").value;
+    var d = doc[rng];
+    if (!d) return;
+    var ts = d.ts;
+
+    function mkLine(key, color, dash) {
+      return {
+        label: key,
+        data: d[key].map(function (y, k) {
+          return {x: ts[k] * 1000, y: y};
+        }),
+        borderColor: color,
+        borderDash: dash || [],
+        pointRadius: 0,
+        borderWidth: 1.5,
+        spanGaps: true,
+      };
+    }
+
+    mk("div", {
+      type: "line",
+      data: {datasets: [
+        mkLine("d1_rate", "#2a7"),
+        mkLine("d1_lo",   "#2a7", [4, 3]),
+        mkLine("d1_hi",   "#2a7", [4, 3]),
+        mkLine("d0_rate", "#a72"),
+        mkLine("d0_lo",   "#a72", [4, 3]),
+        mkLine("d0_hi",   "#a72", [4, 3]),
+      ]},
+      options: timeOpts({
+        scales: {x: {type: "time"}, y: {min: 0, max: 1}},
+      }),
+    });
+
+    mk("swaps", {
+      type: "bar",
+      data: {
+        labels: ts.map(function (t) { return new Date(t * 1000); }),
+        datasets: [{label: "swaps", data: d.swaps, backgroundColor: "#69c"}],
+      },
+      options: Object.assign(timeOpts(), {
+        scales: {x: {type: "time"}, y: {beginAtZero: true}},
+        plugins: {legend: {display: false}},
+      }),
+    });
+  }
+
+  function renderFleet() {
+    var f = state.fleet;
+    mk("fleet", {
+      type: "bar",
+      data: {
+        labels: f.buckets,
+        datasets: [{label: "% bins with leader",
+                    data: f.coverage_24h, backgroundColor: "#4a8"}],
+      },
+      options: {
+        responsive: true, animation: false, indexAxis: "y",
+        scales: {x: {min: 0, max: 100}},
+        plugins: {legend: {display: false}},
+      },
+    });
+  }
+
+  function loadBucket(id) {
+    return j("data/bucket_" + id + ".json").then(function (doc) {
+      state.bucketDoc = doc;
+      renderBucket();
+    });
+  }
+
+  function boot() {
+    status("loading Chart.js...");
+    loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
+      .then(function () {
+        status("loading date adapter...");
+        return loadScript("https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js");
+      })
+      .then(function () {
+        status("loading data...");
+        return Promise.all([
+          j("data/meta.json"),
+          j("data/swaps.json"),
+          j("data/fleet.json"),
+        ]);
+      })
+      .then(function (results) {
+        state.meta  = results[0];
+        state.swaps = results[1];
+        state.fleet = results[2];
+
+        var bs = document.getElementById("bucket");
+        var html = "";
+        for (var k = 0; k < state.meta.buckets.length; k++) {
+          var b = state.meta.buckets[k];
+          html += "<option value=\"" + b.id + "\">" + b.id +
+                  " (" + b.points + ")</option>";
+        }
+        bs.innerHTML = html;
+        bs.value = state.meta.default_bucket;
+
+        var rs = document.getElementById("range");
+        var rhtml = "";
+        for (var m = 0; m < state.meta.ranges.length; m++) {
+          rhtml += "<option value=\"" + state.meta.ranges[m] + "\">" +
+                   state.meta.ranges[m] + "</option>";
+        }
+        rs.innerHTML = rhtml;
+        rs.value = "24h";
+
+        status("generated " + new Date(state.meta.generated_ts * 1000).toISOString());
+
+        bs.onchange = function () { loadBucket(bs.value); };
+        rs.onchange = function () { renderBucket(); renderSwaps(); };
+
+        return loadBucket(state.meta.default_bucket);
+      })
+      .then(function () {
+        renderSwaps();
+        renderFleet();
+      })
+      .catch(function (e) {
+        err("FAIL: " + (e && e.message ? e.message : e), e);
+      });
+  }
+
+  boot();
+})();
+</script>
 """
 
 
