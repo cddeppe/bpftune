@@ -1,3 +1,14 @@
+bpftune (0.4.48) UNRELEASED; urgency=medium
+
+  * instrumentation: estab / swapctx / closport printks for weekend data
+    collection.  Log-only, no behavior or state change.
+    - estab: cookie, alg, forced(0/1), dest  -- the initial-pick denominator
+    - swapctx: cwnd, ssthresh, packets_out, snd_wnd, on_leader, swap_count
+      (companion to swap and freeze lines, joined by cookie)
+    - closport: cookie, alg added -- joins socket lifetime across events
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 00:00:00 +0000
+
 bpftune (0.4.47) UNRELEASED; urgency=medium
 
   * swap/freeze printks: add dest=<IPv4> for per-bucket swap analysis
