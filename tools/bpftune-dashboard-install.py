@@ -334,66 +334,113 @@ def data_metric(hosts):
     return rows
 
 
-def _proof(text):
-    per_alg = defaultdict(lambda: {"t1": 0, "t2": 0, "max": 0})
-    for line in text.splitlines():
-        if "proof cookie=" not in line:
-            continue
-        m = re.search(r"alg=(\d+) rate=(\d+) tier=(\d+)", line)
-        if not m:
-            continue
-        a = int(m.group(1)); rate = int(m.group(2)); tier = m.group(3)
-        per_alg[a]["t"+tier] += 1
-        if rate > per_alg[a]["max"]:
-            per_alg[a]["max"] = rate
-    return per_alg
+def _proof_events(text):
+    """Parse proof cookie=... and midsamp lines.
 
+    Two entirely independent streams are reported per algorithm:
 
-def _midsamp(text):
-    avg = {}
-    cur_alg = {}
-    for line in text.splitlines():
-        mm = re.search(r"met cookie=(\d+) rport=\d+ alg=(\d+) ", line)
+      * proof events - formal `proof cookie=... alg=N rate=Y tier=T`
+        lines. `proven_max` is the highest rate at which an algorithm
+        was ever formally proved.
+
+      * midsamp samples - `midsamp cookie=X ... srate=Z` lines. These
+        do NOT carry alg=N. Attribution is inferred from the nearest
+        `met cookie=X ... alg=N` line for the same cookie, within a
+        time window. Without the window, samples get credited to the
+        algorithm that last touched a cookie, which is stale after a
+        swap and produces values that cannot belong to the named
+        algorithm (e.g. veno reported at 420 Mb/s).
+
+    Because these are different populations, sampled_avg may exceed
+    proven_max on the same row - that is expected, not a bug. Within
+    the sampled stream, sampled_avg is always <= sampled_max.
+    """
+    MET_WINDOW_S = 60.0
+    lines = text.splitlines()
+
+    events = defaultdict(lambda: {"good": 0, "proved": 0, "proven_max": 0})
+    samples = defaultdict(lambda: {"sum": 0, "n": 0, "samp_max": 0})
+    met_by_cookie = defaultdict(list)
+
+    # pass 1 - proof events, and met index (cookie -> [(ts, alg), ...])
+    for line in lines:
+        if "proof cookie=" in line:
+            m = re.search(r"alg=(\d+) rate=(\d+) tier=(\d+)", line)
+            if m:
+                a = int(m.group(1))
+                rate = int(m.group(2))
+                tier = m.group(3)
+                if tier == "2":
+                    events[a]["proved"] += 1
+                else:
+                    events[a]["good"] += 1
+                if rate > events[a]["proven_max"]:
+                    events[a]["proven_max"] = rate
+            continue
+        mm = re.search(
+            r"(\d+\.\d+): .*met cookie=(\d+) rport=\d+ alg=(\d+) ",
+            line)
         if mm:
-            cur_alg[int(mm.group(1))] = int(mm.group(2))
+            ts = float(mm.group(1))
+            c  = int(mm.group(2))
+            a  = int(mm.group(3))
+            met_by_cookie[c].append((ts, a))
+
+    # pass 2 - midsamp samples, attributed via nearest met within window
+    for line in lines:
+        ms = re.search(
+            r"(\d+\.\d+): .*midsamp cookie=(\d+) .* srate=(\d+)",
+            line)
+        if not ms:
             continue
-        ms = re.search(r"midsamp cookie=(\d+) .* alg=(\d+) .* srate=(\d+)", line)
-        if ms:
-            a = int(ms.group(2)); r = int(ms.group(3))
-            if r > 0:
-                avg.setdefault(a, [0, 0])
-                avg[a][0] += r; avg[a][1] += 1
-        else:
-            ms2 = re.search(r"midsamp cookie=(\d+) .* srate=(\d+)", line)
-            if ms2:
-                c, r = int(ms2.group(1)), int(ms2.group(2))
-                if r > 0 and c in cur_alg:
-                    a = cur_alg[c]
-                    avg.setdefault(a, [0, 0])
-                    avg[a][0] += r; avg[a][1] += 1
-    return avg
+        ts = float(ms.group(1))
+        c  = int(ms.group(2))
+        r  = int(ms.group(3))
+        if r <= 0:
+            continue
+        cand = met_by_cookie.get(c)
+        if not cand:
+            continue
+        best_a = None
+        best_d = None
+        for (mts, a) in cand:
+            d = abs(mts - ts)
+            if best_d is None or d < best_d:
+                best_d = d
+                best_a = a
+        if best_a is None or best_d is None or best_d > MET_WINDOW_S:
+            continue
+        samples[best_a]["sum"] += r
+        samples[best_a]["n"] += 1
+        if r > samples[best_a]["samp_max"]:
+            samples[best_a]["samp_max"] = r
+
+    return events, samples
 
 
 def data_proof(text):
-    per_alg = _proof(text)
-    if not per_alg:
+    events, samples = _proof_events(text)
+    if not events and not samples:
         return []
-    avg = _midsamp(text)
+    algs = set(events) | set(samples)
     rows = []
-    for a in sorted(per_alg.keys(), key=lambda x: -per_alg[x]["max"]):
-        d = per_alg[a]
+    for a in algs:
+        e = events.get(a, {"good": 0, "proved": 0, "proven_max": 0})
+        s = samples.get(a, {"sum": 0, "n": 0, "samp_max": 0})
         row = {
-            "alg":    CONGS[a] if a < 16 else "alg%d" % a,
-            "good":   d["t1"],
-            "proved": d["t2"],
-            "max_mbps": round(d["max"] / BPS_TO_MBPS, 1),
-            "avg_mbps": None,
-            "n": None,
+            "alg":         CONGS[a] if a < 16 else "alg%d" % a,
+            "good":        e["good"],
+            "proved":      e["proved"],
+            "proven_max":  round(e["proven_max"] / BPS_TO_MBPS, 1)
+                           if e["proven_max"] else None,
+            "sampled_avg": round(s["sum"] / s["n"] / BPS_TO_MBPS, 1)
+                           if s["n"] else None,
+            "sampled_max": round(s["samp_max"] / BPS_TO_MBPS, 1)
+                           if s["samp_max"] else None,
+            "samples":     s["n"] or None,
         }
-        if a in avg and avg[a][1]:
-            row["avg_mbps"] = round(avg[a][0] / avg[a][1] / BPS_TO_MBPS, 1)
-            row["n"] = avg[a][1]
         rows.append(row)
+    rows.sort(key=lambda r: -(r["proven_max"] or 0))
     return rows
 
 
@@ -661,12 +708,15 @@ def render_text(d):
     for r in d["metric"]:
         mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
                   f"{r['votes']:>7}{r['alive']:>7}")
-    pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'maxM':>8}{'avgM':>8}{'n':>5}"]
+    pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'p_max':>8}"
+          f"{'s_avg':>8}{'s_max':>8}{'n':>5}"]
     for r in d["proof"]:
-        a = f"{r['avg_mbps']:.1f}" if r["avg_mbps"] is not None else "-"
-        n = f"{r['n']}" if r["n"] is not None else "-"
+        pm = f"{r['proven_max']:.1f}" if r["proven_max"] is not None else "-"
+        sa = f"{r['sampled_avg']:.1f}" if r["sampled_avg"] is not None else "-"
+        sm = f"{r['sampled_max']:.1f}" if r["sampled_max"] is not None else "-"
+        n  = f"{r['samples']}" if r["samples"] is not None else "-"
         pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
-                  f"{r['max_mbps']:>8.1f}{a:>8}{n:>5}")
+                  f"{pm:>8}{sa:>8}{sm:>8}{n:>5}")
     for row in _twocol("ALGORITHM LEADERBOARD (metric)", mt,
                        "PROOF LEADERBOARD (speed)",     pr):
         print(row)
@@ -1405,6 +1455,12 @@ INDEX_HTML = r"""<!doctype html>
     font-family: var(--mono); font-size: 10.5px;
     font-weight: 500; letter-spacing: 0; text-transform: none;
   }
+  .lv-grid .note {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    font-size: 11px; color: var(--muted-2);
+    line-height: 1.4;
+  }
 
   .kv { display: flex; flex-direction: column; gap: 5px; }
   .kv .row {
@@ -1439,17 +1495,6 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
-
-  .bar {
-    position: relative; display: inline-block;
-    height: 6px; width: 90px; vertical-align: middle;
-    background: var(--subtle); border-radius: 3px; overflow: hidden;
-    margin-right: 8px;
-  }
-  .bar > span {
-    position: absolute; inset: 0 auto 0 0;
-    background: var(--accent); border-radius: 3px;
-  }
 
   .sp {
     display: inline-flex; align-items: center;
@@ -1655,6 +1700,13 @@ INDEX_HTML = r"""<!doctype html>
     <section class="c6">
       <h3>proof leaderboard</h3>
       <div id="lv-proof"></div>
+      <div class="note">
+        two independent streams: <b>proven</b> from formal proof events,
+        <b>sampled</b> from midsamp current-rate samples attributed via
+        nearest <code>met</code> for the same cookie (60s window).
+        They measure different populations; sampled avg may exceed
+        proven max. Within the sampled stream, avg &le; max.
+      </div>
     </section>
 
     <section class="c8">
@@ -1833,6 +1885,10 @@ INDEX_HTML = r"""<!doctype html>
     if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
     return Math.floor(dt / 86400) + "d ago";
   }
+  function num(v, d) {
+    if (v == null) return '<span class="dim">-</span>';
+    return v.toFixed(d == null ? 1 : d);
+  }
 
   function renderBuild(b) {
     var rows = [
@@ -1923,26 +1979,21 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-proof", '<div class="placeholder">(none in tail)</div>');
       return;
     }
-    var maxv = 1;
-    rows.forEach(function (r) { if (r.max_mbps > maxv) maxv = r.max_mbps; });
     var html = '<table class="tbl"><thead><tr>' +
-      '<th>alg</th><th>good</th><th>proved</th>' +
-      '<th>max Mb/s</th><th>avg</th><th>n</th>' +
+      '<th>alg</th>' +
+      '<th>good</th><th>proved</th><th>proven max</th>' +
+      '<th>sampled avg</th><th>sampled max</th><th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
-      var w = Math.max(2, Math.round(90 * r.max_mbps / maxv));
       html += '<tr>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
         '<td class="mono dim">' + r.good + '</td>' +
         '<td class="mono dim">' + r.proved + '</td>' +
-        '<td class="mono" style="white-space:nowrap">' +
-          '<span class="bar"><span style="width:' + w + 'px"></span></span>' +
-          r.max_mbps.toFixed(1) +
-        '</td>' +
+        '<td class="mono">' + num(r.proven_max) + '</td>' +
+        '<td class="mono">' + num(r.sampled_avg) + '</td>' +
+        '<td class="mono dim">' + num(r.sampled_max) + '</td>' +
         '<td class="mono dim">' +
-          (r.avg_mbps == null ? "-" : r.avg_mbps.toFixed(1)) + '</td>' +
-        '<td class="mono dim">' +
-          (r.n == null ? "-" : r.n) + '</td>' +
+          (r.samples == null ? "-" : r.samples) + '</td>' +
         '</tr>';
     });
     setHTML("lv-proof", html + '</tbody></table>');
