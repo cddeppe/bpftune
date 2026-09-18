@@ -26,6 +26,8 @@ BUCKETS_V2     = os.path.join(HIST, "buckets.v2.csv")
 BUCKETS_LEGACY = os.path.join(HIST, "buckets.csv")
 SWAPS_V1       = os.path.join(HIST, "swaps.v1.csv")
 SWAPS          = os.path.join(HIST, "swaps.csv")
+SWAPS_POS_V1   = os.path.join(HIST, ".swaps_pos")     # legacy - single int
+SWAPS_POS_V2   = os.path.join(HIST, ".swaps_pos.json")  # per-file offsets
 CURRENT_JSON   = os.path.join(HIST, "current.json")
 
 SELF_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -62,8 +64,8 @@ def write_file(path, text, mode=0o644):
 
 def _append_swaps_column(path, new_col):
     """Append a column to swaps.csv in place, empty for existing rows.
-    Preserves history. Consumers that treat empty as null (DictReader,
-    the renderer) do not need a change."""
+    Preserves history. Consumers that treat empty as null do not need
+    a change."""
     with open(path, newline="") as f:
         rd = csv.reader(f)
         try:
@@ -109,6 +111,9 @@ def migrate():
     else:
         say("  no swaps.csv yet (will be created)")
 
+    if os.path.exists(SWAPS_POS_V1) and not os.path.exists(SWAPS_POS_V2):
+        say("  legacy .swaps_pos found; new collector uses .swaps_pos.json")
+
 
 def write_cron():
     body = (
@@ -146,7 +151,7 @@ def run_and_verify():
         say("  buckets.v2.csv now has %d rows" % after)
 
     if not os.path.exists(CURRENT_JSON):
-        warn("current.json not written - CLI JSON snapshot failed")
+        warn("current.json not written - CLI snapshot failed")
     else:
         say("  current.json: %d bytes" % os.path.getsize(CURRENT_JSON))
 
@@ -956,8 +961,8 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`.
-Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file
-byte offsets in .swaps_pos.json).
+Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file byte
+offsets in .swaps_pos.json).
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
 The earlier collector tailed only the NEWEST log file. When bpftune
@@ -969,6 +974,8 @@ independently, so a rotation (or an upgrade that adds a new file) does
 not starve the CSV.
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
+`socket_rate_before` is the socket's own met `val=` at the moment just
+before the swap - raw bytes/sec, same units as the log.
 """
 import csv, json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -1193,7 +1200,6 @@ def collect_swaps():
 
         pos = state.get(key, 0)
         if size < pos:
-            # truncated / rotated
             pos = 0
         if size == pos:
             continue
