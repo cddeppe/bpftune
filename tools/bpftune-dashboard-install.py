@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bpftune dashboard installer (schema v2). Idempotent — safe to re-run.
+bpftune dashboard installer (schema v2). Idempotent - safe to re-run.
 
     sudo python3 tools/bpftune-dashboard-install.py
 
@@ -12,7 +12,7 @@ Buckets are read from the ebpf map `remote_host_map` via bpftool, NOT
 from the log. The log supplies swap lines only.
 
 `collected_ts` (wall clock) is the only date-safe column. Swap rows also
-carry `boot_ts` (monotonic seconds straight from the log) — never derive
+carry `boot_ts` (monotonic seconds straight from the log) - never derive
 a calendar date from boot_ts.
 """
 from __future__ import annotations
@@ -114,7 +114,7 @@ def run_and_verify():
 
     after = count_data_rows(BUCKETS_V2)
     if after == 0:
-        die("collector wrote zero rows — is bpftune running and "
+        die("collector wrote zero rows - is bpftune running and "
             "bpftool able to dump remote_host_map?")
     if after <= before:
         warn("collector added no rows (map unchanged)")
@@ -144,7 +144,7 @@ Swaps:   tail /var/log/bpftune-met-*.log, match swap=/met= lines, score
          by comparing nearest met-val before vs first met-val 3-300s
          after the swap.
 
-`collected_ts` is wall clock. `boot_ts` is monotonic (log seconds) —
+`collected_ts` is wall clock. `boot_ts` is monotonic (log seconds) -
 never derive a date from it.
 """
 import csv, json, os, re, subprocess, sys, time
@@ -342,12 +342,12 @@ if __name__ == "__main__":
 '''
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
-"""bpftune renderer — static Chart.js dashboard.
+"""bpftune renderer - static Chart.js dashboard.
 
 Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv, writes
 index.html and data/*.json into /var/lib/bpftune/history.
 
-All downsampling is server-side — Chart.js never sees raw rows.
+All downsampling is server-side - Chart.js never sees raw rows.
 
 `collected_ts` is the only date-safe timestamp (falls back to `ts_epoch`
 for v1 rows).
@@ -579,7 +579,7 @@ INDEX_HTML = r"""<!doctype html>
   <h2>tcp_rmem max (bytes)</h2>
   <canvas id="rmem" height="50"></canvas>
 
-  <h2>divergence outcomes — win rate with 95% Wilson CI</h2>
+  <h2>divergence outcomes - win rate with 95% Wilson CI</h2>
   <canvas id="div" height="70"></canvas>
 
   <h2>swaps per bin</h2>
@@ -752,6 +752,27 @@ async function boot() {
   renderFleet();
 }
 
+window.addEventListener("error", function (e) {
+  var el = document.getElementById("gen");
+  if (el) {
+    el.textContent = "ERROR: " + e.message + " @" + e.filename + ":" + e.lineno;
+    el.style.color = "red";
+  }
+});
+window.addEventListener("unhandledrejection", function (e) {
+  var el = document.getElementById("gen");
+  if (el) {
+    var r = e.reason;
+    el.textContent = "REJECT: " + ((r && r.message) || r);
+    el.style.color = "red";
+  }
+});
+window.addEventListener("load", function () {
+  if (typeof Chart === "undefined") {
+    var el = document.getElementById("gen");
+    if (el) { el.textContent = "Chart.js failed to load from CDN"; el.style.color = "red"; }
+  }
+});
 boot();
 """
 
