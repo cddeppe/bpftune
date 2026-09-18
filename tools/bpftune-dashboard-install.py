@@ -1,41 +1,39 @@
 #!/usr/bin/env python3
 """
-bpftune dashboard - one-shot installer (schema v2 + Chart.js renderer).
-
-Detects the live bpftune log format, writes the collector and renderer
-beside itself, installs the schema sidecar and cron file, migrates
-buckets.csv -> buckets.v1.csv once, then runs both scripts and verifies
-their output. Idempotent - safe to re-run.
+bpftune dashboard installer (schema v2). Idempotent — safe to re-run.
 
     sudo python3 tools/bpftune-dashboard-install.py
+
+Writes tools/bpftune-collector.py and tools/bpftune-render.py next to
+itself, migrates old CSVs to .v1 sidecars, installs
+/etc/cron.d/bpftune-history, runs both once, and verifies output.
+
+Buckets are read from the ebpf map `remote_host_map` via bpftool, NOT
+from the log. The log supplies swap lines only.
+
+`collected_ts` (wall clock) is the only date-safe column. Swap rows also
+carry `boot_ts` (monotonic seconds straight from the log) — never derive
+a calendar date from boot_ts.
 """
 from __future__ import annotations
 
-import glob
-import json
 import os
-import re
+import shutil
 import subprocess
 import sys
 import time
 
-HIST     = "/var/lib/bpftune/history"
-LOG_GLOB = "/var/log/bpftune-met-*.log"
-CRON     = "/etc/cron.d/bpftune-history"
-SCHEMA   = os.path.join(HIST, "buckets.schema.json")
-V1       = os.path.join(HIST, "buckets.v1.csv")
-V2       = os.path.join(HIST, "buckets.v2.csv")
-LEGACY   = os.path.join(HIST, "buckets.csv")
+HIST           = "/var/lib/bpftune/history"
+CRON           = "/etc/cron.d/bpftune-history"
+BUCKETS_V1     = os.path.join(HIST, "buckets.v1.csv")
+BUCKETS_V2     = os.path.join(HIST, "buckets.v2.csv")
+BUCKETS_LEGACY = os.path.join(HIST, "buckets.csv")
+SWAPS_V1       = os.path.join(HIST, "swaps.v1.csv")
+SWAPS          = os.path.join(HIST, "swaps.csv")
 
-SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+SELF_DIR  = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR = os.path.join(SELF_DIR, "bpftune-collector.py")
 RENDERER  = os.path.join(SELF_DIR, "bpftune-render.py")
-
-CAND_SWAP_SIG   = ("cookie", "from_alg", "to_alg")
-CAND_BUCKET_SIG = ("ref_rate", "rate_best_v", "rate_best_i", "instances")
-ID_CANDIDATES   = ("bucket", "bucket_id", "bkt", "dst", "dest", "target")
-
-KV = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
 
 
 def _c(code, s):
@@ -64,231 +62,301 @@ def write_file(path, text, mode=0o644):
     os.replace(tmp, path)
 
 
-def newest_log():
-    logs = sorted(glob.glob(LOG_GLOB), key=os.path.getmtime)
-    return logs[-1] if logs else None
+def migrate():
+    if os.path.exists(BUCKETS_LEGACY) and not os.path.exists(BUCKETS_V1):
+        os.rename(BUCKETS_LEGACY, BUCKETS_V1)
+        say("  migrated buckets.csv -> buckets.v1.csv")
+    elif os.path.exists(BUCKETS_V1):
+        say("  buckets.v1.csv already present")
+    else:
+        say("  no buckets.csv to migrate")
+
+    if os.path.exists(SWAPS):
+        with open(SWAPS, newline="") as f:
+            first = f.readline().strip()
+        cols = first.split(",") if first else []
+        if "collected_ts" in cols:
+            say("  swaps.csv already schema v2")
+        elif "ts_epoch" in cols:
+            os.rename(SWAPS, SWAPS_V1)
+            say("  migrated swaps.csv -> swaps.v1.csv (schema v1)")
+        else:
+            warn("  swaps.csv has unrecognized header: " + first)
+    else:
+        say("  no swaps.csv yet (will be created)")
 
 
-def dump_diagnostics(log_path):
-    say("first non-empty lines from " + log_path + ":")
-    try:
-        with open(log_path, errors="replace") as f:
-            shown = 0
-            for line in f:
-                if KV.findall(line):
-                    print("    " + line.rstrip()[:240])
-                    shown += 1
-                    if shown >= 8:
-                        break
-    except OSError as e:
-        print("    (could not read: %s)" % e)
-    say("paste the above into chat and I'll match the parser")
+def write_cron():
+    body = (
+        "# managed by bpftune-dashboard-install.py\n"
+        "* * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
+        "*/5 * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
+        % (COLLECTOR, RENDERER)
+    )
+    write_file(CRON, body, 0o644)
 
 
-def detect_schema(log_path):
-    b_shapes, s_shapes = {}, {}
-    with open(log_path, errors="replace") as f:
-        for i, line in enumerate(f):
-            if i >= 5000:
-                break
-            kv = dict(KV.findall(line))
-            if not kv:
-                continue
-            ks = set(kv)
-            if any(s in ks for s in CAND_SWAP_SIG):
-                s_shapes.setdefault(frozenset(ks), line.rstrip())
-            elif any(s in ks for s in CAND_BUCKET_SIG):
-                b_shapes.setdefault(frozenset(ks), line.rstrip())
+def count_data_rows(path):
+    if not os.path.exists(path):
+        return 0
+    with open(path, newline="") as f:
+        return max(0, sum(1 for _ in f) - 1)
 
-    if not b_shapes:
-        dump_diagnostics(log_path)
-        die("could not identify any bucket lines - see the dump above")
 
-    bset, sset = set(), set()
-    for sh in b_shapes:
-        bset |= sh
-    for sh in s_shapes:
-        sset |= sh
+def run_and_verify():
+    before = count_data_rows(BUCKETS_V2)
+    r = subprocess.run([sys.executable, COLLECTOR],
+                       capture_output=True, text=True)
+    print("    collector:", r.stdout.strip() or "(no output)")
+    if r.returncode != 0:
+        print(r.stderr)
+        die("collector exited non-zero")
 
-    b_sig = [s for s in CAND_BUCKET_SIG if s in bset]
-    s_sig = [s for s in CAND_SWAP_SIG if s in sset]
-    if not s_sig:
-        warn("no swap lines detected in sample - swaps.csv stays empty "
-             "until a swap occurs (that's fine)")
+    after = count_data_rows(BUCKETS_V2)
+    if after == 0:
+        die("collector wrote zero rows — is bpftune running and "
+            "bpftool able to dump remote_host_map?")
+    if after <= before:
+        warn("collector added no rows (map unchanged)")
+    else:
+        say("  buckets.v2.csv now has %d rows" % after)
 
-    b_cols = ["collected_ts", "boot_ts"]
-    b_cols += sorted(k for k in bset
-                     if k not in ("collected_ts", "boot_ts"))
-    for extra in ("srate", "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max"):
-        if extra not in b_cols:
-            b_cols.append(extra)
-    b_cols = list(dict.fromkeys(b_cols))
+    r = subprocess.run([sys.executable, RENDERER],
+                       capture_output=True, text=True)
+    print("    renderer:", r.stdout.strip() or "(no output)")
+    if r.returncode != 0:
+        print(r.stderr)
+        die("renderer exited non-zero")
 
-    s_cols = ["collected_ts", "boot_ts"]
-    s_cols += sorted(k for k in sset
-                     if k not in ("collected_ts", "boot_ts"))
-    s_cols = list(dict.fromkeys(s_cols))
+    for p in (os.path.join(HIST, "index.html"),
+              os.path.join(HIST, "data", "meta.json")):
+        if not os.path.exists(p):
+            die("expected output missing: " + p)
 
-    bucket_id = next((c for c in ID_CANDIDATES if c in b_cols), None)
 
-    return {
-        "version": 2,
-        "detected_from": log_path,
-        "detected_at": int(time.time()),
-        "bucket_signature": b_sig,
-        "swap_signature":   s_sig,
-        "bucket_columns":   b_cols,
-        "swap_columns":     s_cols,
-        "bucket_id_column": bucket_id,
-    }
-
+# ---------------------------------------------------------------- embed
 
 COLLECTOR_SRC = r'''#!/usr/bin/env python3
-# AUTO-GENERATED by bpftune-dashboard-install.py - edits here are lost.
-"""bpftune history collector - schema v2. Runs every minute from cron.
+"""bpftune collector, schema v2. Run once per minute from cron.
 
-collected_ts (wall clock) is the ONLY date-safe column. bpftune log
-lines carry monotonic BOOT seconds; never derive a date from boot_ts.
+Buckets: `bpftool --json map dump name remote_host_map`.
+Swaps:   tail /var/log/bpftune-met-*.log, match swap=/met= lines, score
+         by comparing nearest met-val before vs first met-val 3-300s
+         after the swap.
+
+`collected_ts` is wall clock. `boot_ts` is monotonic (log seconds) —
+never derive a date from it.
 """
-import csv, glob, json, os, re, subprocess, sys, time
+import csv, json, os, re, subprocess, sys, time
+from pathlib import Path
 
-HIST     = "/var/lib/bpftune/history"
-SCHEMA   = os.path.join(HIST, "buckets.schema.json")
-BUCKETS  = os.path.join(HIST, "buckets.v2.csv")
-SWAPS    = os.path.join(HIST, "swaps.csv")
-STATE    = "/var/lib/bpftune/collector.state.json"
-LOG_GLOB = "/var/log/bpftune-met-*.log"
+HIST = Path("/var/lib/bpftune/history")
+HIST.mkdir(parents=True, exist_ok=True)
+BUCKETS_CSV = HIST / "buckets.v2.csv"
+SWAPS_CSV   = HIST / "swaps.csv"
+SWAPS_POS   = HIST / ".swaps_pos"
 
-KV = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
+         "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
+         "hybla", "nv"]
+MIN_INST = 2
+
+SWAP_RX = re.compile(
+    r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
+    r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
+    r"(?: mt=(\d+) rb=(\d+))?")
+MET_RX = re.compile(
+    r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
+    r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
 
 
-def load_schema():
-    with open(SCHEMA) as f:
-        return json.load(f)
-
-
-def read_state():
+def sh(args, timeout=15):
     try:
-        with open(STATE) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {"path": None, "offset": 0}
-
-
-def write_state(s):
-    tmp = STATE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(s, f)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, STATE)
-
-
-def newest_log():
-    logs = sorted(glob.glob(LOG_GLOB), key=os.path.getmtime)
-    return logs[-1] if logs else None
+        return subprocess.run(args, capture_output=True, text=True,
+                              timeout=timeout).stdout
+    except Exception:
+        return ""
 
 
 def tcp_rmem():
+    out = sh(["sysctl", "-n", "net.ipv4.tcp_rmem"]).split()
+    if len(out) != 3:
+        return "", "", ""
     try:
-        out = subprocess.run(["sysctl", "-n", "net.ipv4.tcp_rmem"],
-                             capture_output=True, text=True,
-                             check=True).stdout
-        lo, mid, hi = out.split()
-        return int(lo), int(mid), int(hi)
-    except Exception:
+        return int(out[0]), int(out[1]), int(out[2])
+    except ValueError:
         return "", "", ""
 
 
-def classify(kv, schema):
-    ks = set(kv)
-    if any(k in ks for k in schema["swap_signature"]):
-        return "swap"
-    if any(k in ks for k in schema["bucket_signature"]):
-        return "bucket"
-    return None
-
-
-def get_header(path, default):
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        with open(path, newline="") as f:
-            return next(csv.reader(f), default)
-    return default
-
-
-def append(path, header, rows):
-    if not rows:
-        return
-    created = not (os.path.exists(path) and os.path.getsize(path) > 0)
+def append_csv(path, row):
+    exists = path.exists() and path.stat().st_size > 0
     with open(path, "a", newline="") as f:
-        w = csv.writer(f)
-        if created:
-            w.writerow(header)
-        for r in rows:
-            w.writerow([r.get(c, "") for c in header])
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if not exists:
+            w.writeheader()
+        w.writerow(row)
+
+
+def find_log():
+    files = list(Path("/var/log").glob("bpftune-met-*.log"))
+    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
+def collect_buckets(ts_epoch):
+    out = sh(["bpftool", "--json", "map", "dump", "name",
+              "remote_host_map"])
+    try:
+        data = json.loads(out)
+    except Exception:
+        return 0
+    if not isinstance(data, list):
+        return 0
+    rm_min, rm_def, rm_max = tcp_rmem()
+    n = 0
+    for e in data:
+        if not isinstance(e, dict):
+            continue
+        fmt = e.get("formatted") or {}
+        v = fmt.get("value")
+        k = fmt.get("key") or {}
+        if not isinstance(v, dict):
+            continue
+        try:
+            inst = int(v.get("instances", 0))
+        except Exception:
+            continue
+        if inst < MIN_INST:
+            continue
+        b = k.get("in6_u", {}).get("u6_addr8")
+        if not isinstance(b, list) or len(b) != 16:
+            continue
+        addr = ".".join(str(x) for x in b[12:16])
+        if addr == "0.0.0.1" or addr.startswith(("127.", "169.254.", "0.")):
+            continue
+        try:
+            best_i = int(v.get("best_i", 0) or 0)
+        except Exception:
+            best_i = 0
+        row = {
+            "collected_ts": ts_epoch,
+            "addr": addr,
+            "instances": inst,
+            "min_rtt": int(v.get("min_rtt", 0) or 0),
+            "ref_rate": int(v.get("max_rate_delivered", 0) or 0),
+            "best_i": best_i,
+            "best_alg": CONGS[best_i & 15],
+            "rate_best_i": int(v.get("rate_best_i", 0) or 0),
+            "rate_best_v": int(v.get("rate_best_v", 0) or 0),
+        }
+        metrics = v.get("metrics") or []
+        for i in range(16):
+            m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
+            row["mv_" + CONGS[i]] = int(m.get("metric_value", 0) or 0)
+            row["re_" + CONGS[i]] = int(m.get("rate_ema", 0) or 0)
+        row["tcp_rmem_min"] = rm_min
+        row["tcp_rmem_def"] = rm_def
+        row["tcp_rmem_max"] = rm_max
+        append_csv(BUCKETS_CSV, row)
+        n += 1
+    return n
+
+
+def collect_swaps():
+    logpath = find_log()
+    if not logpath:
+        return 0
+    pos = 0
+    if SWAPS_POS.exists():
+        try:
+            pos = int(SWAPS_POS.read_text().strip())
+        except Exception:
+            pos = 0
+    size = logpath.stat().st_size
+    if size < pos:
+        pos = 0
+    with open(logpath, "rb") as f:
+        f.seek(pos)
+        text = f.read().decode("utf-8", errors="replace")
+        new_pos = f.tell()
+
+    met = {}
+    for line in text.splitlines():
+        m = MET_RX.search(line)
+        if m:
+            c = int(m.group(2))
+            met.setdefault(c, []).append((float(m.group(1)), int(m.group(6))))
+
+    now_epoch = int(time.time())
+    n = 0
+    for line in text.splitlines():
+        m = SWAP_RX.search(line)
+        if not m:
+            continue
+        boot_ts = float(m.group(1))
+        c   = int(m.group(2))
+        fa  = int(m.group(3))
+        ta  = int(m.group(4))
+        d   = int(m.group(7))
+        mt_i = m.group(8)
+        rb_i = m.group(9)
+        pre = post = None
+        for (mts, mval) in met.get(c, []):
+            if mts < boot_ts + 0.001:
+                pre = mval
+            elif boot_ts + 3.0 <= mts <= boot_ts + 300.0:
+                post = mval
+                break
+        outcome = ""
+        if pre and post:
+            r = post / pre
+            outcome = "win" if r <= 0.9 else ("loss" if r >= 1.1 else "null")
+        mt_alg = CONGS[int(mt_i) & 15] if mt_i and mt_i.isdigit() else ""
+        rb_alg = CONGS[int(rb_i) & 15] if rb_i and rb_i.isdigit() else ""
+        append_csv(SWAPS_CSV, {
+            "collected_ts": now_epoch,
+            "boot_ts": boot_ts,
+            "cookie": c,
+            "from_alg": CONGS[fa] if fa < 16 else str(fa),
+            "to_alg": CONGS[ta] if ta < 16 else str(ta),
+            "d": d,
+            "mt_alg": mt_alg,
+            "rb_alg": rb_alg,
+            "diverges": "1" if (mt_alg and rb_alg and mt_alg != rb_alg) else "0",
+            "outcome": outcome,
+        })
+        n += 1
+
+    SWAPS_POS.write_text(str(new_pos))
+    return n
 
 
 def main():
-    schema = load_schema()
-    log = newest_log()
-    if not log:
-        print("collector: no log found", file=sys.stderr)
-        return 1
-
-    state = read_state()
-    offset = state.get("offset", 0) if state.get("path") == log else 0
-    ts = int(time.time())
-    lo, mid, hi = tcp_rmem()
-
-    b_rows, s_rows = [], []
-    with open(log, errors="replace") as f:
-        f.seek(offset)
-        for line in f:
-            kv = dict(KV.findall(line))
-            if not kv:
-                continue
-            kind = classify(kv, schema)
-            if kind == "bucket":
-                r = dict(kv)
-                r["collected_ts"]  = ts
-                r["tcp_rmem_min"]  = lo
-                r["tcp_rmem_def"]  = mid
-                r["tcp_rmem_max"]  = hi
-                b_rows.append(r)
-            elif kind == "swap":
-                r = dict(kv)
-                r["collected_ts"] = ts
-                s_rows.append(r)
-        offset = f.tell()
-
-    append(BUCKETS, get_header(BUCKETS, schema["bucket_columns"]), b_rows)
-    append(SWAPS,   get_header(SWAPS,   schema["swap_columns"]),   s_rows)
-    write_state({"path": log, "offset": offset})
-    print("collector: %d bucket, %d swap, off=%d"
-          % (len(b_rows), len(s_rows), offset))
-    return 0
+    ts_epoch = int(time.time())
+    nb = collect_buckets(ts_epoch)
+    ns = collect_swaps()
+    print("collector: buckets=%d swaps=%d ts=%d" % (nb, ns, ts_epoch))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
 '''
 
-
 RENDERER_SRC = r'''#!/usr/bin/env python3
-# AUTO-GENERATED by bpftune-dashboard-install.py - edits here are lost.
-"""bpftune renderer - static Chart.js dashboard.
+"""bpftune renderer — static Chart.js dashboard.
 
-Cron: every 5 min. Reads the collector CSVs, writes data/*.json +
-index.html into /var/lib/bpftune/history. All downsampling is done
-here, server-side, so Chart.js never sees raw rows.
+Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv, writes
+index.html and data/*.json into /var/lib/bpftune/history.
 
-collected_ts is the only date-safe timestamp (boot_ts is monotonic).
+All downsampling is server-side — Chart.js never sees raw rows.
+
+`collected_ts` is the only date-safe timestamp (falls back to `ts_epoch`
+for v1 rows).
 """
 import csv, json, math, os, time
 from collections import defaultdict
 
-HIST   = "/var/lib/bpftune/history"
-DATA   = os.path.join(HIST, "data")
-SCHEMA = os.path.join(HIST, "buckets.schema.json")
+HIST = "/var/lib/bpftune/history"
+DATA = os.path.join(HIST, "data")
 
 RANGES = {
     "1h":  (3600,       60),
@@ -298,23 +366,7 @@ RANGES = {
 }
 
 EXTRA_COLS = ["ref_rate", "rate_best_i", "rate_best_v", "instances",
-              "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max", "srate"]
-
-
-def load_schema():
-    try:
-        with open(SCHEMA) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {"bucket_id_column": None}
-
-
-def load_csv(path):
-    if not path or not os.path.exists(path):
-        return [], []
-    with open(path, newline="") as f:
-        rd = csv.DictReader(f)
-        return rd.fieldnames or [], list(rd)
+              "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max"]
 
 
 def to_float(v):
@@ -328,6 +380,13 @@ def truthy(v):
     return str(v).strip().lower() in ("1", "true", "yes", "y")
 
 
+def ts_of(row):
+    t = to_float(row.get("collected_ts"))
+    if t is None:
+        t = to_float(row.get("ts_epoch"))
+    return t
+
+
 def wilson(w, n, z=1.96):
     if n == 0:
         return None, None
@@ -339,23 +398,25 @@ def wilson(w, n, z=1.96):
 
 
 def buckets_source():
-    for n in ("buckets.v2.csv", "buckets.csv", "buckets.v1.csv"):
+    for n in ("buckets.v2.csv", "buckets.v1.csv"):
         p = os.path.join(HIST, n)
-        if os.path.exists(p):
+        if os.path.exists(p) and os.path.getsize(p) > 0:
             return p
     return None
 
 
-def bucket_id(row, col):
-    if col and row.get(col):
-        return str(row[col])
-    return "all"
+def load_csv(path):
+    if not path or not os.path.exists(path):
+        return [], []
+    with open(path, newline="") as f:
+        rd = csv.DictReader(f)
+        return rd.fieldnames or [], list(rd)
 
 
 def bin_series(rows, lo, width, cols):
     acc = defaultdict(list)
     for r in rows:
-        t = to_float(r.get("collected_ts"))
+        t = ts_of(r)
         if t is None or (lo is not None and t < lo):
             continue
         acc[int((t - (lo or 0)) // width)].append(r)
@@ -373,18 +434,18 @@ def bin_series(rows, lo, width, cols):
 def write_json(name, obj):
     os.makedirs(DATA, exist_ok=True)
     path = os.path.join(DATA, name)
-    tmp  = path + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(obj, f, separators=(",", ":"))
     os.replace(tmp, path)
 
 
-def emit_meta(buckets, algs, bid_col, now):
+def emit_meta(buckets, algs, now):
     rows_24h = [r for r in buckets
-                if (to_float(r.get("collected_ts")) or 0) > now - 86400]
+                if (ts_of(r) or 0) > now - 86400]
     by = defaultdict(list)
     for r in rows_24h:
-        by[bucket_id(r, bid_col)].append(r)
+        by[r.get("addr") or "unknown"].append(r)
     entries = []
     for bid, rs in by.items():
         inst = [to_float(r.get("instances")) for r in rs]
@@ -404,7 +465,6 @@ def emit_meta(buckets, algs, bid_col, now):
         "buckets":       entries,
         "default_bucket": entries[0]["id"] if entries else "all",
         "has_tcp_rmem":  "tcp_rmem_max" in header,
-        "has_srate":     "srate" in header,
     })
 
 
@@ -416,9 +476,9 @@ def emit_bucket(bid, rows, algs, now):
         if rng == "24h":
             cols += [f"mv_{a}" for a in algs]
         ts, out = bin_series(rows, lo, width, cols)
-        doc["series"][rng] = {"ts": ts, **out}
+        doc["series"][rng] = dict({"ts": ts}, **out)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
-    write_json(f"bucket_{safe}.json", doc)
+    write_json("bucket_%s.json" % safe, doc)
 
 
 def emit_swaps(rows, now):
@@ -427,23 +487,24 @@ def emit_swaps(rows, now):
         lo = None if span is None else now - span
         acc = defaultdict(lambda: {0: {"w": 0, "l": 0}, 1: {"w": 0, "l": 0}})
         for r in rows:
-            t = to_float(r.get("collected_ts"))
+            t = ts_of(r)
             if t is None or (lo is not None and t < lo):
                 continue
             b = int((t - (lo or 0)) // width)
             d = 1 if truthy(r.get("diverges")) else 0
             o = str(r.get("outcome", "")).strip().lower()
-            if   o == "win":  acc[b][d]["w"] += 1
-            elif o == "loss": acc[b][d]["l"] += 1
+            if o == "win":
+                acc[b][d]["w"] += 1
+            elif o == "loss":
+                acc[b][d]["l"] += 1
 
         base = lo if lo is not None else 0
         node = {"ts": [], "swaps": []}
         for d in (0, 1):
-            node[f"d{d}_rate"] = []
-            node[f"d{d}_lo"]   = []
-            node[f"d{d}_hi"]   = []
-            node[f"d{d}_n"]    = []
-
+            node["d%d_rate" % d] = []
+            node["d%d_lo"   % d] = []
+            node["d%d_hi"   % d] = []
+            node["d%d_n"    % d] = []
         for b in sorted(acc):
             node["ts"].append(int(base + b * width + width / 2))
             total = 0
@@ -452,29 +513,28 @@ def emit_swaps(rows, now):
                 n = w + l
                 total += n
                 lo_, hi_ = wilson(w, n)
-                node[f"d{d}_rate"].append(w / n if n else None)
-                node[f"d{d}_lo"].append(lo_)
-                node[f"d{d}_hi"].append(hi_)
-                node[f"d{d}_n"].append(n)
+                node["d%d_rate" % d].append(w / n if n else None)
+                node["d%d_lo"   % d].append(lo_)
+                node["d%d_hi"   % d].append(hi_)
+                node["d%d_n"    % d].append(n)
             node["swaps"].append(total)
         doc[rng] = node
     write_json("swaps.json", doc)
 
 
-def emit_fleet(buckets, bid_col, now):
+def emit_fleet(buckets, now):
     lo = now - 86400
     width = 300
-    rows = [r for r in buckets
-            if (to_float(r.get("collected_ts")) or 0) > lo]
+    rows = [r for r in buckets if (ts_of(r) or 0) > lo]
     by = defaultdict(list)
     for r in rows:
-        by[bucket_id(r, bid_col)].append(r)
+        by[r.get("addr") or "unknown"].append(r)
 
     labels, cov = [], []
     for bid, rs in sorted(by.items()):
         bins = defaultdict(list)
         for r in rs:
-            t = to_float(r.get("collected_ts"))
+            t = ts_of(r)
             if t is not None:
                 bins[int((t - lo) // width)].append(r)
         if not bins:
@@ -491,6 +551,7 @@ INDEX_HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <title>bpftune</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
 <style>
   :root { color-scheme: light dark; }
   body { font: 13px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; }
@@ -518,7 +579,7 @@ INDEX_HTML = r"""<!doctype html>
   <h2>tcp_rmem max (bytes)</h2>
   <canvas id="rmem" height="50"></canvas>
 
-  <h2>divergence outcomes - win rate with 95% Wilson CI</h2>
+  <h2>divergence outcomes — win rate with 95% Wilson CI</h2>
   <canvas id="div" height="70"></canvas>
 
   <h2>swaps per bin</h2>
@@ -698,24 +759,26 @@ boot();
 def main():
     now = int(time.time())
     bfile = buckets_source()
+    if not bfile:
+        print("renderer: no buckets CSV found yet")
+        return 1
+
     header, buckets = load_csv(bfile)
     _, swaps = load_csv(os.path.join(HIST, "swaps.csv"))
-    schema = load_schema()
-    bid_col = schema.get("bucket_id_column")
 
     algs = sorted({c[3:] for c in header if c.startswith("re_")})
 
     by = defaultdict(list)
     for r in buckets:
-        by[bucket_id(r, bid_col)].append(r)
+        by[r.get("addr") or "unknown"].append(r)
     for rs in by.values():
-        rs.sort(key=lambda r: to_float(r.get("collected_ts")) or 0)
+        rs.sort(key=lambda r: ts_of(r) or 0)
 
-    emit_meta(buckets, algs, bid_col, now)
+    emit_meta(buckets, algs, now)
     for bid, rs in by.items():
         emit_bucket(bid, rs, algs, now)
     emit_swaps(swaps, now)
-    emit_fleet(buckets, bid_col, now)
+    emit_fleet(buckets, now)
 
     with open(os.path.join(HIST, "index.html"), "w") as f:
         f.write(INDEX_HTML)
@@ -730,88 +793,14 @@ if __name__ == "__main__":
 '''
 
 
-def migrate():
-    if os.path.exists(V1) and not os.path.exists(LEGACY):
-        say("  v1 already migrated, nothing to do")
-        return
-    if os.path.exists(LEGACY):
-        if os.path.exists(V1):
-            warn("  both buckets.csv and buckets.v1.csv exist; leaving both")
-        else:
-            os.rename(LEGACY, V1)
-            say("  renamed buckets.csv -> buckets.v1.csv")
-    else:
-        say("  no buckets.csv to migrate")
-
-
-def write_cron():
-    body = (
-        "# managed by bpftune-dashboard-install.py\n"
-        "* * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
-        "*/5 * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
-        % (COLLECTOR, RENDERER)
-    )
-    write_file(CRON, body, 0o644)
-
-
-def count_data_rows(path):
-    if not os.path.exists(path):
-        return 0
-    with open(path, newline="") as f:
-        return max(0, sum(1 for _ in f) - 1)
-
-
-def run_and_verify():
-    before = count_data_rows(V2)
-    r = subprocess.run([sys.executable, COLLECTOR],
-                       capture_output=True, text=True)
-    print("    collector:", r.stdout.strip() or "(no output)")
-    if r.returncode != 0:
-        print(r.stderr)
-        die("collector exited non-zero")
-
-    after = count_data_rows(V2)
-    if after == 0:
-        die("collector wrote zero rows - schema mismatch? see " + SCHEMA)
-    if after <= before:
-        warn("collector added no rows (log hasn't grown since last run) "
-             "- existing %d rows are fine" % after)
-
-    r = subprocess.run([sys.executable, RENDERER],
-                       capture_output=True, text=True)
-    print("    renderer:", r.stdout.strip() or "(no output)")
-    if r.returncode != 0:
-        print(r.stderr)
-        die("renderer exited non-zero")
-
-    for p in (os.path.join(HIST, "index.html"),
-              os.path.join(HIST, "data", "meta.json")):
-        if not os.path.exists(p):
-            die("expected output missing: " + p)
-
-
 def main():
     if os.geteuid() != 0:
         die("must run as root (writes /etc/cron.d and /var/lib/bpftune)")
 
     os.makedirs(HIST, exist_ok=True)
 
-    log = newest_log()
-    if not log:
-        die("no bpftune log found at " + LOG_GLOB)
-    say("detecting schema from " + log)
-
-    schema = detect_schema(log)
-    say("  bucket signature: %s" % schema["bucket_signature"])
-    say("  swap signature:   %s" % schema["swap_signature"])
-    say("  bucket id column: %s" % schema["bucket_id_column"])
-    if schema["bucket_id_column"] is None:
-        warn("  no bucket id column recognised - every row will land in "
-             "bucket 'all'. Candidates tried: %s" % ", ".join(ID_CANDIDATES))
-
-    say("writing schema sidecar")
-    with open(SCHEMA, "w") as f:
-        json.dump(schema, f, indent=2)
+    say("migrating old CSVs")
+    migrate()
 
     say("writing collector and renderer beside installer")
     write_file(COLLECTOR, COLLECTOR_SRC, 0o755)
@@ -824,9 +813,6 @@ def main():
         if r.returncode != 0:
             print(r.stderr)
             die("py_compile failed on " + p)
-
-    say("migrating v1")
-    migrate()
 
     say("installing cron: " + CRON)
     write_cron()
