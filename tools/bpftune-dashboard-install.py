@@ -219,15 +219,7 @@ def find_log():
 
 
 def tail_recent(budget=LOG_TAIL_BYTES):
-    """Concat the tail of the newest bpftune logs.
-
-    A bpftune upgrade or restart can create a fresh bpftune-met-*.log
-    (e.g. bpftune-met-live.log). The newest file is nearly empty right
-    after the switch, which made the live-state panel look reset.
-    Reading across the newest few files keeps the picture continuous
-    through a rotation, and self-limits once the new file has grown
-    past the budget.
-    """
+    """Concat the tail of the newest bpftune logs."""
     paths = sorted(Path("/var/log").glob("bpftune-met-*.log"),
                    key=lambda p: p.stat().st_mtime, reverse=True)
     if not paths:
@@ -459,26 +451,6 @@ def data_metric(hosts):
 
 
 def _proof_events(text):
-    """Parse proof cookie=... and midsamp lines.
-
-    Two independent streams are reported per algorithm:
-
-      * proof events - formal `proof cookie=... alg=N rate=Y tier=T`
-        lines. `proven_max` is the highest rate at which an algorithm
-        was ever formally proved.
-
-      * midsamp samples - `midsamp cookie=X ... srate=Z` lines. These
-        rarely carry alg=N (log format varies) so attribution is
-        inferred from the nearest `met cookie=X ... alg=N` line within
-        a time window. Without the window, samples get credited to the
-        algorithm that last touched a cookie, which is stale after a
-        swap and produces values that cannot belong to the named
-        algorithm.
-
-    Because these are different populations, sampled_avg may exceed
-    proven_max on the same row - that is expected, not a bug. Within
-    the sampled stream, sampled_avg is always <= sampled_max.
-    """
     MET_WINDOW_S = 60.0
     lines = text.splitlines()
 
@@ -1202,9 +1174,6 @@ def collect_swaps():
 
 
 def run_cli_snapshot():
-    """Returns the parsed --json doc on success, None on failure. The
-    caller uses the same doc to write proofs.csv, so we only shell out
-    to the CLI once per tick."""
     if not CLI.exists():
         return None
     try:
@@ -1225,13 +1194,6 @@ def run_cli_snapshot():
 
 
 def collect_proofs(doc, ts_epoch):
-    """Append one row per algorithm per tick, from the CLI's proof
-    aggregate. Skips algorithms with no proof events and no samples.
-    Metric names mirror the CLI's JSON:
-      proven_max   highest rate at which it was formally proved
-      sampled_avg  mean of midsamp current-rate samples
-      sampled_max  max of midsamp current-rate samples
-    All three already in Mb/s."""
     if not doc:
         return 0
     rows = doc.get("proof") or []
@@ -1499,14 +1461,6 @@ def emit_fleet(buckets, now):
 
 
 def emit_proofs(now):
-    """Time series of the proof leaderboard. One row per algorithm per
-    collector tick in proofs.csv; here we bin by range and emit each
-    metric as a per-alg series.
-
-    Each point is an aggregate over the bpftune log tail (2 MB) at that
-    tick, not a raw per-minute measurement. The line moves when the
-    underlying distribution shifts.
-    """
     path = os.path.join(HIST, "proofs.csv")
     header, rows = load_csv(path)
     doc = {}
@@ -2128,9 +2082,9 @@ INDEX_HTML = r"""<!doctype html>
     <div class="chart-note">
       each point = aggregate over the bpftune log tail (2 MB) at that
       collector tick; one point per tick, so this chart starts empty
-      and fills in over time. Three metrics because they measure
-      different things &mdash; sampled_avg is a mean over the window,
-      proven_max and sampled_max are window maxima.
+      and fills in over time. Points are shown when a series is sparse
+      (fewer than ~3 valid samples in the range) so isolated bins are
+      visible rather than invisible dots.
     </div>
   </section>
 
@@ -2269,6 +2223,26 @@ INDEX_HTML = r"""<!doctype html>
     if (dt < 3600) return Math.floor(dt / 60) + "m ago";
     if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
     return Math.floor(dt / 86400) + "d ago";
+  }
+
+  /* Spare line series (few valid samples) need a visible point or they
+     render as literally nothing. Dense series stay clutter-free with
+     pointRadius 0. Heuristic: count non-null y values per dataset;
+     if the average per series is small, turn points on. */
+  function sparsePointRadius(seriesObj) {
+    var keys = Object.keys(seriesObj || {});
+    if (!keys.length) return 0;
+    var total = 0, nonnull = 0;
+    keys.forEach(function (k) {
+      var arr = seriesObj[k] || [];
+      total += arr.length;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i] != null) nonnull++;
+      }
+    });
+    if (!total) return 0;
+    var avgPerSeries = nonnull / keys.length;
+    return avgPerSeries < 5 ? 2.5 : 0;
   }
 
   function renderBuild(b) {
@@ -2638,8 +2612,9 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
-  function lineData(cols, series, ts, colors, scale) {
+  function lineData(cols, series, ts, colors, scale, pointRadius) {
     scale = scale || function (v) { return v; };
+    var pr = (pointRadius == null) ? 0 : pointRadius;
     return cols.map(function (c, i) {
       return {
         label: c,
@@ -2648,7 +2623,8 @@ INDEX_HTML = r"""<!doctype html>
         }),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length],
-        pointRadius: 0,
+        pointRadius: pr,
+        pointHoverRadius: Math.max(3, pr + 1),
         borderWidth: 1.5,
         tension: 0.15,
         spanGaps: true,
@@ -2694,7 +2670,7 @@ INDEX_HTML = r"""<!doctype html>
       type: "line",
       data: {datasets: lineData(algs.map(function (a) {
         return "re_" + a;
-      }), s, ts, PALETTE, scaleRe)},
+      }), s, ts, PALETTE, scaleRe, 0)},
       options: timeOpts({
         plugins: {
           legend: {
@@ -2717,22 +2693,18 @@ INDEX_HTML = r"""<!doctype html>
     var series = (d.series && d.series[metricKey]) || {};
     var algs = Object.keys(series).sort();
 
-    if (!algs.length) {
-      // clear the chart but leave a hint
-      if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
-      var cv = $(canvasId);
-      if (cv && cv.parentNode) {
-        cv.parentNode.setAttribute("data-empty", "1");
-      }
+    if (!algs.length || !ts.length) {
+      if (charts[canvasId]) { charts[canvasId].destroy();
+                              delete charts[canvasId]; }
       return;
     }
 
-    // shared y scaling per-chart across all algs, same palette as
-    // rate_ema so algorithm colours are stable across the page
     var palette = {};
     state.meta.algs.forEach(function (a, i) {
       palette[a] = PALETTE[i % PALETTE.length];
     });
+
+    var pr = sparsePointRadius(series);
 
     var datasets = algs.map(function (a) {
       return {
@@ -2742,7 +2714,8 @@ INDEX_HTML = r"""<!doctype html>
         }),
         borderColor: palette[a] || "#888",
         backgroundColor: palette[a] || "#888",
-        pointRadius: 0,
+        pointRadius: pr,
+        pointHoverRadius: Math.max(3, pr + 1),
         borderWidth: 1.5,
         tension: 0.15,
         spanGaps: true,
@@ -2785,7 +2758,8 @@ INDEX_HTML = r"""<!doctype html>
         borderColor: color,
         backgroundColor: color,
         borderDash: dash || [],
-        pointRadius: 0,
+        pointRadius: 2,
+        pointHoverRadius: 4,
         borderWidth: 1.5,
         spanGaps: true,
       };
