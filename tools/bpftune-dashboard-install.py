@@ -432,7 +432,6 @@ def _swaps_and_mets(text):
                        r"(?: mt=(\d+) rb=(\d+))?")
     rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
-    raw_by_cookie = defaultdict(list)
     for line in text.splitlines():
         m = rx_sw.search(line)
         if m:
@@ -466,7 +465,6 @@ def _outcome(met, c, ts):
 def data_swap_outcomes(text):
     sw, met = _swaps_and_mets(text)
     win = null = loss = skip = 0
-    reasons = defaultdict(int)
     for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
         o = _outcome(met, c, ts)
         if o is None:
@@ -553,7 +551,7 @@ def data_recent_swaps(text, n=10):
             "from_alg": CONGS[fa] if fa < 16 else str(fa),
             "to_alg":   CONGS[ta] if ta < 16 else str(ta),
             "d":        int(d),
-            "outcome":  o,            # "win"|"loss"|"null"|None
+            "outcome":  o,
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
         })
@@ -648,8 +646,7 @@ def render_text(d):
     print()
     tun = [f"  {t['name']:<34} {t['value']}" for t in d["tunables"]] or \
           ["  (none seen in journal for this boot)"]
-    for row in _full("BPFTUNE-MANAGED TUNABLES",
-                     [f"{ARROW}"] + tun[0:] if False else tun):
+    for row in _full("BPFTUNE-MANAGED TUNABLES", tun):
         print(row)
     print()
     bk = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}"
@@ -961,7 +958,6 @@ def run_cli_snapshot():
         if r.returncode != 0:
             print("collector: CLI exited %d" % r.returncode, file=sys.stderr)
             return False
-        # run through json.loads/dumps so a truncated line can't corrupt the file
         doc = json.loads(r.stdout)
         tmp = str(CURRENT_JSON) + ".tmp"
         with open(tmp, "w") as f:
@@ -1273,7 +1269,6 @@ INDEX_HTML = r"""<!doctype html>
   }
   .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 64px; }
 
-  /* ---- top bar ---- */
   header.topbar {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding-bottom: 16px; margin-bottom: 20px;
@@ -1316,7 +1311,6 @@ INDEX_HTML = r"""<!doctype html>
   }
   .pill.flash { color: var(--accent); }
 
-  /* ---- card ---- */
   .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -1349,7 +1343,6 @@ INDEX_HTML = r"""<!doctype html>
     letter-spacing: 0; font-family: var(--mono); font-size: 11px;
   }
 
-  /* ---- stat strip ---- */
   .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1381,7 +1374,6 @@ INDEX_HTML = r"""<!doctype html>
     color: var(--fg);
   }
 
-  /* ---- grid of live sections ---- */
   .lv-grid {
     display: grid;
     grid-template-columns: repeat(12, 1fr);
@@ -1414,7 +1406,6 @@ INDEX_HTML = r"""<!doctype html>
     font-weight: 500; letter-spacing: 0; text-transform: none;
   }
 
-  /* ---- kv rows (build, system, tunables) ---- */
   .kv { display: flex; flex-direction: column; gap: 5px; }
   .kv .row {
     display: flex; justify-content: space-between; gap: 12px;
@@ -1428,7 +1419,6 @@ INDEX_HTML = r"""<!doctype html>
   .kv .v.hi { color: var(--fg); font-weight: 500; }
   .kv .v.dim { color: var(--muted-2); }
 
-  /* ---- tables ---- */
   table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.tbl th, table.tbl td {
     padding: 6px 4px; text-align: right;
@@ -1450,7 +1440,6 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
 
-  /* inline bar (for proof leaderboard maxM) */
   .bar {
     position: relative; display: inline-block;
     height: 6px; width: 90px; vertical-align: middle;
@@ -1462,7 +1451,6 @@ INDEX_HTML = r"""<!doctype html>
     background: var(--accent); border-radius: 3px;
   }
 
-  /* status pills */
   .sp {
     display: inline-flex; align-items: center;
     font-size: 10.5px; font-weight: 600;
@@ -1476,7 +1464,6 @@ INDEX_HTML = r"""<!doctype html>
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
 
-  /* recent lists */
   .list { display: flex; flex-direction: column; }
   .list .item {
     display: grid;
@@ -1498,7 +1485,6 @@ INDEX_HTML = r"""<!doctype html>
     white-space: nowrap;
   }
 
-  /* large-number "big stats" per row (swap outcomes) */
   .bigstats {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -1528,7 +1514,6 @@ INDEX_HTML = r"""<!doctype html>
   .bigstats .big.loss .v { color: var(--bad); }
   .bigstats .big.null { border-color: var(--border-strong); }
 
-  /* tunables grid */
   .tun-grid {
     display: grid;
     grid-template-columns: 1fr;
@@ -1554,7 +1539,6 @@ INDEX_HTML = r"""<!doctype html>
     color: var(--fg);
   }
 
-  /* progress bar for divergence cells */
   .cellbar {
     display: inline-flex; width: 100%; height: 18px;
     border-radius: 3px; overflow: hidden; background: var(--subtle);
@@ -1568,7 +1552,6 @@ INDEX_HTML = r"""<!doctype html>
   .cellbar .n { background: var(--muted-2); color: #fff; }
   .cellbar .l { background: var(--bad); }
 
-  /* ---- chart boxes ---- */
   .chart-box { position: relative; width: 100%; min-width: 0; }
   .chart-box.h-sm { height: 100px; }
   .chart-box.h-md { height: 150px; }
@@ -1616,7 +1599,6 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </header>
 
-  <!-- ============ now (bucket-scoped) ============ -->
   <section class="card">
     <h2>
       <span class="dot"></span>now
@@ -1643,7 +1625,6 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </section>
 
-  <!-- ============ live state (fleet, from current.json) ============ -->
   <div class="lv-grid" id="live">
 
     <section class="c6">
@@ -1708,14 +1689,13 @@ INDEX_HTML = r"""<!doctype html>
 
   </div>
 
-  <!-- ============ charts ============ -->
   <section class="card">
-    <h2><span class="dot"></span>rate_ema per algorithm</h2>
+    <h2><span class="dot"></span>rate_ema per algorithm &mdash; Mb/s</h2>
     <div class="chart-box h-xl"><canvas id="rate"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>reference rate</h2>
+    <h2><span class="dot"></span>reference rate &mdash; Mb/s</h2>
     <div class="chart-box h-sm"><canvas id="ref"></canvas></div>
   </section>
 
@@ -1816,7 +1796,6 @@ INDEX_HTML = r"""<!doctype html>
     Chart.defaults.plugins.tooltip.cornerRadius = 6;
   }
 
-  /* ============ helpers ============ */
   function $(id) { return document.getElementById(id); }
   function setHTML(id, s) { var e = $(id); if (e) e.innerHTML = s; }
   function esc(s) {
@@ -1830,6 +1809,12 @@ INDEX_HTML = r"""<!doctype html>
   }
   function fmtMbps(v) {
     return (v == null) ? "-" : (v / 125000).toFixed(1);
+  }
+  function fmtRe(v) {
+    return (v == null) ? "-" : (v * 0.8).toFixed(1);
+  }
+  function scaleRe(v) {
+    return v == null ? null : v * 0.8;
   }
   function fmtRTT(v) {
     return (v == null) ? "-" : (v / 1000).toFixed(1) + " ms";
@@ -1849,7 +1834,6 @@ INDEX_HTML = r"""<!doctype html>
     return Math.floor(dt / 86400) + "d ago";
   }
 
-  /* ============ live state rendering ============ */
   function renderBuild(b) {
     var rows = [
       ["version",   b.version, "hi"],
@@ -2118,7 +2102,6 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
-  /* ============ "now" panel (bucket-scoped) ============ */
   function renderNow() {
     var doc = state.bucketDoc;
     if (!doc) return;
@@ -2144,9 +2127,9 @@ INDEX_HTML = r"""<!doctype html>
     rates.sort(function (x, y) { return y.v - x.v; });
 
     if (rates.length) {
-      setT("n_rbest", rates[0].a + "  " + fmtMbps(rates[0].v) + " Mb/s");
+      setT("n_rbest", rates[0].a + "  " + fmtRe(rates[0].v) + " Mb/s");
       var line = rates.slice(0, 8).map(function (x) {
-        return x.a + " " + fmtMbps(x.v);
+        return x.a + " " + fmtRe(x.v);
       }).join("  ·  ");
       setT("n_rates", line);
     } else {
@@ -2155,7 +2138,6 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  /* ============ charts ============ */
   var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
   var charts = {};
 
@@ -2173,12 +2155,13 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
-  function lineData(cols, series, ts, colors) {
+  function lineData(cols, series, ts, colors, scale) {
+    scale = scale || function (v) { return v; };
     return cols.map(function (c, i) {
       return {
         label: c,
         data: (series[c] || []).map(function (y, k) {
-          return {x: ts[k] * 1000, y: y};
+          return {x: ts[k] * 1000, y: y == null ? null : scale(y)};
         }),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length],
@@ -2228,7 +2211,7 @@ INDEX_HTML = r"""<!doctype html>
       type: "line",
       data: {datasets: lineData(algs.map(function (a) {
         return "re_" + a;
-      }), s, ts, PALETTE)},
+      }), s, ts, PALETTE, scaleRe)},
       options: timeOpts({
         plugins: {
           legend: {
