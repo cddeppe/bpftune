@@ -1,9 +1,16 @@
-bpftune (0.4.44) UNRELEASED; urgency=medium
+bpftune (0.4.45) UNRELEASED; urgency=medium
 
-  * per-alg proof counters (tier-1 4K/30Mbps, tier-2 8K/100Mbps);
-    STATE_VERSION 14
+  * swap target: use per-alg rate EMA instead of composite metric_value;
+    metric still drives the trigger, rate drives the destination
+  * swap log: add mt= (metric-would-have-picked) and rb= (rate-picked)
+    for counterfactual comparison of outcomes
+  * midsamp: add alg= so userspace can credit rate samples without a
+    stale met-line join
+  * STATE_VERSION 14 -> 15
+  * swap target uses per-alg rate EMA instead of composite metric; swap
+    log gains mt=/rb= for counterfactual comparison
 
- -- root <root@vps-3959.up-network.ch>  Thu, 17 Sep 2026 22:50:27 +0200
+ -- root <root@vps-3959.up-network.ch>  Fri, 18 Sep 2026 09:18:18 +0200
 
 bpftune (0.4.43) unstable; urgency=medium
 

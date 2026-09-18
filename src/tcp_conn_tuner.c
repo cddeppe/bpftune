@@ -272,6 +272,7 @@ static void reanchor_best(int map_fd)
 		__u64 best_i = ~((__u64)0), best_v = 0;
 		__u64 second_i = ~((__u64)0), second_v = 0;
 		__u64 new_bi, new_bv, new_si, new_sv;
+		__u64 new_rbi = 0, new_rbv = 0;
 		int i;
 
 		prev_key = &key;
@@ -314,6 +315,32 @@ static void reanchor_best(int map_fd)
 			}
 		}
 
+		/* 0.4.45 pass 3: rate-EMA leader. */
+
+		{
+
+		    __u64 rate_bi = ~((__u64)0), rate_bv = 0;
+
+		    int j;
+
+		    for (j = 0; j < NUM_TCP_CONN_METRICS; j++) {
+
+		        __u64 rv = r.metrics[j].rate_ema;
+
+		        if (r.metrics[j].metric_count < MIN_LEADER_TRUST) continue;
+
+		        if (rv == 0) continue;
+
+		        if (rate_bv == 0 || rv > rate_bv) { rate_bi = (__u64)j; rate_bv = rv; }
+
+		    }
+
+		    new_rbi = (rate_bv == 0) ? 0 : rate_bi;
+
+		    new_rbv = rate_bv;
+
+		}
+
 		/* No trusted leader: force the tracker to the empty state so
 		 * the swap path sees "no leader" rather than a stale value.
 		 */
@@ -346,7 +373,9 @@ static void reanchor_best(int map_fd)
 
 			if (ref_before == r.max_rate_delivered &&
 				r.best_i == new_bi && r.best_v == new_bv &&
-				r.second_i == new_si && r.second_v == new_sv)
+				r.second_i == new_si && r.second_v == new_sv &&
+                                r.rate_best_i == new_rbi &&
+                                r.rate_best_v == new_rbv)
 					continue;
 		}
 		bpftune_log(BPFTUNE_LOG_LEVEL,
@@ -364,6 +393,8 @@ static void reanchor_best(int map_fd)
 		r.best_v = new_bv;
 		r.second_i = new_si;
 		r.second_v = new_sv;
+		r.rate_best_i = new_rbi;
+		r.rate_best_v = new_rbv;
 
 		if (bpf_map_update_elem(map_fd, &key, &r, BPF_ANY)) {
 			bpftune_log(LOG_ERR, "reanchor: update failed: %s\n",
@@ -450,7 +481,7 @@ static void stop_reanchor(void)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 14
+#define STATE_VERSION 15
 struct state_header {
         __u32 magic;
         __u32 version;
