@@ -26,7 +26,6 @@ BUCKETS_V2     = os.path.join(HIST, "buckets.v2.csv")
 BUCKETS_LEGACY = os.path.join(HIST, "buckets.csv")
 SWAPS_V1       = os.path.join(HIST, "swaps.v1.csv")
 SWAPS          = os.path.join(HIST, "swaps.csv")
-PROOFS         = os.path.join(HIST, "proofs.csv")
 SWAPS_POS_V1   = os.path.join(HIST, ".swaps_pos")
 SWAPS_POS_V2   = os.path.join(HIST, ".swaps_pos.json")
 CURRENT_JSON   = os.path.join(HIST, "current.json")
@@ -109,11 +108,6 @@ def migrate():
     else:
         say("  no swaps.csv yet (will be created)")
 
-    if not os.path.exists(PROOFS):
-        say("  proofs.csv will be created on first collector run")
-    else:
-        say("  proofs.csv already present")
-
 
 def write_cron():
     body = (
@@ -155,9 +149,6 @@ def run_and_verify():
     else:
         say("  current.json: %d bytes" % os.path.getsize(CURRENT_JSON))
 
-    if os.path.exists(PROOFS):
-        say("  proofs.csv: %d rows" % count_data_rows(PROOFS))
-
     r = subprocess.run([sys.executable, RENDERER],
                        capture_output=True, text=True)
     print("    renderer:", r.stdout.strip() or "(no output)")
@@ -166,8 +157,7 @@ def run_and_verify():
         die("renderer exited non-zero")
 
     for p in (os.path.join(HIST, "index.html"),
-              os.path.join(HIST, "data", "meta.json"),
-              os.path.join(HIST, "data", "proofs.json")):
+              os.path.join(HIST, "data", "meta.json")):
         if not os.path.exists(p):
             die("expected output missing: " + p)
 
@@ -935,10 +925,18 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 Buckets from `bpftool --json map dump name remote_host_map`.
 Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file byte
 offsets in .swaps_pos.json).
-Proof sample: run `bpftune-cli.py --json`, snapshot `current.json`,
-and append per-algorithm proof aggregates to proofs.csv.
+Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
+
+Swap parsing reads a warmup window (WARMUP_BYTES before the current
+offset) to rebuild the cookie -> met index. Without it, a swap that
+fires in this tick's slice but whose last met line was in the previous
+tick's slice would have pre=None and socket_rate_before would be empty.
+Only the newly-read region emits swap rows; the warmup is used purely
+for the pre-lookup.
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
+`socket_rate_before` is the socket's own met `val=` at the moment just
+before the swap - raw bytes/sec, same units as the log.
 """
 import csv, json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -947,7 +945,6 @@ HIST = Path("/var/lib/bpftune/history")
 HIST.mkdir(parents=True, exist_ok=True)
 BUCKETS_CSV  = HIST / "buckets.v2.csv"
 SWAPS_CSV    = HIST / "swaps.csv"
-PROOFS_CSV   = HIST / "proofs.csv"
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
@@ -958,6 +955,10 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
 MIN_INST = 2
+
+# Read this much of the log *before* our saved offset to rebuild the
+# cookie -> met index for pre-swap rate lookups. Bounded per tick.
+WARMUP_BYTES = 500_000
 
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
@@ -1083,16 +1084,24 @@ def _write_state(state):
     os.replace(tmp, str(SWAPS_POS))
 
 
-def _parse_swaps_from(text, now_epoch):
+def _parse_swaps_from(warmup_text, new_text, now_epoch):
+    """Build a cookie -> [(ts, val)] index from warmup_text and
+    new_text; emit swap rows only from new_text.
+
+    The warmup supplies pre-swap rates for swaps whose last met line
+    was logged before our current read offset. Without it, every
+    socket_rate_before value came out empty."""
     met = {}
-    for line in text.splitlines():
-        m = MET_RX.search(line)
-        if m:
-            c = int(m.group(2))
-            met.setdefault(c, []).append((float(m.group(1)), int(m.group(6))))
+    for text in (warmup_text, new_text):
+        for line in text.splitlines():
+            m = MET_RX.search(line)
+            if m:
+                c = int(m.group(2))
+                met.setdefault(c, []).append(
+                    (float(m.group(1)), int(m.group(6))))
 
     n = 0
-    for line in text.splitlines():
+    for line in new_text.splitlines():
         m = SWAP_RX.search(line)
         if not m:
             continue
@@ -1134,6 +1143,13 @@ def _parse_swaps_from(text, now_epoch):
 
 
 def collect_swaps():
+    """Multi-file tailer with a bounded warmup window for pre-lookup.
+
+    Tracks a byte offset per log file in .swaps_pos.json. First time we
+    see a file, we offset to its current size so we only track forward.
+    On each tick: read up to WARMUP_BYTES *before* the saved offset
+    (to rebuild the cookie -> met index), then read the new region
+    (from which swap rows are emitted)."""
     state = _read_state()
     first_run = state is None
     if first_run:
@@ -1159,15 +1175,21 @@ def collect_swaps():
         if size == pos:
             continue
 
+        warmup_start = max(0, pos - WARMUP_BYTES)
+        warmup_len = pos - warmup_start
+
         try:
             with open(logpath, "rb") as f:
+                f.seek(warmup_start)
+                warmup = f.read(warmup_len).decode(
+                    "utf-8", errors="replace")
                 f.seek(pos)
-                text = f.read().decode("utf-8", errors="replace")
+                new_text = f.read().decode("utf-8", errors="replace")
                 state[key] = f.tell()
         except OSError:
             continue
 
-        n += _parse_swaps_from(text, now_epoch)
+        n += _parse_swaps_from(warmup, new_text, now_epoch)
 
     _write_state(state)
     return n
@@ -1193,39 +1215,13 @@ def run_cli_snapshot():
         return None
 
 
-def collect_proofs(doc, ts_epoch):
-    if not doc:
-        return 0
-    rows = doc.get("proof") or []
-    n = 0
-    for r in rows:
-        pm = r.get("proven_max")
-        sa = r.get("sampled_avg")
-        sm = r.get("sampled_max")
-        if pm is None and sa is None and sm is None:
-            continue
-        append_csv(PROOFS_CSV, {
-            "collected_ts": ts_epoch,
-            "alg":          r.get("alg") or "",
-            "proven_max":   "" if pm is None else pm,
-            "sampled_avg":  "" if sa is None else sa,
-            "sampled_max":  "" if sm is None else sm,
-            "good":         r.get("good") or 0,
-            "proved":       r.get("proved") or 0,
-            "samples":      r.get("samples") or 0,
-        })
-        n += 1
-    return n
-
-
 def main():
     ts_epoch = int(time.time())
     nb = collect_buckets(ts_epoch)
     ns = collect_swaps()
     doc = run_cli_snapshot()
-    np = collect_proofs(doc, ts_epoch)
-    print("collector: buckets=%d swaps=%d proofs=%d cli=%s ts=%d"
-          % (nb, ns, np, "ok" if doc else "fail", ts_epoch))
+    print("collector: buckets=%d swaps=%d cli=%s ts=%d"
+          % (nb, ns, "ok" if doc else "fail", ts_epoch))
 
 
 if __name__ == "__main__":
@@ -1238,9 +1234,9 @@ if __name__ == "__main__":
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
 
-Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv + proofs.csv,
-writes index.html and data/*.json. The browser also fetches
-current.json (every 30s).
+Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv, writes
+index.html and data/*.json. The browser also fetches current.json
+(every 30s).
 
 `collected_ts` is the only date-safe timestamp (falls back to `ts_epoch`
 for v1 rows).
@@ -1260,8 +1256,6 @@ RANGES = {
 
 EXTRA_COLS = ["ref_rate", "rate_best_i", "rate_best_v", "instances",
               "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max"]
-
-PROOF_METRICS = ("sampled_avg", "proven_max", "sampled_max")
 
 
 def to_float(v):
@@ -1460,67 +1454,6 @@ def emit_fleet(buckets, now):
     write_json("fleet.json", {"buckets": labels, "coverage_24h": cov})
 
 
-def emit_proofs(now):
-    path = os.path.join(HIST, "proofs.csv")
-    header, rows = load_csv(path)
-    doc = {}
-    if not rows:
-        for rng in RANGES:
-            doc[rng] = {"ts": [], "series": {m: {} for m in PROOF_METRICS}}
-        write_json("proofs.json", doc)
-        return
-
-    for rng, (span, width) in RANGES.items():
-        lo = None if span is None else now - span
-        by_alg = defaultdict(list)
-        for r in rows:
-            t = to_float(r.get("collected_ts"))
-            if t is None or (lo is not None and t < lo):
-                continue
-            a = (r.get("alg") or "").strip()
-            if not a:
-                continue
-            by_alg[a].append(r)
-
-        all_bins = set()
-        for rs in by_alg.values():
-            for r in rs:
-                t = to_float(r.get("collected_ts"))
-                if t is not None:
-                    all_bins.add(int(t // width))
-        sorted_bins = sorted(all_bins)
-        base = lo if lo is not None else 0
-        ts = [int(base + b * width + width / 2) for b in sorted_bins]
-        bin_idx = {b: i for i, b in enumerate(sorted_bins)}
-
-        series = {m: {} for m in PROOF_METRICS}
-        for a, rs in by_alg.items():
-            for m in PROOF_METRICS:
-                series[m][a] = [None] * len(ts)
-            acc = defaultdict(lambda: defaultdict(list))
-            for r in rs:
-                t = to_float(r.get("collected_ts"))
-                if t is None:
-                    continue
-                b = int(t // width)
-                for m in PROOF_METRICS:
-                    v = to_float(r.get(m))
-                    if v is not None:
-                        acc[b][m].append(v)
-            for b, mm in acc.items():
-                i = bin_idx.get(b)
-                if i is None:
-                    continue
-                for m in PROOF_METRICS:
-                    vals = mm[m]
-                    if vals:
-                        series[m][a][i] = round(sum(vals) / len(vals), 2)
-
-        doc[rng] = {"ts": ts, "series": series}
-
-    write_json("proofs.json", doc)
-
-
 INDEX_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1658,18 +1591,6 @@ INDEX_HTML = r"""<!doctype html>
     margin-left: auto; color: var(--muted-2);
     font-weight: 400; text-transform: none;
     letter-spacing: 0; font-family: var(--mono); font-size: 11px;
-  }
-  .chart-sub {
-    margin: 18px 0 6px;
-    font-size: 11px; font-weight: 600;
-    letter-spacing: .07em; text-transform: uppercase;
-    color: var(--muted-2);
-  }
-  .chart-sub:first-of-type { margin-top: 0; }
-  .chart-note {
-    margin-top: 10px; padding-top: 10px;
-    border-top: 1px dashed var(--border);
-    font-size: 11px; color: var(--muted-2); line-height: 1.4;
   }
 
   .stats {
@@ -2072,23 +1993,6 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>proof leaderboard over time <span class="sub">Mb/s &middot; rolling tail</span></h2>
-    <div class="chart-sub">sampled avg &mdash; mean of midsamp current-rate samples</div>
-    <div class="chart-box h-md"><canvas id="proof_avg"></canvas></div>
-    <div class="chart-sub">proven max &mdash; highest proof rate ever seen in the tail</div>
-    <div class="chart-box h-md"><canvas id="proof_pmax"></canvas></div>
-    <div class="chart-sub">sampled max &mdash; highest midsamp sample in the tail</div>
-    <div class="chart-box h-md"><canvas id="proof_smax"></canvas></div>
-    <div class="chart-note">
-      each point = aggregate over the bpftune log tail (2 MB) at that
-      collector tick; one point per tick, so this chart starts empty
-      and fills in over time. Points are shown when a series is sparse
-      (fewer than ~3 valid samples in the range) so isolated bins are
-      visible rather than invisible dots.
-    </div>
-  </section>
-
-  <section class="card">
     <h2><span class="dot"></span>divergence &mdash; win rate with 95% Wilson CI</h2>
     <div class="chart-box h-md"><canvas id="div"></canvas></div>
   </section>
@@ -2223,26 +2127,6 @@ INDEX_HTML = r"""<!doctype html>
     if (dt < 3600) return Math.floor(dt / 60) + "m ago";
     if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
     return Math.floor(dt / 86400) + "d ago";
-  }
-
-  /* Spare line series (few valid samples) need a visible point or they
-     render as literally nothing. Dense series stay clutter-free with
-     pointRadius 0. Heuristic: count non-null y values per dataset;
-     if the average per series is small, turn points on. */
-  function sparsePointRadius(seriesObj) {
-    var keys = Object.keys(seriesObj || {});
-    if (!keys.length) return 0;
-    var total = 0, nonnull = 0;
-    keys.forEach(function (k) {
-      var arr = seriesObj[k] || [];
-      total += arr.length;
-      for (var i = 0; i < arr.length; i++) {
-        if (arr[i] != null) nonnull++;
-      }
-    });
-    if (!total) return 0;
-    var avgPerSeries = nonnull / keys.length;
-    return avgPerSeries < 5 ? 2.5 : 0;
   }
 
   function renderBuild(b) {
@@ -2594,8 +2478,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null,
-                 proofs: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
   var charts = {};
 
   function mk(id, cfg) {
@@ -2681,66 +2564,6 @@ INDEX_HTML = r"""<!doctype html>
         },
       }),
     });
-  }
-
-  function renderProofChart(canvasId, metricKey) {
-    var doc = state.proofs;
-    if (!doc) return;
-    var rng = $("range").value;
-    var d = doc[rng];
-    if (!d) return;
-    var ts = d.ts || [];
-    var series = (d.series && d.series[metricKey]) || {};
-    var algs = Object.keys(series).sort();
-
-    if (!algs.length || !ts.length) {
-      if (charts[canvasId]) { charts[canvasId].destroy();
-                              delete charts[canvasId]; }
-      return;
-    }
-
-    var palette = {};
-    state.meta.algs.forEach(function (a, i) {
-      palette[a] = PALETTE[i % PALETTE.length];
-    });
-
-    var pr = sparsePointRadius(series);
-
-    var datasets = algs.map(function (a) {
-      return {
-        label: a,
-        data: series[a].map(function (y, k) {
-          return {x: ts[k] * 1000, y: y};
-        }),
-        borderColor: palette[a] || "#888",
-        backgroundColor: palette[a] || "#888",
-        pointRadius: pr,
-        pointHoverRadius: Math.max(3, pr + 1),
-        borderWidth: 1.5,
-        tension: 0.15,
-        spanGaps: true,
-      };
-    });
-
-    mk(canvasId, {
-      type: "line",
-      data: {datasets: datasets},
-      options: timeOpts({
-        plugins: {
-          legend: {
-            display: true, position: "bottom", align: "start",
-            labels: {boxWidth: 8, boxHeight: 8, padding: 8,
-                     font: {size: 10.5}},
-          },
-        },
-      }),
-    });
-  }
-
-  function renderProofCharts() {
-    renderProofChart("proof_avg",  "sampled_avg");
-    renderProofChart("proof_pmax", "proven_max");
-    renderProofChart("proof_smax", "sampled_max");
   }
 
   function renderSwaps() {
@@ -2881,14 +2704,12 @@ INDEX_HTML = r"""<!doctype html>
           j("data/meta.json"),
           j("data/swaps.json"),
           j("data/fleet.json"),
-          j("data/proofs.json"),
         ]);
       })
       .then(function (results) {
-        state.meta   = results[0];
-        state.swaps  = results[1];
-        state.fleet  = results[2];
-        state.proofs = results[3];
+        state.meta  = results[0];
+        state.swaps = results[1];
+        state.fleet = results[2];
 
         var bs = $("bucket");
         var html = "";
@@ -2917,14 +2738,12 @@ INDEX_HTML = r"""<!doctype html>
         bs.onchange = function () { loadBucket(bs.value); };
         rs.onchange = function () {
           renderBucket();
-          renderProofCharts();
           renderSwaps();
         };
 
         return loadBucket(state.meta.default_bucket);
       })
       .then(function () {
-        renderProofCharts();
         renderSwaps();
         renderFleet();
       })
@@ -2964,7 +2783,6 @@ def main():
         emit_bucket(bid, rs, algs, now)
     emit_swaps(swaps, now)
     emit_fleet(buckets, now)
-    emit_proofs(now)
 
     with open(os.path.join(HIST, "index.html"), "w") as f:
         f.write(INDEX_HTML)
