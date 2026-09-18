@@ -712,9 +712,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
                     statep->bad_checkpoints = 0;
-                    bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1 mt=%u rb=%u",
+                    bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1 mt=%u rb=%u dest=%u",
                                bpf_get_socket_cookie(ops), from_i, to_i,
-                               bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt);
+                               bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt, (__u32)bpf_ntohl(ops->remote_ip4));
                 }
             } else if (margin_met && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
@@ -725,8 +725,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     __u8 tgt8 = (__u8)tgt;
                     if (statep->best_seen_metric != 0 && tgt8 != s)
                         fret = set_cong(ops, remote_host, tgt8);
-                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d",
-                               bpf_get_socket_cookie(ops), s, tgt8, fret);
+                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d dest=%u",
+                               bpf_get_socket_cookie(ops), s, tgt8, fret, (__u32)bpf_ntohl(ops->remote_ip4));
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
@@ -761,9 +761,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                 statep->hist_1 = 0;
                                 statep->hist_2 = 0;
                                 statep->bad_checkpoints = 0;
-                                bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0 mt=%u rb=%u",
+                                bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0 mt=%u rb=%u dest=%u",
                                            bpf_get_socket_cookie(ops), from_i, to_i,
-                                           bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt);
+                                           bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt, (__u32)bpf_ntohl(ops->remote_ip4));
                             }
                         }
                     }
