@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-bpftune dashboard installer (schema v2). Idempotent - safe to re-run.
+bpftune dashboard installer. Idempotent - safe to re-run.
 
     sudo python3 tools/bpftune-dashboard-install.py
 
-Writes three scripts next to itself:
-    bpftune-cli.py        text dashboard
-    bpftune-collector.py  CSV writer, runs the CLI, snapshots it
-    bpftune-render.py     Chart.js static renderer
-
-Then migrates old CSVs, installs /etc/cron.d/bpftune-history, runs both
-once, and verifies output.
+Writes three scripts beside itself, migrates old CSVs, installs
+/etc/cron.d/bpftune-history, runs both once, verifies output.
 
 `collected_ts` (wall clock) is the only date-safe column. Swap rows also
 carry `boot_ts` (monotonic seconds from the log) - never derive a
@@ -30,7 +25,7 @@ BUCKETS_V2     = os.path.join(HIST, "buckets.v2.csv")
 BUCKETS_LEGACY = os.path.join(HIST, "buckets.csv")
 SWAPS_V1       = os.path.join(HIST, "swaps.v1.csv")
 SWAPS          = os.path.join(HIST, "swaps.csv")
-CURRENT_TXT    = os.path.join(HIST, "current.txt")
+CURRENT_JSON   = os.path.join(HIST, "current.json")
 
 SELF_DIR  = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR = os.path.join(SELF_DIR, "bpftune-collector.py")
@@ -123,10 +118,10 @@ def run_and_verify():
     else:
         say("  buckets.v2.csv now has %d rows" % after)
 
-    if not os.path.exists(CURRENT_TXT):
-        warn("current.txt not written - CLI snapshot failed")
+    if not os.path.exists(CURRENT_JSON):
+        warn("current.json not written - CLI JSON snapshot failed")
     else:
-        say("  current.txt: %d bytes" % os.path.getsize(CURRENT_TXT))
+        say("  current.json: %d bytes" % os.path.getsize(CURRENT_JSON))
 
     r = subprocess.run([sys.executable, RENDERER],
                        capture_output=True, text=True)
@@ -144,7 +139,11 @@ def run_and_verify():
 # =================== CLI ===================
 
 CLI_SRC = r'''#!/usr/bin/env python3
-"""bpftune live dashboard. Two columns, rates in Mbps."""
+"""bpftune live dashboard.
+
+Default: human-readable text (two columns).
+--json : single JSON object of the same data - used by the collector.
+"""
 import argparse, json, os, re, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -155,11 +154,11 @@ CONGS = ["cubic","bbr","htcp","dctcp","scalable","vegas","veno","westwood",
 LOG_TAIL_BYTES = 2_000_000
 BPS_TO_MBPS = 1_000_000.0 / 8.0
 
-RULE = "\u2500"      # ─
-DRULE = "\u2550"     # ═
-ARROW = "\u25b8"     # ▸
-VBAR = "\u2502"      # │
-MIDDOT = "\u00b7"    # ·
+RULE   = "\u2500"
+DRULE  = "\u2550"
+ARROW  = "\u25b8"
+VBAR   = "\u2502"
+MIDDOT = "\u00b7"
 
 
 def sh(cmd, timeout=15):
@@ -224,68 +223,59 @@ def read_map():
     return entries
 
 
-def col_build(logpath):
+# ---------- data extraction (structured) ----------
+
+def data_build(logpath):
     v = sh("dpkg-query -W -f='${Version}' bpftune").strip() or "?"
     a = sh("systemctl is-active bpftune").strip() or "?"
     ts = sh("systemctl show bpftune -p ActiveEnterTimestamp --value").strip()
-    up = "(unknown)"
-    hhmm = ""
+    uptime_min = None
+    started = ""
     m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", ts)
     if m:
+        started = m.group(1)[11:19]
         try:
             t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(
                 tzinfo=timezone.utc)
-            minutes = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
-            h, mm = divmod(minutes, 60)
-            up = f"{h}h {mm}m"
-            hhmm = m.group(1)[11:19]
+            uptime_min = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
         except Exception:
             pass
-    return [
-        f"version    {v}   service  {a}",
-        f"uptime     {up}   (started {hhmm} UTC)" if hhmm else f"uptime     {up}",
-        f"log        {str(logpath) if logpath else '(not found)'}",
-    ]
+    return {
+        "version":     v,
+        "service":     a,
+        "uptime_min":  uptime_min,
+        "started_utc": started,
+        "log_path":    str(logpath) if logpath else None,
+    }
 
 
-def col_system():
-    k = sh_noshell(["uname", "-r"]).strip()
-    cc = sh_noshell(["sysctl", "-n", "net.ipv4.tcp_congestion_control"]).strip()
-    return [
-        f"kernel       {k}",
-        f"default CC   {cc}",
-    ]
+def data_system():
+    return {
+        "kernel":     sh_noshell(["uname", "-r"]).strip(),
+        "default_cc": sh_noshell(["sysctl", "-n",
+                                  "net.ipv4.tcp_congestion_control"]).strip(),
+    }
 
 
-def section_tunables(width):
+def data_tunables():
     j = sh_noshell(["journalctl", "-u", "bpftune", "--no-pager", "-q"])
     names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
-    out = [f"{ARROW} BPFTUNE-MANAGED TUNABLES", RULE*width]
-    if not names:
-        out.append("  (none seen in journal for this boot)")
-        return out
-    ncol = 34
+    out = []
     for n in names:
         v = sh_noshell(["sysctl", "-n", n]).strip()
         if not v:
             continue
         short = n[4:]
         if "allowed_congestion_control" in n:
-            v = f"({len(v.split())} algs)"
-        if len(v) <= width - ncol - 3:
-            out.append(f"  {short:<{ncol}} {v}")
-        else:
-            out.append(f"  {short:<{ncol}}")
-            for i in range(0, len(v), width - ncol - 1):
-                out.append(f"  {'':<{ncol}} {v[i:i+width-ncol-1]}")
+            v = "%d algorithms" % len(v.split())
+        out.append({"name": short, "value": v})
     return out
 
 
-def col_buckets(hosts, n=5):
+def data_buckets(hosts, n=8):
     if not hosts:
-        return ["  (map unreadable)"]
-    lines = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}{'best_i':>10}{'n_alg':>7}"]
-    shown = 0
+        return []
+    rows = []
     for inst, addr, v in hosts:
         if addr in ("0.0.0.1", "?"):
             continue
@@ -293,9 +283,6 @@ def col_buckets(hosts, n=5):
             continue
         if inst < 2:
             continue
-        shown += 1
-        if shown > n:
-            break
         mrv = v.get("max_rate_delivered", 0) or 0
         rtt = v.get("min_rtt", 0) or 0
         bi  = v.get("best_i", 0) or 0
@@ -303,19 +290,25 @@ def col_buckets(hosts, n=5):
         used = sum(1 for m in metrics if isinstance(m, dict)
                    and int(m.get("metric_count", 0) or 0) > 0)
         try:
-            rs = f"{int(mrv)/BPS_TO_MBPS:.1f}"
+            ref = int(mrv) / BPS_TO_MBPS
         except Exception:
-            rs = "0.0"
-        bin_ = CONGS[int(bi)] if int(bi) < 16 else str(bi)
-        lines.append(f"  {addr:<16}{inst:>6}{rtt:>9}{rs:>10}{bin_:>10}{used:>7}")
-    if shown == 0:
-        lines.append("  (only placeholder buckets)")
-    return lines
+            ref = 0.0
+        rows.append({
+            "dest":     addr,
+            "inst":     inst,
+            "rtt_us":   int(rtt),
+            "ref_mbps": round(ref, 1),
+            "best_alg": CONGS[int(bi)] if int(bi) < 16 else str(bi),
+            "n_alg":    used,
+        })
+        if len(rows) >= n:
+            break
+    return rows
 
 
-def col_metric(hosts):
+def data_metric(hosts):
     if not hosts:
-        return ["  (map unreadable)"]
+        return []
     metrics = hosts[0][2].get("metrics") or []
     rows = []
     for i, m in enumerate(metrics):
@@ -331,18 +324,17 @@ def col_metric(hosts):
             continue
         if val in (0, (1<<64)-1):
             val = 0
-        name = CONGS[i] if i < 16 else f"alg{i}"
-        rows.append((name, val, mc, a))
-    if not rows:
-        return ["  (no metrics yet)"]
-    out = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"]
-    for name, val, mc, a in sorted(rows, key=lambda r: r[1] if r[1] else 1<<62):
-        vm = f"{val/1e6:.1f}" if val else "0"
-        out.append(f"  {name:<10}{vm:>9}{mc:>7}{a:>7}")
-    return out
+        rows.append({
+            "alg":    CONGS[i] if i < 16 else "alg%d" % i,
+            "metric": round(val / 1e6, 1) if val else 0,
+            "votes":  mc,
+            "alive":  a,
+        })
+    rows.sort(key=lambda r: r["metric"] if r["metric"] else 1<<62)
+    return rows
 
 
-def col_proof(text):
+def _proof(text):
     per_alg = defaultdict(lambda: {"t1": 0, "t2": 0, "max": 0})
     for line in text.splitlines():
         if "proof cookie=" not in line:
@@ -354,6 +346,10 @@ def col_proof(text):
         per_alg[a]["t"+tier] += 1
         if rate > per_alg[a]["max"]:
             per_alg[a]["max"] = rate
+    return per_alg
+
+
+def _midsamp(text):
     avg = {}
     cur_alg = {}
     for line in text.splitlines():
@@ -375,23 +371,33 @@ def col_proof(text):
                     a = cur_alg[c]
                     avg.setdefault(a, [0, 0])
                     avg[a][0] += r; avg[a][1] += 1
+    return avg
+
+
+def data_proof(text):
+    per_alg = _proof(text)
     if not per_alg:
-        return ["  (none in tail)"]
-    out = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'maxM':>8}{'avgM':>8}{'n':>5}"]
+        return []
+    avg = _midsamp(text)
+    rows = []
     for a in sorted(per_alg.keys(), key=lambda x: -per_alg[x]["max"]):
         d = per_alg[a]
-        name = CONGS[a] if a < 16 else f"alg{a}"
-        mx = d["max"] / BPS_TO_MBPS
+        row = {
+            "alg":    CONGS[a] if a < 16 else "alg%d" % a,
+            "good":   d["t1"],
+            "proved": d["t2"],
+            "max_mbps": round(d["max"] / BPS_TO_MBPS, 1),
+            "avg_mbps": None,
+            "n": None,
+        }
         if a in avg and avg[a][1]:
-            av = avg[a][0] / avg[a][1] / BPS_TO_MBPS
-            an = avg[a][1]
-            out.append(f"  {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{av:>8.1f}{an:>5}")
-        else:
-            out.append(f"  {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{'-':>8}{'-':>5}")
-    return out
+            row["avg_mbps"] = round(avg[a][0] / avg[a][1] / BPS_TO_MBPS, 1)
+            row["n"] = avg[a][1]
+        rows.append(row)
+    return rows
 
 
-def col_rate(text):
+def data_rate(text):
     out_map = defaultdict(list)
     for line in text.splitlines():
         if "midsamp" not in line:
@@ -404,32 +410,36 @@ def col_rate(text):
         if mr.group(1) == "443":
             continue
         out_map[int(mt.group(1))].append(int(ms.group(1)))
-    if not out_map:
-        return ["  (no midsamp lines)"]
-    out = [f"  {'thr':>7}{'n':>5}{'mean':>9}{'min':>9}{'max':>9}"]
+    rows = []
     for thr in sorted(out_map.keys()):
         vs = out_map[thr]
-        out.append(f"  {thr:>7}{len(vs):>5}"
-                   f"{sum(vs)/len(vs)/BPS_TO_MBPS:>9.1f}"
-                   f"{min(vs)/BPS_TO_MBPS:>9.1f}"
-                   f"{max(vs)/BPS_TO_MBPS:>9.1f}")
-    return out
+        rows.append({
+            "thr":  thr,
+            "n":    len(vs),
+            "mean": round(sum(vs) / len(vs) / BPS_TO_MBPS, 1),
+            "min":  round(min(vs) / BPS_TO_MBPS, 1),
+            "max":  round(max(vs) / BPS_TO_MBPS, 1),
+        })
+    return rows
 
 
-def _parse_swaps_and_mets(text):
+def _swaps_and_mets(text):
     sw = []
     met = defaultdict(list)
     rx_sw = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"swap cookie=(\d+) from=(\d+) to=(\d+) "
-                       r"bc=(\d+) ac=(\d+) d=(\d+)")
+                       r"bc=(\d+) ac=(\d+) d=(\d+)"
+                       r"(?: mt=(\d+) rb=(\d+))?")
     rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
+    raw_by_cookie = defaultdict(list)
     for line in text.splitlines():
         m = rx_sw.search(line)
         if m:
             sw.append((float(m.group(1)), int(m.group(2)),
                        int(m.group(3)), int(m.group(4)),
-                       int(m.group(5)), int(m.group(6)), m.group(7)))
+                       int(m.group(5)), int(m.group(6)), m.group(7),
+                       m.group(8), m.group(9), line))
             continue
         v = rx_mt.search(line)
         if v:
@@ -437,119 +447,165 @@ def _parse_swaps_and_mets(text):
     return sw, met
 
 
-def col_swap_outcomes(text):
-    sw, met = _parse_swaps_and_mets(text)
+def _outcome(met, c, ts):
+    tl = met.get(c, [])
+    pre = post = None
+    for (mts, mval) in tl:
+        if mts < ts + 0.001:
+            pre = mval
+        elif ts + 3.0 <= mts <= ts + 300.0:
+            post = mval; break
+    if not pre or not post:
+        return None
+    r = post / pre
+    if r <= 0.9:  return "win"
+    if r >= 1.1:  return "loss"
+    return "null"
+
+
+def data_swap_outcomes(text):
+    sw, met = _swaps_and_mets(text)
     win = null = loss = skip = 0
     reasons = defaultdict(int)
-    for (ts, c, fa, ta, bc, ac, d) in sw:
-        tl = met.get(c, [])
-        pre = post = None
-        for (mts, mval) in tl:
-            if mts < ts + 0.001:
-                pre = mval
-            elif ts + 3.0 <= mts <= ts + 300.0:
-                post = mval; break
-        if not pre or not post:
+    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+        o = _outcome(met, c, ts)
+        if o is None:
             skip += 1
-            reasons["no pre, no post" if not (pre or post) else ("no pre" if not pre else "no post")] += 1
             continue
-        r = post / pre
-        if   r <= 0.9: win += 1
-        elif r >= 1.1: loss += 1
-        else:          null += 1
+        if   o == "win":  win += 1
+        elif o == "loss": loss += 1
+        else:             null += 1
     total = win + null + loss
-    def pct(a):
-        return f"{int(100.0*a/total)}%" if total else "n/a"
-    out = [
-        f"  measurable    {total:>4}  (unmeasurable {skip})",
-        f"  win           {win:>4}  {pct(win)}",
-        f"  null          {null:>4}  {pct(null)}",
-        f"  loss          {loss:>4}  {pct(loss)}",
-    ]
-    if reasons:
-        for k, v in sorted(reasons.items(), key=lambda x: -x[1]):
-            out.append(f"  no-post-type   {k:<14} {v}")
-    return out
+    def pct(x):
+        return round(100.0 * x / total, 1) if total else 0
+    return {
+        "measurable":    total,
+        "unmeasurable":  skip,
+        "win":           win,
+        "win_pct":       pct(win),
+        "null":          null,
+        "null_pct":      pct(null),
+        "loss":          loss,
+        "loss_pct":      pct(loss),
+    }
 
 
-def col_churn(text):
-    sw, _ = _parse_swaps_and_mets(text)
+def data_divergence(text):
+    sw, met = _swaps_and_mets(text)
+    groups = {
+        "rate==metric": {"total": 0, "win": 0, "null": 0, "loss": 0},
+        "rate!=metric": {"total": 0, "win": 0, "null": 0, "loss": 0},
+        "pre-0.4.45":   {"total": 0, "win": 0, "null": 0, "loss": 0},
+    }
+    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+        if mt_i is None or rb_i is None: key = "pre-0.4.45"
+        elif mt_i == rb_i:               key = "rate==metric"
+        else:                            key = "rate!=metric"
+        g = groups[key]
+        g["total"] += 1
+        o = _outcome(met, c, ts)
+        if o:
+            g[o] += 1
+    rows = []
+    for k in ("rate==metric", "rate!=metric", "pre-0.4.45"):
+        g = groups[k]
+        meas = g["win"] + g["null"] + g["loss"]
+        def pct(x):
+            return round(100.0 * x / meas, 1) if meas else 0
+        rows.append({
+            "category":  k,
+            "measured":  meas,
+            "win_pct":   pct(g["win"]),
+            "null_pct":  pct(g["null"]),
+            "loss_pct":  pct(g["loss"]),
+            "win":       g["win"],
+            "null":      g["null"],
+            "loss":      g["loss"],
+            "skipped":   g["total"] - meas,
+        })
+    return rows
+
+
+def data_churn(text):
+    sw, _ = _swaps_and_mets(text)
     counts = defaultdict(int)
     for s in sw:
         counts[s[1]] += 1
     if not counts:
-        return ["  (no swaps in tail)"]
+        return {"cookies": 0, "one": 0, "mid": 0, "many": 0, "max": 0}
     one  = sum(1 for v in counts.values() if v == 1)
     mid  = sum(1 for v in counts.values() if 2 <= v <= 4)
     many = sum(1 for v in counts.values() if v >= 5)
-    mx   = max(counts.values()) if counts else 0
-    return [
-        f"  cookies swapped     {len(counts)}",
-        f"    1x                {one}",
-        f"    2-4x              {mid}",
-        f"    5x+               {many}",
-        f"    max per cookie    {mx}",
-    ]
+    return {"cookies": len(counts), "one": one, "mid": mid,
+            "many": many, "max": max(counts.values())}
 
 
-def col_recent_swaps(text, n=6):
-    sw, met = _parse_swaps_and_mets(text)
-    rx_mt = re.compile(r"mt=(\d+) rb=(\d+)")
+def data_recent_swaps(text, n=10):
+    sw, met = _swaps_and_mets(text)
     rows = []
-    for (ts, c, fa, ta, bc, ac, d) in sw:
-        mtn = rbn = "-"
-        mt = None
-        for line in text.splitlines():
-            if f"swap cookie={c} " in line and f" to={ta} " in line and f"from={fa}" in line:
-                mt = rx_mt.search(line)
-                break
-        if mt:
-            try:
-                mtn = CONGS[int(mt.group(1))] if int(mt.group(1))<16 else str(int(mt.group(1)))
-            except Exception:
-                pass
-            try:
-                rbn = CONGS[int(mt.group(2))] if int(mt.group(2))<16 else str(int(mt.group(2)))
-            except Exception:
-                pass
-        tl = met.get(c, [])
-        pre = post = None
-        for (mts, mval) in tl:
-            if mts < ts + 0.001:
-                pre = mval
-            elif ts + 3.0 <= mts <= ts + 300.0:
-                post = mval; break
-        if not pre or not post: status = " ... "
-        elif post/pre <= 0.9:   status = " WIN "
-        elif post/pre >= 1.1:   status = " LOSS"
-        else:                   status = " null"
-        fn = CONGS[fa] if fa < 16 else str(fa)
-        tn = CONGS[ta] if ta < 16 else str(ta)
-        rows.append(f"  {fn:>9} -> {tn:<9} d{d} {status} mt={mtn:<8} rb={rbn:<8}")
-    return rows[-n:] if rows else ["  (none in tail)"]
+    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+        o = _outcome(met, c, ts)
+        mt_alg = (CONGS[int(mt_i) & 15]
+                  if mt_i and mt_i.isdigit() else None)
+        rb_alg = (CONGS[int(rb_i) & 15]
+                  if rb_i and rb_i.isdigit() else None)
+        rows.append({
+            "from_alg": CONGS[fa] if fa < 16 else str(fa),
+            "to_alg":   CONGS[ta] if ta < 16 else str(ta),
+            "d":        int(d),
+            "outcome":  o,            # "win"|"loss"|"null"|None
+            "mt_alg":   mt_alg,
+            "rb_alg":   rb_alg,
+        })
+    return rows[-n:]
 
 
-def col_recent_proofs(text, n=6):
+def data_recent_proofs(text, n=10):
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
-    if not lines:
-        return ["  (none)"]
     out = []
     for l in lines:
         m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
         if not m:
             continue
-        a = int(m.group(2)); tn = CONGS[a] if a < 16 else f"alg{a}"
-        tier = "proved" if m.group(4) == "2" else "good  "
-        out.append(f"  {tn:<9} {int(m.group(3))/BPS_TO_MBPS:>7.1f} Mbps   {tier}")
+        a = int(m.group(2))
+        out.append({
+            "alg":  CONGS[a] if a < 16 else "alg%d" % a,
+            "mbps": round(int(m.group(3)) / BPS_TO_MBPS, 1),
+            "tier": "proved" if m.group(4) == "2" else "good",
+        })
     return out
 
 
-CW = 58
-GAP = "  " + VBAR + "  "
+def collect_all():
+    logpath = find_log()
+    hosts   = read_map()
+    text    = tail(logpath) if logpath else ""
+    return {
+        "generated_ts":   int(time.time()),
+        "hostname":       os.uname().nodename,
+        "build":          data_build(logpath),
+        "system":         data_system(),
+        "tunables":       data_tunables(),
+        "buckets":        data_buckets(hosts),
+        "metric":         data_metric(hosts),
+        "proof":          data_proof(text),
+        "rate":           data_rate(text),
+        "swap_outcomes":  data_swap_outcomes(text),
+        "divergence":     data_divergence(text),
+        "churn":          data_churn(text),
+        "recent_swaps":   data_recent_swaps(text),
+        "recent_proofs":  data_recent_proofs(text),
+    }
+
+
+# ---------- text renderer ----------
+
+CW   = 58
+GAP  = "  " + VBAR + "  "
 FULL = CW*2 + len(GAP)
 
 
-def twocol(title_l, lines_l, title_r, lines_r):
+def _twocol(title_l, lines_l, title_r, lines_r):
     out = [f"{ARROW} {title_l:<{CW-2}}{GAP}{ARROW} {title_r}",
            f"{RULE*CW}{GAP}{RULE*CW}"]
     rows = max(len(lines_l), len(lines_r))
@@ -560,98 +616,111 @@ def twocol(title_l, lines_l, title_r, lines_r):
     return out
 
 
-def full(title, lines):
+def _full(title, lines):
     out = [f"{ARROW} {title}", RULE*FULL]
     out += [l[:FULL] for l in lines]
     return out
 
 
-def col_divergence(text):
-    rx_sw = re.compile(r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
-                       r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
-                       r"(?: mt=(\d+) rb=(\d+))?")
-    rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
-                       r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
-    met = defaultdict(list)
-    for line in text.splitlines():
-        v = rx_mt.search(line)
-        if v:
-            met[int(v.group(2))].append((float(v.group(1)), int(v.group(6))))
-    groups = {
-        "rate==metric":  [0, 0, 0, 0, 0],
-        "rate!=metric":  [0, 0, 0, 0, 0],
-        "pre-0.4.45":    [0, 0, 0, 0, 0],
-    }
-    for line in text.splitlines():
-        m = rx_sw.search(line)
-        if not m:
-            continue
-        ts, c = float(m.group(1)), int(m.group(2))
-        mt_i, rb_i = m.group(8), m.group(9)
-        if mt_i is None or rb_i is None: key = "pre-0.4.45"
-        elif mt_i == rb_i:               key = "rate==metric"
-        else:                            key = "rate!=metric"
-        g = groups[key]
-        g[0] += 1
-        tl = met.get(c, [])
-        pre = post = None
-        for (mts, mval) in tl:
-            if mts < ts + 0.001:
-                pre = mval
-            elif ts + 3.0 <= mts <= ts + 300.0:
-                post = mval; break
-        if not pre or not post:
-            continue
-        r = post / pre
-        if   r <= 0.9: g[1] += 1
-        elif r >= 1.1: g[4] += 1
-        else:          g[2] += 1
-    out = [f"  {'category':<20}{'meas':>5}{'win':>7}{'null':>7}{'loss':>7}{'skipped':>9}",
-           RULE*62]
-    for k in ("rate==metric", "rate!=metric", "pre-0.4.45"):
-        n_all, w, nul, _u, l = groups[k]
-        meas = w + nul + l
-        def pct(x):
-            return f"{int(100*x/meas)}%" if meas else "-"
-        out.append(f"  {k:<20}{meas:>5}{pct(w):>7}{pct(nul):>7}{pct(l):>7}{n_all-meas:>9}")
-    return out
+def render_text(d):
+    b = d["build"]
+    lines = []
+    lines.append(f"version    {b['version']}   service  {b['service']}")
+    if b["uptime_min"] is not None:
+        h, m = divmod(b["uptime_min"], 60)
+        lines.append(f"uptime     {h}h {m}m   (started {b['started_utc']} UTC)")
+    lines.append(f"log        {b['log_path'] or '(not found)'}")
+    log_lines = lines
 
-
-def render():
-    logpath = find_log()
-    hosts   = read_map()
-    text    = tail(logpath) if logpath else ""
-    ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    sysmap = [
+        f"kernel       {d['system']['kernel']}",
+        f"default CC   {d['system']['default_cc']}",
+    ]
     print(DRULE * (FULL + 2))
-    print(f"  bpftune  {MIDDOT}  {os.uname().nodename}  {MIDDOT}  {ts}")
+    ts = datetime.fromtimestamp(d["generated_ts"], timezone.utc)\
+                .strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(f"  bpftune  {MIDDOT}  {d['hostname']}  {MIDDOT}  {ts}")
     print(DRULE * (FULL + 2))
     print()
-    for row in twocol("BUILD / SERVICE", col_build(logpath),
-                      "SYSTEM FACTS",    col_system()):
+    for row in _twocol("BUILD / SERVICE", log_lines,
+                       "SYSTEM FACTS",    sysmap):
         print(row)
     print()
-    for row in full("BPFTUNE-MANAGED TUNABLES", section_tunables(FULL)[2:]):
+    tun = [f"  {t['name']:<34} {t['value']}" for t in d["tunables"]] or \
+          ["  (none seen in journal for this boot)"]
+    for row in _full("BPFTUNE-MANAGED TUNABLES",
+                     [f"{ARROW}"] + tun[0:] if False else tun):
         print(row)
     print()
-    for row in full("TOP DESTINATION BUCKETS", col_buckets(hosts)):
+    bk = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}"
+          f"{'best_i':>10}{'n_alg':>7}"]
+    for r in d["buckets"]:
+        bk.append(f"  {r['dest']:<16}{r['inst']:>6}{r['rtt_us']:>9}"
+                  f"{r['ref_mbps']:>10.1f}{r['best_alg']:>10}{r['n_alg']:>7}")
+    for row in _full("TOP DESTINATION BUCKETS", bk):
         print(row)
     print()
-    for row in twocol("ALGORITHM LEADERBOARD (metric)", col_metric(hosts),
-                      "PROOF LEADERBOARD (speed)",     col_proof(text)):
+    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"]
+    for r in d["metric"]:
+        mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
+                  f"{r['votes']:>7}{r['alive']:>7}")
+    pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'maxM':>8}{'avgM':>8}{'n':>5}"]
+    for r in d["proof"]:
+        a = f"{r['avg_mbps']:.1f}" if r["avg_mbps"] is not None else "-"
+        n = f"{r['n']}" if r["n"] is not None else "-"
+        pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
+                  f"{r['max_mbps']:>8.1f}{a:>8}{n:>5}")
+    for row in _twocol("ALGORITHM LEADERBOARD (metric)", mt,
+                       "PROOF LEADERBOARD (speed)",     pr):
         print(row)
     print()
-    for row in twocol("RATE PROGRESSION (client, Mbps)", col_rate(text),
-                      "SWAP OUTCOMES",                    col_swap_outcomes(text)):
+    rt = [f"  {'thr':>7}{'n':>5}{'mean':>9}{'min':>9}{'max':>9}"]
+    for r in d["rate"]:
+        rt.append(f"  {r['thr']:>7}{r['n']:>5}{r['mean']:>9.1f}"
+                  f"{r['min']:>9.1f}{r['max']:>9.1f}")
+    so = d["swap_outcomes"]
+    so_lines = [
+        f"  measurable    {so['measurable']:>4}  (unmeasurable {so['unmeasurable']})",
+        f"  win           {so['win']:>4}  {so['win_pct']:.0f}%",
+        f"  null          {so['null']:>4}  {so['null_pct']:.0f}%",
+        f"  loss          {so['loss']:>4}  {so['loss_pct']:.0f}%",
+    ]
+    for row in _twocol("RATE PROGRESSION (client, Mbps)", rt,
+                       "SWAP OUTCOMES", so_lines):
         print(row)
     print()
-    for row in full("DIVERGENCE (swap target: rate vs metric)", col_divergence(text)):
+    dv = [f"  {'category':<20}{'meas':>5}{'win':>7}{'null':>7}{'loss':>7}{'skipped':>9}",
+          RULE*62]
+    for r in d["divergence"]:
+        dv.append(f"  {r['category']:<20}{r['measured']:>5}"
+                  f"{r['win_pct']:>6.0f}%{r['null_pct']:>6.0f}%"
+                  f"{r['loss_pct']:>6.0f}%{r['skipped']:>9}")
+    for row in _full("DIVERGENCE (swap target: rate vs metric)", dv):
         print(row)
     print()
-    for row in twocol("COOKIE CHURN", col_churn(text),
-                      "RECENT PROOF EVENTS", col_recent_proofs(text)):
+    ch = d["churn"]
+    ch_lines = [
+        f"  cookies swapped     {ch['cookies']}",
+        f"    1x                {ch['one']}",
+        f"    2-4x              {ch['mid']}",
+        f"    5x+               {ch['many']}",
+        f"    max per cookie    {ch['max']}",
+    ]
+    rp = [f"  {r['alg']:<9} {r['mbps']:>7.1f} Mbps   {r['tier']}"
+          for r in d["recent_proofs"]] or ["  (none)"]
+    for row in _twocol("COOKIE CHURN", ch_lines,
+                       "RECENT PROOF EVENTS", rp):
         print(row)
     print()
-    for row in full("RECENT SWAPS", col_recent_swaps(text)):
+    rs = []
+    for r in d["recent_swaps"]:
+        status = {"win": " WIN ", "loss": " LOSS", "null": " null"}.get(
+            r["outcome"], " ... ")
+        rs.append(f"  {r['from_alg']:>9} -> {r['to_alg']:<9} d{r['d']} "
+                  f"{status} mt={r['mt_alg'] or '-':<8} rb={r['rb_alg'] or '-':<8}")
+    if not rs:
+        rs = ["  (none in tail)"]
+    for row in _full("RECENT SWAPS", rs):
         print(row)
     print()
 
@@ -660,12 +729,18 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("-i", "--interval", type=int, default=10)
     p.add_argument("--once", action="store_true")
+    p.add_argument("--json", action="store_true")
     a = p.parse_args()
+
+    if a.json:
+        json.dump(collect_all(), sys.stdout, separators=(",", ":"))
+        return
+
     try:
         while True:
             if not a.once:
                 sys.stdout.write("\x1b[2J\x1b[H")
-            render()
+            render_text(collect_all())
             if a.once:
                 break
             print(f"  refreshing every {a.interval}s (Ctrl-C to exit)")
@@ -682,12 +757,11 @@ if __name__ == "__main__":
 # =================== collector ===================
 
 COLLECTOR_SRC = r'''#!/usr/bin/env python3
-"""bpftune collector, schema v2. Run once per minute from cron.
+"""bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`.
 Swaps from tail /var/log/bpftune-met-*.log.
-Snapshot: runs tools/bpftune-cli.py --once and stores stdout to
-          /var/lib/bpftune/history/current.txt (ANSI stripped)
+Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
 """
@@ -699,7 +773,7 @@ HIST.mkdir(parents=True, exist_ok=True)
 BUCKETS_CSV = HIST / "buckets.v2.csv"
 SWAPS_CSV   = HIST / "swaps.csv"
 SWAPS_POS   = HIST / ".swaps_pos"
-CURRENT_TXT = HIST / "current.txt"
+CURRENT_JSON = HIST / "current.json"
 
 SELF_DIR = Path(__file__).resolve().parent
 CLI      = SELF_DIR / "bpftune-cli.py"
@@ -708,8 +782,6 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
 MIN_INST = 2
-
-ANSI_RX = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
@@ -884,13 +956,17 @@ def run_cli_snapshot():
     if not CLI.exists():
         return False
     try:
-        r = subprocess.run([sys.executable, str(CLI), "--once"],
+        r = subprocess.run([sys.executable, str(CLI), "--json"],
                            capture_output=True, text=True, timeout=90)
-        clean = ANSI_RX.sub("", r.stdout)
-        tmp = str(CURRENT_TXT) + ".tmp"
+        if r.returncode != 0:
+            print("collector: CLI exited %d" % r.returncode, file=sys.stderr)
+            return False
+        # run through json.loads/dumps so a truncated line can't corrupt the file
+        doc = json.loads(r.stdout)
+        tmp = str(CURRENT_JSON) + ".tmp"
         with open(tmp, "w") as f:
-            f.write(clean)
-        os.replace(tmp, str(CURRENT_TXT))
+            json.dump(doc, f, separators=(",", ":"))
+        os.replace(tmp, str(CURRENT_JSON))
         return True
     except Exception as e:
         print("collector: CLI snapshot failed: %s" % e, file=sys.stderr)
@@ -917,10 +993,8 @@ RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
 
 Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv, writes
-index.html and data/*.json. The browser also fetches current.txt
-(produced by the collector from bpftune-cli.py) every 30s.
-
-All downsampling is server-side - Chart.js never sees raw rows.
+index.html and data/*.json. The browser also fetches current.json
+(every 30s).
 
 `collected_ts` is the only date-safe timestamp (falls back to `ts_epoch`
 for v1 rows).
@@ -1143,34 +1217,49 @@ INDEX_HTML = r"""<!doctype html>
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f7f8fa;
-    --fg: #1c1f24;
+    --bg: #f6f7f9;
+    --fg: #131720;
     --muted: #6b7280;
     --muted-2: #9aa0a6;
-    --border: #e5e7eb;
-    --border-strong: #d1d5db;
+    --border: #e6e8ec;
+    --border-strong: #d6d9df;
     --card-bg: #ffffff;
     --code-bg: #fbfbfd;
+    --subtle: #f2f4f7;
     --shadow: 0 1px 2px rgba(16,24,40,.04);
     --accent: #2f6feb;
-    --accent-dim: #2f6feb26;
-    --radius: 8px;
+    --accent-dim: #2f6feb1a;
+    --good: #12a150;
+    --good-dim: #12a1501a;
+    --bad: #e5484d;
+    --bad-dim: #e5484d1a;
+    --warn: #d97706;
+    --warn-dim: #d977061a;
+    --radius: 10px;
+    --radius-sm: 6px;
     --gap: 16px;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0b0d11;
+      --bg: #0a0c10;
       --fg: #e6e8eb;
       --muted: #8b929b;
       --muted-2: #6b7280;
-      --border: #1c2028;
+      --border: #1b1f27;
       --border-strong: #2a2f39;
-      --card-bg: #111419;
-      --code-bg: #0a0c10;
+      --card-bg: #101319;
+      --code-bg: #0d1015;
+      --subtle: #171b22;
       --shadow: 0 1px 2px rgba(0,0,0,.35);
       --accent: #5b9bff;
-      --accent-dim: #5b9bff26;
+      --accent-dim: #5b9bff1f;
+      --good: #34d399;
+      --good-dim: #34d3991f;
+      --bad: #f87171;
+      --bad-dim: #f871711f;
+      --warn: #fbbf24;
+      --warn-dim: #fbbf241f;
     }
   }
   * { box-sizing: border-box; }
@@ -1179,14 +1268,12 @@ INDEX_HTML = r"""<!doctype html>
     background: var(--bg); color: var(--fg);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
           "Helvetica Neue", Arial, sans-serif;
-    font-feature-settings: "tnum" 1;
+    font-feature-settings: "tnum" 1, "cv11" 1, "ss01" 1;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap {
-    max-width: 1180px; margin: 0 auto;
-    padding: 24px 20px 64px;
-  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 64px; }
 
+  /* ---- top bar ---- */
   header.topbar {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding-bottom: 16px; margin-bottom: 20px;
@@ -1205,22 +1292,21 @@ INDEX_HTML = r"""<!doctype html>
   }
   .control {
     display: flex; align-items: center; gap: 6px;
-    font-size: 12px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .04em;
+    font-size: 11.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em;
   }
   select {
     font: inherit; font-size: 12.5px;
     text-transform: none; letter-spacing: normal;
     color: var(--fg); background: var(--card-bg);
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     padding: 5px 8px;
-    min-width: 0;
   }
   select:focus { outline: 2px solid var(--accent-dim); outline-offset: 0; }
 
   .pill {
-    display: inline-flex; align-items: center;
+    display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--muted);
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -1230,18 +1316,19 @@ INDEX_HTML = r"""<!doctype html>
   }
   .pill.flash { color: var(--accent); }
 
+  /* ---- card ---- */
   .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    padding: 16px;
+    padding: 18px;
     margin-bottom: var(--gap);
   }
   .card > h2 {
-    margin: 0 0 14px;
+    margin: 0 0 16px;
     font-size: 11px; font-weight: 600;
-    letter-spacing: .08em; text-transform: uppercase;
+    letter-spacing: .09em; text-transform: uppercase;
     color: var(--muted);
     display: flex; align-items: center; gap: 8px;
   }
@@ -1262,15 +1349,16 @@ INDEX_HTML = r"""<!doctype html>
     letter-spacing: 0; font-family: var(--mono); font-size: 11px;
   }
 
+  /* ---- stat strip ---- */
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px 20px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px 22px;
   }
-  .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .stat .k {
     font-size: 10.5px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .06em;
+    text-transform: uppercase; letter-spacing: .07em;
   }
   .stat .v {
     font-size: 15px; font-weight: 500;
@@ -1280,42 +1368,216 @@ INDEX_HTML = r"""<!doctype html>
   .stat .v.mono { font-family: var(--mono); font-size: 13px; }
 
   .rates {
-    margin-top: 14px; padding-top: 14px;
+    margin-top: 16px; padding-top: 14px;
     border-top: 1px dashed var(--border);
     display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   }
   .rates .k {
     font-size: 10.5px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .06em;
+    text-transform: uppercase; letter-spacing: .07em;
   }
   .rates .v {
     font-family: var(--mono); font-size: 12.5px;
     color: var(--fg);
   }
 
-  pre.live {
-    margin: 0;
-    padding: 14px 16px;
-    border-radius: 6px;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    font: 11.5px/1.45 var(--mono);
-    color: var(--fg);
-    overflow-x: auto;
-    white-space: pre;
+  /* ---- grid of live sections ---- */
+  .lv-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 14px;
   }
-
-  .chart-box {
-    position: relative;
-    width: 100%;
+  .lv-grid > section {
+    grid-column: span 12;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
     min-width: 0;
   }
+  @media (min-width: 900px) {
+    .lv-grid > section.c6 { grid-column: span 6; }
+    .lv-grid > section.c4 { grid-column: span 4; }
+    .lv-grid > section.c8 { grid-column: span 8; }
+  }
+  .lv-grid h3 {
+    margin: 0 0 10px;
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .lv-grid h3 .cnt {
+    margin-left: auto; color: var(--muted-2);
+    font-family: var(--mono); font-size: 10.5px;
+    font-weight: 500; letter-spacing: 0; text-transform: none;
+  }
+
+  /* ---- kv rows (build, system, tunables) ---- */
+  .kv { display: flex; flex-direction: column; gap: 5px; }
+  .kv .row {
+    display: flex; justify-content: space-between; gap: 12px;
+    font-size: 12.5px; align-items: baseline;
+  }
+  .kv .k { color: var(--muted); }
+  .kv .v {
+    font-family: var(--mono); font-size: 12px;
+    text-align: right; overflow-wrap: anywhere;
+  }
+  .kv .v.hi { color: var(--fg); font-weight: 500; }
+  .kv .v.dim { color: var(--muted-2); }
+
+  /* ---- tables ---- */
+  table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.tbl th, table.tbl td {
+    padding: 6px 4px; text-align: right;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 1px solid var(--border);
+  }
+  table.tbl th:first-child, table.tbl td:first-child {
+    text-align: left; padding-left: 0;
+  }
+  table.tbl th:last-child, table.tbl td:last-child { padding-right: 0; }
+  table.tbl thead th {
+    color: var(--muted); font-weight: 500;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-strong);
+  }
+  table.tbl tbody tr:last-child td { border-bottom: none; }
+  table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
+  table.tbl td.name { color: var(--fg); font-weight: 500; }
+  table.tbl td.dim { color: var(--muted); }
+
+  /* inline bar (for proof leaderboard maxM) */
+  .bar {
+    position: relative; display: inline-block;
+    height: 6px; width: 90px; vertical-align: middle;
+    background: var(--subtle); border-radius: 3px; overflow: hidden;
+    margin-right: 8px;
+  }
+  .bar > span {
+    position: absolute; inset: 0 auto 0 0;
+    background: var(--accent); border-radius: 3px;
+  }
+
+  /* status pills */
+  .sp {
+    display: inline-flex; align-items: center;
+    font-size: 10.5px; font-weight: 600;
+    padding: 1px 7px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .sp.win  { color: var(--good); background: var(--good-dim); }
+  .sp.loss { color: var(--bad);  background: var(--bad-dim); }
+  .sp.null { color: var(--muted); background: var(--subtle); }
+  .sp.good { color: var(--warn); background: var(--warn-dim); }
+  .sp.proved { color: var(--good); background: var(--good-dim); }
+  .sp.dash { color: var(--muted-2); background: var(--subtle); }
+
+  /* recent lists */
+  .list { display: flex; flex-direction: column; }
+  .list .item {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px 12px;
+    align-items: center;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .list .item:last-child { border-bottom: none; }
+  .list .item .flow {
+    font-family: var(--mono); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .list .item .flow .arrow { color: var(--muted-2); padding: 0 4px; }
+  .list .item .meta {
+    color: var(--muted); font-family: var(--mono); font-size: 11px;
+    white-space: nowrap;
+  }
+
+  /* large-number "big stats" per row (swap outcomes) */
+  .bigstats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .bigstats .big {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    background: var(--subtle);
+  }
+  .bigstats .big .k {
+    font-size: 10.5px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .07em;
+  }
+  .bigstats .big .v {
+    font-size: 22px; font-weight: 600;
+    font-variant-numeric: tabular-nums; margin-top: 3px;
+  }
+  .bigstats .big .p {
+    color: var(--muted); font-family: var(--mono);
+    font-size: 11px; margin-top: 2px;
+  }
+  .bigstats .big.win  { border-color: var(--good); }
+  .bigstats .big.win .v { color: var(--good); }
+  .bigstats .big.loss { border-color: var(--bad); }
+  .bigstats .big.loss .v { color: var(--bad); }
+  .bigstats .big.null { border-color: var(--border-strong); }
+
+  /* tunables grid */
+  .tun-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px 20px;
+    font-size: 12.5px;
+  }
+  @media (min-width: 700px) {
+    .tun-grid { grid-template-columns: 1fr 1fr; }
+  }
+  .tun-grid .row {
+    display: flex; justify-content: space-between; gap: 10px;
+    padding: 3px 0; border-bottom: 1px solid var(--border);
+    align-items: baseline;
+  }
+  .tun-grid .row:last-child { border-bottom: none; }
+  .tun-grid .k {
+    color: var(--muted); font-family: var(--mono); font-size: 11.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tun-grid .v {
+    font-family: var(--mono); font-size: 11.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--fg);
+  }
+
+  /* progress bar for divergence cells */
+  .cellbar {
+    display: inline-flex; width: 100%; height: 18px;
+    border-radius: 3px; overflow: hidden; background: var(--subtle);
+    color: #fff; font-size: 10px; font-weight: 600;
+  }
+  .cellbar > span {
+    display: flex; align-items: center; justify-content: center;
+    min-width: 0; overflow: hidden; white-space: nowrap;
+  }
+  .cellbar .w { background: var(--good); }
+  .cellbar .n { background: var(--muted-2); color: #fff; }
+  .cellbar .l { background: var(--bad); }
+
+  /* ---- chart boxes ---- */
+  .chart-box { position: relative; width: 100%; min-width: 0; }
   .chart-box.h-sm { height: 100px; }
   .chart-box.h-md { height: 150px; }
   .chart-box.h-lg { height: 220px; }
-  .chart-box.h-xl { height: 280px; }
-  .chart-box > canvas { position: absolute; inset: 0; width: 100% !important;
-                        height: 100% !important; }
+  .chart-box.h-xl { height: 300px; }
+  .chart-box > canvas {
+    position: absolute; inset: 0; width: 100% !important;
+    height: 100% !important;
+  }
 
   .footer {
     margin-top: 32px; padding-top: 16px;
@@ -1325,12 +1587,16 @@ INDEX_HTML = r"""<!doctype html>
   }
   .footer .sep { color: var(--border-strong); }
 
+  .placeholder {
+    color: var(--muted-2); font-size: 12px; font-style: italic;
+    padding: 6px 0;
+  }
+
   @media (max-width: 640px) {
     .wrap { padding: 16px 12px 48px; }
     .card { padding: 12px; }
     .controls { gap: 10px; }
-    .stat .v { font-size: 14px; }
-    .chart-box.h-xl { height: 220px; }
+    .bigstats { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -1350,7 +1616,8 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </header>
 
-  <section class="card" id="card-now">
+  <!-- ============ now (bucket-scoped) ============ -->
+  <section class="card">
     <h2>
       <span class="dot"></span>now
       <span class="sub" id="nowbucket">-</span>
@@ -1376,40 +1643,98 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </section>
 
-  <section class="card">
-    <h2>
-      <span class="dot"></span>live state
-      <span class="sub">fleet &middot; bpftune-cli.py &middot; 30s</span>
-    </h2>
-    <pre class="live" id="livepre">loading&hellip;</pre>
-  </section>
+  <!-- ============ live state (fleet, from current.json) ============ -->
+  <div class="lv-grid" id="live">
 
-  <section class="card chart-card">
+    <section class="c6">
+      <h3>build / service</h3>
+      <div class="kv" id="lv-build"><div class="placeholder">loading&hellip;</div></div>
+    </section>
+
+    <section class="c6">
+      <h3>system</h3>
+      <div class="kv" id="lv-system"></div>
+    </section>
+
+    <section class="c12">
+      <h3>bpftune-managed tunables <span class="cnt" id="lv-tun-cnt"></span></h3>
+      <div class="tun-grid" id="lv-tunables"></div>
+    </section>
+
+    <section class="c12">
+      <h3>top destination buckets</h3>
+      <div id="lv-buckets"></div>
+    </section>
+
+    <section class="c6">
+      <h3>metric leaderboard</h3>
+      <div id="lv-metric"></div>
+    </section>
+
+    <section class="c6">
+      <h3>proof leaderboard</h3>
+      <div id="lv-proof"></div>
+    </section>
+
+    <section class="c8">
+      <h3>rate progression <span class="cnt">client &middot; Mb/s</span></h3>
+      <div id="lv-rate"></div>
+    </section>
+
+    <section class="c4">
+      <h3>swap outcomes</h3>
+      <div id="lv-swapout"></div>
+    </section>
+
+    <section class="c12">
+      <h3>divergence <span class="cnt">swap target: rate vs metric</span></h3>
+      <div id="lv-div"></div>
+    </section>
+
+    <section class="c6">
+      <h3>recent proofs</h3>
+      <div id="lv-proofs"></div>
+    </section>
+
+    <section class="c6">
+      <h3>cookie churn</h3>
+      <div class="kv" id="lv-churn"></div>
+    </section>
+
+    <section class="c12">
+      <h3>recent swaps</h3>
+      <div id="lv-swaps"></div>
+    </section>
+
+  </div>
+
+  <!-- ============ charts ============ -->
+  <section class="card">
     <h2><span class="dot"></span>rate_ema per algorithm</h2>
     <div class="chart-box h-xl"><canvas id="rate"></canvas></div>
   </section>
 
-  <section class="card chart-card">
+  <section class="card">
     <h2><span class="dot"></span>reference rate</h2>
     <div class="chart-box h-sm"><canvas id="ref"></canvas></div>
   </section>
 
-  <section class="card chart-card">
+  <section class="card">
     <h2><span class="dot"></span>tcp_rmem max (bytes)</h2>
     <div class="chart-box h-sm"><canvas id="rmem"></canvas></div>
   </section>
 
-  <section class="card chart-card">
+  <section class="card">
     <h2><span class="dot"></span>divergence &mdash; win rate with 95% Wilson CI</h2>
     <div class="chart-box h-md"><canvas id="div"></canvas></div>
   </section>
 
-  <section class="card chart-card">
+  <section class="card">
     <h2><span class="dot"></span>swaps per bin</h2>
     <div class="chart-box h-sm"><canvas id="swaps"></canvas></div>
   </section>
 
-  <section class="card chart-card">
+  <section class="card">
     <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
     <div class="chart-box h-lg"><canvas id="fleet"></canvas></div>
   </section>
@@ -1446,17 +1771,14 @@ INDEX_HTML = r"""<!doctype html>
   function status(msg, isErr) {
     if (gen) {
       gen.textContent = msg;
-      gen.style.color = isErr ? "#e15759" : "";
+      gen.style.color = isErr ? "#e5484d" : "";
       if (!isErr) {
         gen.classList.add("flash");
         setTimeout(function () { gen.classList.remove("flash"); }, 300);
       }
     }
   }
-  function err(msg, e) {
-    status(msg, true);
-    if (e) console.error(msg, e);
-  }
+  function err(msg, e) { status(msg, true); if (e) console.error(msg, e); }
 
   function loadScript(url) {
     return new Promise(function (resolve, reject) {
@@ -1485,35 +1807,361 @@ INDEX_HTML = r"""<!doctype html>
     Chart.defaults.plugins.legend.labels.boxWidth = 10;
     Chart.defaults.plugins.legend.labels.boxHeight = 10;
     Chart.defaults.plugins.legend.labels.padding = 8;
-    Chart.defaults.plugins.legend.labels.usePointStyle = false;
     Chart.defaults.plugins.tooltip.backgroundColor = dark ? "#1c2028" : "#fff";
     Chart.defaults.plugins.tooltip.borderColor = dark ? "#2a2f39" : "#e5e7eb";
     Chart.defaults.plugins.tooltip.borderWidth = 1;
-    Chart.defaults.plugins.tooltip.titleColor = dark ? "#e6e8eb" : "#1c1f24";
-    Chart.defaults.plugins.tooltip.bodyColor = dark ? "#e6e8eb" : "#1c1f24";
+    Chart.defaults.plugins.tooltip.titleColor = dark ? "#e6e8eb" : "#131720";
+    Chart.defaults.plugins.tooltip.bodyColor  = dark ? "#e6e8eb" : "#131720";
     Chart.defaults.plugins.tooltip.padding = 8;
     Chart.defaults.plugins.tooltip.cornerRadius = 6;
   }
 
+  /* ============ helpers ============ */
+  function $(id) { return document.getElementById(id); }
+  function setHTML(id, s) { var e = $(id); if (e) e.innerHTML = s; }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
+                '"': "&quot;", "'": "&#39;" })[c];
+    });
+  }
+  function fmtN(v) {
+    return (v == null) ? "-" : Math.round(v).toLocaleString();
+  }
+  function fmtMbps(v) {
+    return (v == null) ? "-" : (v / 125000).toFixed(1);
+  }
+  function fmtRTT(v) {
+    return (v == null) ? "-" : (v / 1000).toFixed(1) + " ms";
+  }
+  function fmtBytes(b) {
+    if (b == null) return "-";
+    if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
+    if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
+    return Math.round(b) + " B";
+  }
+  function relTime(epochSec) {
+    if (!epochSec) return "";
+    var dt = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
+    if (dt < 60) return dt + "s ago";
+    if (dt < 3600) return Math.floor(dt / 60) + "m ago";
+    if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
+    return Math.floor(dt / 86400) + "d ago";
+  }
+
+  /* ============ live state rendering ============ */
+  function renderBuild(b) {
+    var rows = [
+      ["version",   b.version, "hi"],
+      ["service",   b.service, b.service === "active" ? "hi" : ""],
+    ];
+    if (b.uptime_min != null) {
+      var h = Math.floor(b.uptime_min / 60);
+      var m = b.uptime_min % 60;
+      rows.push(["uptime", h + "h " + m + "m"]);
+    }
+    if (b.started_utc) rows.push(["started", b.started_utc + " UTC", "dim"]);
+    if (b.log_path)   rows.push(["log", b.log_path, "dim"]);
+    setHTML("lv-build", rows.map(function (r) {
+      return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
+             '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
+    }).join(""));
+  }
+
+  function renderSystem(s) {
+    var rows = [
+      ["kernel",     s.kernel,     "hi"],
+      ["default cc", s.default_cc, "hi"],
+    ];
+    setHTML("lv-system", rows.map(function (r) {
+      return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
+             '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
+    }).join(""));
+  }
+
+  function renderTunables(t) {
+    var cnt = $("lv-tun-cnt");
+    if (cnt) cnt.textContent = t.length + " keys";
+    if (!t.length) {
+      setHTML("lv-tunables",
+              '<div class="placeholder">(none seen in journal this boot)</div>');
+      return;
+    }
+    setHTML("lv-tunables", t.map(function (r) {
+      return '<div class="row"><span class="k">' + esc(r.name) + '</span>' +
+             '<span class="v">' + esc(r.value) + '</span></div>';
+    }).join(""));
+  }
+
+  function renderBuckets(rows) {
+    if (!rows.length) {
+      setHTML("lv-buckets", '<div class="placeholder">(no buckets)</div>');
+      return;
+    }
+    var html = '<table class="tbl"><thead><tr>' +
+      '<th>dest</th><th>instances</th><th>min rtt</th>' +
+      '<th>ref rate</th><th>best alg</th><th>algs</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      html += '<tr>' +
+        '<td class="mono name">' + esc(r.dest) + '</td>' +
+        '<td class="mono">' + fmtN(r.inst) + '</td>' +
+        '<td class="mono dim">' + (r.rtt_us / 1000).toFixed(1) + ' ms</td>' +
+        '<td class="mono">' + r.ref_mbps.toFixed(1) + '</td>' +
+        '<td>' + esc(r.best_alg) + '</td>' +
+        '<td class="mono dim">' + r.n_alg + '</td>' +
+        '</tr>';
+    });
+    setHTML("lv-buckets", html + '</tbody></table>');
+  }
+
+  function renderMetric(rows) {
+    if (!rows.length) {
+      setHTML("lv-metric", '<div class="placeholder">(no metrics yet)</div>');
+      return;
+    }
+    var html = '<table class="tbl"><thead><tr>' +
+      '<th>alg</th><th>metric</th><th>votes</th><th>alive</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      html += '<tr>' +
+        '<td class="name">' + esc(r.alg) + '</td>' +
+        '<td class="mono">' + r.metric.toFixed(1) + '</td>' +
+        '<td class="mono dim">' + fmtN(r.votes) + '</td>' +
+        '<td class="mono dim">' + fmtN(r.alive) + '</td>' +
+        '</tr>';
+    });
+    setHTML("lv-metric", html + '</tbody></table>');
+  }
+
+  function renderProof(rows) {
+    if (!rows.length) {
+      setHTML("lv-proof", '<div class="placeholder">(none in tail)</div>');
+      return;
+    }
+    var maxv = 1;
+    rows.forEach(function (r) { if (r.max_mbps > maxv) maxv = r.max_mbps; });
+    var html = '<table class="tbl"><thead><tr>' +
+      '<th>alg</th><th>good</th><th>proved</th>' +
+      '<th>max Mb/s</th><th>avg</th><th>n</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var w = Math.max(2, Math.round(90 * r.max_mbps / maxv));
+      html += '<tr>' +
+        '<td class="name">' + esc(r.alg) + '</td>' +
+        '<td class="mono dim">' + r.good + '</td>' +
+        '<td class="mono dim">' + r.proved + '</td>' +
+        '<td class="mono" style="white-space:nowrap">' +
+          '<span class="bar"><span style="width:' + w + 'px"></span></span>' +
+          r.max_mbps.toFixed(1) +
+        '</td>' +
+        '<td class="mono dim">' +
+          (r.avg_mbps == null ? "-" : r.avg_mbps.toFixed(1)) + '</td>' +
+        '<td class="mono dim">' +
+          (r.n == null ? "-" : r.n) + '</td>' +
+        '</tr>';
+    });
+    setHTML("lv-proof", html + '</tbody></table>');
+  }
+
+  function renderRate(rows) {
+    if (!rows.length) {
+      setHTML("lv-rate", '<div class="placeholder">(no midsamp lines)</div>');
+      return;
+    }
+    var html = '<table class="tbl"><thead><tr>' +
+      '<th>thr</th><th>n</th><th>mean</th><th>min</th><th>max</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      html += '<tr>' +
+        '<td class="mono">' + fmtN(r.thr) + '</td>' +
+        '<td class="mono dim">' + r.n + '</td>' +
+        '<td class="mono">'   + r.mean.toFixed(1) + '</td>' +
+        '<td class="mono dim">' + r.min.toFixed(1) + '</td>' +
+        '<td class="mono">'   + r.max.toFixed(1) + '</td>' +
+        '</tr>';
+    });
+    setHTML("lv-rate", html + '</tbody></table>');
+  }
+
+  function renderSwapOutcomes(so) {
+    var html = '<div class="bigstats">' +
+      '<div class="big win"><div class="k">win</div>' +
+        '<div class="v">' + so.win + '</div>' +
+        '<div class="p">' + so.win_pct.toFixed(0) + '%</div></div>' +
+      '<div class="big null"><div class="k">null</div>' +
+        '<div class="v">' + so.null + '</div>' +
+        '<div class="p">' + so.null_pct.toFixed(0) + '%</div></div>' +
+      '<div class="big loss"><div class="k">loss</div>' +
+        '<div class="v">' + so.loss + '</div>' +
+        '<div class="p">' + so.loss_pct.toFixed(0) + '%</div></div>' +
+      '</div>' +
+      '<div class="kv" style="margin-top:10px">' +
+        '<div class="row"><span class="k">measurable</span>' +
+          '<span class="v">' + so.measurable + '</span></div>' +
+        '<div class="row"><span class="k">unmeasurable</span>' +
+          '<span class="v dim">' + so.unmeasurable + '</span></div>' +
+      '</div>';
+    setHTML("lv-swapout", html);
+  }
+
+  function renderDivergence(rows) {
+    if (!rows.length) {
+      setHTML("lv-div", '<div class="placeholder">(no swaps)</div>');
+      return;
+    }
+    var html = '<table class="tbl"><thead><tr>' +
+      '<th>category</th><th style="width:42%"></th>' +
+      '<th>measured</th><th>skipped</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      var w = r.win_pct, n = r.null_pct, l = r.loss_pct;
+      var has = r.measured > 0;
+      var bar = '<div class="cellbar">';
+      if (has) {
+        if (w > 0) bar += '<span class="w" style="width:' + w + '%">' +
+                          (w >= 8 ? w.toFixed(0) + '%' : '') + '</span>';
+        if (n > 0) bar += '<span class="n" style="width:' + n + '%">' +
+                          (n >= 8 ? n.toFixed(0) + '%' : '') + '</span>';
+        if (l > 0) bar += '<span class="l" style="width:' + l + '%">' +
+                          (l >= 8 ? l.toFixed(0) + '%' : '') + '</span>';
+      } else {
+        bar += '<span class="n" style="width:100%">no data</span>';
+      }
+      bar += '</div>';
+      html += '<tr>' +
+        '<td class="name">' + esc(r.category) + '</td>' +
+        '<td>' + bar + '</td>' +
+        '<td class="mono">' + r.measured + '</td>' +
+        '<td class="mono dim">' + r.skipped + '</td>' +
+        '</tr>';
+    });
+    setHTML("lv-div", html + '</tbody></table>');
+  }
+
+  function renderChurn(c) {
+    var rows = [
+      ["cookies swapped", c.cookies, "hi"],
+      ["one-off",         c.one,     ""],
+      ["2-4x",            c.mid,     ""],
+      ["5x+",             c.many,    ""],
+      ["max per cookie",  c.max,     ""],
+    ];
+    setHTML("lv-churn", rows.map(function (r) {
+      return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
+             '<span class="v ' + (r[2] || "") + '">' + r[1] + '</span></div>';
+    }).join(""));
+  }
+
+  function renderRecentProofs(rows) {
+    if (!rows.length) {
+      setHTML("lv-proofs", '<div class="placeholder">(none)</div>');
+      return;
+    }
+    var html = '<div class="list">';
+    rows.slice().reverse().forEach(function (r) {
+      html += '<div class="item">' +
+        '<span class="flow">' + esc(r.alg) + '</span>' +
+        '<span class="meta">' + r.mbps.toFixed(1) + ' Mb/s</span>' +
+        '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
+        '</div>';
+    });
+    setHTML("lv-proofs", html + '</div>');
+  }
+
+  function renderRecentSwaps(rows) {
+    if (!rows.length) {
+      setHTML("lv-swaps", '<div class="placeholder">(none in tail)</div>');
+      return;
+    }
+    var html = '<div class="list">';
+    rows.slice().reverse().forEach(function (r) {
+      var sp = r.outcome ?
+        '<span class="sp ' + r.outcome + '">' + r.outcome + '</span>' :
+        '<span class="sp dash">&hellip;</span>';
+      html += '<div class="item">' +
+        '<span class="flow">' + esc(r.from_alg) +
+          '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
+        '<span class="meta">d' + r.d + ' &middot; mt=' + esc(r.mt_alg || "-") +
+          ' rb=' + esc(r.rb_alg || "-") + '</span>' +
+        sp +
+        '</div>';
+    });
+    setHTML("lv-swaps", html + '</div>');
+  }
+
+  function renderLiveState(doc) {
+    renderBuild(doc.build || {});
+    renderSystem(doc.system || {});
+    renderTunables(doc.tunables || []);
+    renderBuckets(doc.buckets || []);
+    renderMetric(doc.metric || []);
+    renderProof(doc.proof || []);
+    renderRate(doc.rate || []);
+    renderSwapOutcomes(doc.swap_outcomes || {});
+    renderDivergence(doc.divergence || []);
+    renderChurn(doc.churn || {});
+    renderRecentProofs(doc.recent_proofs || []);
+    renderRecentSwaps(doc.recent_swaps || []);
+  }
+
   function liveRefresh() {
-    fetch("current.txt", {cache: "no-store"}).then(function (r) {
-      if (!r.ok) throw new Error("current.txt: " + r.status);
-      return r.text();
-    }).then(function (t) {
-      var pre = document.getElementById("livepre");
-      if (pre) pre.textContent = t;
+    fetch("current.json", {cache: "no-store"}).then(function (r) {
+      if (!r.ok) throw new Error("current.json: " + r.status);
+      return r.json();
+    }).then(function (doc) {
+      renderLiveState(doc);
     }).catch(function (e) {
-      var pre = document.getElementById("livepre");
-      if (pre) pre.textContent = "(current.txt unavailable: " + e.message + ")";
+      setHTML("lv-build",
+              '<div class="placeholder">current.json unavailable: ' +
+              esc(e.message) + '</div>');
     });
   }
 
+  /* ============ "now" panel (bucket-scoped) ============ */
+  function renderNow() {
+    var doc = state.bucketDoc;
+    if (!doc) return;
+    var bid = $("bucket").value;
+    var sub = $("nowbucket"); if (sub) sub.textContent = bid;
+    var L = doc.last || {};
+    var setT = function (id, s) { var e = $(id); if (e) e.textContent = s; };
+    setT("n_inst", fmtN(L.instances));
+    setT("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
+    setT("n_rtt",  fmtRTT(L.min_rtt));
+    setT("n_best", L.best_alg || "-");
+    setT("n_rmem", fmtBytes(L.tcp_rmem_max));
+    setT("nowupdated",
+         L.collected_ts ? "updated " + relTime(L.collected_ts) : "");
+
+    var algs = state.meta.algs;
+    var rates = [];
+    for (var i = 0; i < algs.length; i++) {
+      var a = algs[i];
+      var v = (L.re && L.re[a] != null) ? L.re[a] : null;
+      if (v != null && v > 0) rates.push({a: a, v: v});
+    }
+    rates.sort(function (x, y) { return y.v - x.v; });
+
+    if (rates.length) {
+      setT("n_rbest", rates[0].a + "  " + fmtMbps(rates[0].v) + " Mb/s");
+      var line = rates.slice(0, 8).map(function (x) {
+        return x.a + " " + fmtMbps(x.v);
+      }).join("  ·  ");
+      setT("n_rates", line);
+    } else {
+      setT("n_rbest", "-");
+      setT("n_rates", "(no live rates for this bucket)");
+    }
+  }
+
+  /* ============ charts ============ */
   var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
   var charts = {};
 
   function mk(id, cfg) {
     if (charts[id]) { charts[id].destroy(); }
-    var cv = document.getElementById(id);
+    var cv = $(id);
     if (!cv) return;
     charts[id] = new Chart(cv, cfg);
   }
@@ -1570,73 +2218,9 @@ INDEX_HTML = r"""<!doctype html>
     return Object.assign(base, extra || {});
   }
 
-  function fmtMbps(v) {
-    return (v === null || v === undefined) ? "-" : (v / 125000).toFixed(1);
-  }
-  function fmtN(v) {
-    return (v === null || v === undefined)
-      ? "-" : Math.round(v).toLocaleString();
-  }
-  function fmtRTT(v) {
-    return (v === null || v === undefined) ? "-" : (v / 1000).toFixed(1) + " ms";
-  }
-  function fmtBytes(b) {
-    if (b === null || b === undefined) return "-";
-    if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
-    if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
-    return Math.round(b) + " B";
-  }
-  function relTime(epochSec) {
-    if (!epochSec) return "";
-    var dt = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
-    if (dt < 60) return dt + "s ago";
-    if (dt < 3600) return Math.floor(dt / 60) + "m ago";
-    if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
-    return Math.floor(dt / 86400) + "d ago";
-  }
-  function setText(id, s) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = s;
-  }
-
-  function renderNow() {
-    var doc = state.bucketDoc;
-    if (!doc) return;
-    var bid = document.getElementById("bucket").value;
-    setText("nowbucket", bid);
-    var L = doc.last || {};
-    setText("n_inst", fmtN(L.instances));
-    setText("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
-    setText("n_rtt",  fmtRTT(L.min_rtt));
-    setText("n_best", L.best_alg || "-");
-    setText("n_rmem", fmtBytes(L.tcp_rmem_max));
-    setText("nowupdated", L.collected_ts ? "updated " + relTime(L.collected_ts) : "");
-
-    var algs = state.meta.algs;
-    var rates = [];
-    for (var i = 0; i < algs.length; i++) {
-      var a = algs[i];
-      var v = (L.re && L.re[a] != null) ? L.re[a] : null;
-      if (v != null && v > 0) rates.push({a: a, v: v});
-    }
-    rates.sort(function (x, y) { return y.v - x.v; });
-
-    if (rates.length) {
-      setText("n_rbest",
-              rates[0].a + "  " + fmtMbps(rates[0].v) + " Mb/s");
-      var line = rates.slice(0, 8).map(function (x) {
-        return x.a + " " + fmtMbps(x.v);
-      }).join("  ·  ");
-      setText("n_rates", line);
-    } else {
-      setText("n_rbest", "-");
-      setText("n_rates", "(no live rates for this bucket)");
-    }
-  }
-
   function renderBucket() {
     var doc = state.bucketDoc, algs = state.meta.algs;
-    var rng = document.getElementById("range").value;
+    var rng = $("range").value;
     var s = doc.series[rng];
     var ts = s.ts;
 
@@ -1648,14 +2232,9 @@ INDEX_HTML = r"""<!doctype html>
       options: timeOpts({
         plugins: {
           legend: {
-            display: true,
-            position: "bottom",
-            align: "start",
-            labels: {
-              boxWidth: 8, boxHeight: 8,
-              padding: 8,
-              font: {size: 10.5},
-            },
+            display: true, position: "bottom", align: "start",
+            labels: {boxWidth: 8, boxHeight: 8, padding: 8,
+                     font: {size: 10.5}},
           },
         },
       }),
@@ -1664,22 +2243,18 @@ INDEX_HTML = r"""<!doctype html>
     mk("ref", {
       type: "line",
       data: {datasets: lineData(["ref_rate"], s, ts, ["#e15759"])},
-      options: timeOpts({
-        plugins: {legend: {display: false}},
-      }),
+      options: timeOpts(),
     });
 
     mk("rmem", {
       type: "line",
       data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#4e79a7"])},
-      options: timeOpts({
-        plugins: {legend: {display: false}},
-      }),
+      options: timeOpts(),
     });
   }
 
   function renderSwaps() {
-    var doc = state.swaps, rng = document.getElementById("range").value;
+    var doc = state.swaps, rng = $("range").value;
     var d = doc[rng];
     if (!d) return;
     var ts = d.ts;
@@ -1703,11 +2278,11 @@ INDEX_HTML = r"""<!doctype html>
       type: "line",
       data: {datasets: [
         mkLine("d1_rate", "diverges=1", "#59a14f"),
-        mkLine("d1_lo",   "d1 95% lo",  "#59a14f", [4, 3]),
-        mkLine("d1_hi",   "d1 95% hi",  "#59a14f", [4, 3]),
+        mkLine("d1_lo", "d1 95% lo",  "#59a14f", [4, 3]),
+        mkLine("d1_hi", "d1 95% hi",  "#59a14f", [4, 3]),
         mkLine("d0_rate", "diverges=0", "#e15759"),
-        mkLine("d0_lo",   "d0 95% lo",  "#e15759", [4, 3]),
-        mkLine("d0_hi",   "d0 95% hi",  "#e15759", [4, 3]),
+        mkLine("d0_lo", "d0 95% lo",  "#e15759", [4, 3]),
+        mkLine("d0_hi", "d0 95% hi",  "#e15759", [4, 3]),
       ]},
       options: timeOpts({
         scales: {
@@ -1715,13 +2290,16 @@ INDEX_HTML = r"""<!doctype html>
               ticks: {maxRotation: 0, autoSkipPadding: 24}},
           y: {min: 0, max: 1, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 5, padding: 6,
-                      callback: function (v) { return Math.round(v * 100) + "%"; }}},
+                      callback: function (v) {
+                        return Math.round(v * 100) + "%";
+                      }}},
         },
         plugins: {
           legend: {
             display: true, position: "bottom", align: "start",
             labels: {boxWidth: 8, boxHeight: 8, padding: 8,
-                     font: {size: 10.5}, filter: function (item) {
+                     font: {size: 10.5},
+                     filter: function (item) {
                        return !/_lo$|_hi$/.test(item.text);
                      }},
           },
@@ -1748,7 +2326,6 @@ INDEX_HTML = r"""<!doctype html>
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },
-        plugins: {legend: {display: false}},
       }),
     });
   }
@@ -1779,7 +2356,6 @@ INDEX_HTML = r"""<!doctype html>
           y: {grid: {display: false}, ticks: {font: {size: 10},
               autoSkip: false, padding: 4}},
         },
-        plugins: {legend: {display: false}},
       },
     });
   }
@@ -1815,21 +2391,21 @@ INDEX_HTML = r"""<!doctype html>
         state.swaps = results[1];
         state.fleet = results[2];
 
-        var bs = document.getElementById("bucket");
+        var bs = $("bucket");
         var html = "";
         for (var k = 0; k < state.meta.buckets.length; k++) {
           var b = state.meta.buckets[k];
-          html += "<option value=\"" + b.id + "\">" + b.id +
-                  " (" + b.points + ")</option>";
+          html += '<option value="' + b.id + '">' + b.id +
+                  ' (' + b.points + ')</option>';
         }
         bs.innerHTML = html;
         bs.value = state.meta.default_bucket;
 
-        var rs = document.getElementById("range");
+        var rs = $("range");
         var rhtml = "";
         for (var m = 0; m < state.meta.ranges.length; m++) {
-          rhtml += "<option value=\"" + state.meta.ranges[m] + "\">" +
-                   state.meta.ranges[m] + "</option>";
+          rhtml += '<option value="' + state.meta.ranges[m] + '">' +
+                   state.meta.ranges[m] + '</option>';
         }
         rs.innerHTML = rhtml;
         rs.value = "24h";
@@ -1837,7 +2413,7 @@ INDEX_HTML = r"""<!doctype html>
         var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                         .replace("T", " ").slice(0, 19) + "Z";
         status("updated " + relTime(state.meta.generated_ts));
-        setText("footgen", "rendered " + stamp);
+        if (footgen) footgen.textContent = "rendered " + stamp;
 
         bs.onchange = function () { loadBucket(bs.value); };
         rs.onchange = function () { renderBucket(); renderSwaps(); };
