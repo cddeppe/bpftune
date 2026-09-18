@@ -130,6 +130,10 @@ struct tcp_conn_metric {
 	__u16 sockets_alive;
 	__u16 sockets_good;
 	__u16 sockets_proved;
+
+	/* 0.4.45: rate EMA in 100KB/s units; swap target reads it. */
+
+	__u16 rate_ema;
 };
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
@@ -154,6 +158,12 @@ struct remote_host {
     __u64 best_v;
     __u64 second_i;
     __u64 second_v;
+
+    /* 0.4.45: rate-EMA leader for swap target; 0 = unset. */
+
+    __u64 rate_best_i;
+
+    __u64 rate_best_v;
     /* Reference-refresh streak state.  A single far-better-than-
      * reference reading is treated as an outlier; REF_HIGH_STREAK_N
      * in a row promote the reference to the best of the streak.
@@ -184,6 +194,10 @@ struct remote_host {
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
+/* 0.4.45: rate EMA decay shift; divide-by-16, ~16-vote half life. */
+#define RATE_EMA_SHIFT          4
+/* 0.4.45: rate EMA units.  u16 max ~= 6.5 GB/s. */
+#define RATE_EMA_BYTES_PER_UNIT 100000ULL
 /* 0.4.40: utilization gate on the bucket EMA update.  A vote
  * where the socket is not filling its cwnd-permitted window
  * measures the rate the app supplied, not the rate the

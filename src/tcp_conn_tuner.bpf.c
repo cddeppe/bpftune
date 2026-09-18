@@ -19,6 +19,9 @@
 
 #include "tcp_conn_tuner.h"
 
+_Static_assert(sizeof(struct remote_host) <= 1024,
+               "remote_host too large for BPF memset");
+
 #define TCP_THIN_LINEAR_TIMEOUTS	16
 
 __u64 tcp_cong_choices[NUM_TCP_CONG_ALGS];
@@ -523,6 +526,10 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         __u64 best_alt = ~((__u64)0);
         __u8 best_alt_i = 0;
 
+        __u8 mt_alt_i = 0;
+
+        __u8 swap_tgt = 0;
+
         if (remote_host->best_v != 0) {
             if (s != remote_host->best_i) {
                 /* Socket on non-leader: target the leader. */
@@ -546,6 +553,13 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
+        mt_alt_i = best_alt_i;
+        swap_tgt = best_alt_i;
+        if (remote_host->rate_best_v != 0) {
+            __u8 rt = (__u8)(remote_host->rate_best_i & (NUM_TCP_CONN_METRICS - 1));
+            if (rt != s && remote_host->metrics[rt].rate_ema > 0)
+                swap_tgt = rt;
+        }
 
         if (statep && !is_close) {
             /* Flat-socket gate (0.4.37).  Data: over 340 swaps flat
@@ -680,17 +694,17 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
                 __u8 from_i = s;
-                __u8 to_i = best_alt_i;
-                if (!set_cong(ops, remote_host, best_alt_i)) {
+                __u8 to_i = swap_tgt;
+                if (!set_cong(ops, remote_host, swap_tgt)) {
                     statep->swap_count++;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
                     statep->bad_checkpoints = 0;
-                    bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1",
+                    bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1 mt=%u rb=%u",
                                bpf_get_socket_cookie(ops), from_i, to_i,
-                               bc_fire, ac);
+                               bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt);
                 }
             } else if (margin_met && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
@@ -718,7 +732,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                             __u64 bc_fire = statep->bad_checkpoints;
                             __u64 ac = remote_host->metrics[s].metric_count;
                             __u8 from_i = s;
-                            __u8 to_i = best_alt_i;
+                            __u8 to_i = swap_tgt;
                             if (is_flat || is_moving) {
                                 /* Flat: at own plateau, algorithm is
                                  * not the limiter.  Moving: socket is
@@ -730,16 +744,16 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                  * must re-demonstrate rather than
                                  * firing the moment the motion stops. */
                                 statep->bad_checkpoints = 0;
-                            } else if (!set_cong(ops, remote_host, best_alt_i)) {
+                            } else if (!set_cong(ops, remote_host, swap_tgt)) {
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
                                 statep->last_metric = 0;
                                 statep->hist_1 = 0;
                                 statep->hist_2 = 0;
                                 statep->bad_checkpoints = 0;
-                                bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0",
+                                bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0 mt=%u rb=%u",
                                            bpf_get_socket_cookie(ops), from_i, to_i,
-                                           bc_fire, ac);
+                                           bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt);
                             }
                         }
                     }
@@ -772,7 +786,16 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                 do_update = true;
         }
         if (do_update) {
-            __u64 __div = m->metric_count + 1;
+            /* 0.4.45 rate EMA */
+            {
+                __u64 r100k = rate_delivered / RATE_EMA_BYTES_PER_UNIT;
+                if (r100k > 65535) r100k = 65535;
+                if (m->rate_ema == 0)
+                    m->rate_ema = (__u16)r100k;
+                else
+                    m->rate_ema = (__u16)(((__u32)m->rate_ema * 15 + (__u32)r100k) >> RATE_EMA_SHIFT);
+            }
+        __u64 __div = m->metric_count + 1;
             if (__div > METRIC_AVG_CAP)
                 __div = METRIC_AVG_CAP;
             if (metric > m->metric_value)
