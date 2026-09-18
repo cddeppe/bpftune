@@ -182,14 +182,41 @@ def find_log():
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
-def tail(path):
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2); size = f.tell()
-            f.seek(max(0, size - LOG_TAIL_BYTES))
-            return f.read().decode("utf-8", errors="replace")
-    except Exception:
+def tail_recent(budget=LOG_TAIL_BYTES):
+    """Concat the tail of the newest bpftune logs.
+
+    A bpftune upgrade or restart can create a fresh bpftune-met-*.log
+    (e.g. bpftune-met-live.log). The newest file is nearly empty right
+    after the switch, which made the live-state panel look reset.
+    Reading across the newest few files keeps the picture continuous
+    through a rotation, and self-limits once the new file has grown
+    past the budget.
+
+    The collector does not use this: it only appends new swaps, so it
+    tracks whichever file is current.
+    """
+    paths = sorted(Path("/var/log").glob("bpftune-met-*.log"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if not paths:
         return ""
+    chunks = []
+    remaining = budget
+    for p in paths:
+        if remaining <= 0:
+            break
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        take = min(size, remaining)
+        try:
+            with open(p, "rb") as f:
+                f.seek(size - take)
+                chunks.append(f.read().decode("utf-8", errors="replace"))
+        except OSError:
+            continue
+        remaining -= take
+    return "".join(reversed(chunks))
 
 
 def read_map():
@@ -324,9 +351,6 @@ def data_tunables():
         items.append({"key": short, "value": v})
 
     def gkey(short):
-        # ipv4.tcp_rmem       -> ipv4.tcp
-        # ipv4.tcp_wmem       -> ipv4.tcp
-        # core.netdev_budget  -> core.netdev
         parts = short.split(".", 2)
         if len(parts) < 2:
             return short
@@ -693,7 +717,7 @@ def data_recent_proofs(text, n=10):
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
-    text    = tail(logpath) if logpath else ""
+    text    = tail_recent()
     return {
         "generated_ts":   int(time.time()),
         "hostname":       os.uname().nodename,
@@ -1693,7 +1717,6 @@ INDEX_HTML = r"""<!doctype html>
   .bigstats .big.loss .v { color: var(--bad); }
   .bigstats .big.null { border-color: var(--border-strong); }
 
-  /* grouped tunables cells: related sysctls live together */
   .tun-grid {
     display: grid;
     grid-template-columns: 1fr;
