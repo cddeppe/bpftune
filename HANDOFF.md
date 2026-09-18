@@ -9,21 +9,138 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `f11fb63` (0.4.42)
-- Latest release: 0.4.42
+- Latest commit: `3e621b1` (0.4.45)
+- Latest release: 0.4.45
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.42** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.42** | runs git push origin (0.4.40 .deb staged on /mnt/backup) |
-| Target | amd64 | **0.4.42** | mostly idle |
-| Builder | aarch64 | **0.4.42** | builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.45** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
+| Builder | amd64 | **0.4.45** | runs git push origin |
+| Target | amd64 | **0.4.45** | mostly idle |
+| Builder | aarch64 | **0.4.45** | builds arm64 |
 | shared mount: /mnt/backup/ holds .debs |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-18 (morning) — 0.4.45 swap target uses rate EMA
+
+Replaces the composite-metric swap TARGET with a per-algorithm rate
+exponential moving average.  Trigger conditions unchanged — still
+`margin_met` / `desperate` versus the metric leaderboard.  Only the
+destination of a mid-socket swap changed.
+
+Why: on the home bucket the composite metric's top-5 span is ~3
+points, and the metric drifts by more than that within an hour.
+The metric leaderboard is not stable enough to pick a swap target
+from.  The rate signal has a 3.7x spread (105-390 Mbps on the same
+bucket) and held its ranking overnight.  Metric stays as the
+initial-connect prior; rate takes over as the swap target.
+
+Implementation:
+- `tcp_conn_metric`: `rate_ema` (__u16, 100 KB/s units), updated on
+  each non-app-limited vote (same `do_update` gate as the metric
+  EMA), 1/16 decay per update (~16-vote half life)
+- `remote_host`: `rate_best_i`, `rate_best_v`, computed by the
+  userspace reanchor (pass 3), same `MIN_LEADER_TRUST` gate
+- BPF swap path reads `rate_best_i` when set, falls back to metric
+  `best_i` otherwise
+- swap printk gains `mt=<metric-would-have-picked>` and
+  `rb=<rate-picked>`, both as algorithm names
+- `midsamp` printk gains `alg=N` so userspace can credit rate
+  samples directly without joining through a stale met line
+- `_Static_assert(sizeof(struct remote_host) <= 1024, ...)` —
+  0.4.44 lesson
+- STATE_VERSION 14 -> 15
+
+Deployed 2026-09-18 07:31 UTC on all four hosts.  No divergence
+between `mt` and `rb` in the first 30 minutes: both leaderboards
+currently agree on the top algorithm (scalable on 82.43.215.97).
+Divergence will only show when metric-leader and rate-leader pick
+different #1s on the same bucket.  Log carries both fields, so a
+swap-outcome-by-mt-vs-rb analysis is possible once the tail fills.
+
+Open from this session, NOT fixed:
+- swap win rate 20% (client-facing, n=216), null 71%, loss 8%.
+  Consistent with the pre-0.4.45 rate — target selection was not
+  the only problem.
+- cookie churn: `5x+=11 max=28` in the current tail.  One socket
+  swapped 28 times.  Unchanged from 0.4.43.
+- 40% of swaps have no post-swap vote within 300 s.  An earlier
+  dashboard window (60 s) under-measured this; the true rate is
+  20/71/8, not the 33/60/7 the shorter window showed.  Analysis
+  fix, no code fix.
+- origin gate leak: post-0.4.42, origin-facing swaps still fire
+  occasionally.  Sample origin socket 1166 segs / snd_cwnd=14 /
+  pkts_out=0; data_segs ratio had not differentiated at eval time.
+  Root cause still not identified.  Aggregate rate is now 3/219 in
+  the log tail, down from ~80% pre-0.4.41 — the gate mostly works,
+  residual leak is real.
+
+## SESSION 2026-09-17 (night) — 0.4.43 histogram reference + 0.4.44 proof counters
+
+Two releases shipped after the evening STOP section.  Both are
+cleanup around the swap engine's input signal, not changes to swap
+logic.  The swap engine itself is unchanged from 0.4.42.
+
+### 0.4.43 — histogram-based delivered-rate reference
+
+Replaced the bucket-scoped `rate_high_streak` state machine with a
+per-vote log2-binned histogram of delivered rate.  32 bins, KB/s
+units, population decay halves all bins when total > 100000, p99
+recomputed by the userspace reanchor every 30 s.  Fixes the
+population-scaling failure: on a bucket with thousands of instances
+no socket could produce 5 consecutive high readings without another
+socket resetting the shared counter, so the reference slid
+monotonically downward (heavy host: 63.7M -> 45.4M -> 4.5M over
+nine hours).  With the ref collapsed, rate_term was 0 for every
+socket and metric_value ~= rtt_term, so all downstream ranking was
+RTT-only and every swap decision was a consequence of a broken
+input.
+
+STATE_VERSION 12 -> 13.
+
+Verified post-deploy on the heavy host: reference held at 67.1M
+across three reads over ~10 min.  Client-facing rate progression
+monotonic (1000/5000/10000/25000/100000: 7.5M/16.8M/18.9M/24.4M/
+33.0M).  Under the collapsed reference the 100K mean had been 3.0M.
+
+### 0.4.44 — per-alg proof counters
+
+Added per-(bucket, alg) counters tracking how many sockets ever
+delivered at 4K-class (>=30 Mbps, "good") or 8K-class (>=100 Mbps,
+"proved") rates while on that algorithm.  Purpose: separate the
+tuner's composite-metric ranking from an independent "actually
+demonstrated speed" ranking so the two can be compared.  They do
+not agree — on 09-17 evening the metric leaderboard ranked htcp #1
+on the home bucket while the proof leaderboard ranked vegas #1.
+That disagreement is the whole justification for 0.4.45.
+
+Implementation:
+- `tcp_conn_metric`: `sockets_alive`, `sockets_good`,
+  `sockets_proved` (__u16 each)
+- `conn_state`: `touched_bitmap`, `good_bitmap`, `proved_bitmap`,
+  `cleaned` — one bit per algorithm per socket
+- `set_cong()` now takes `remote_host`, bumps `sockets_alive` on
+  first contact with an algorithm
+- counters incremented live; decremented once at socket close for
+  every algorithm the socket ever touched (bitmap-driven, idempotent)
+- STATE_VERSION 13 -> 14
+
+Struct size nearly hit the 1024-byte BPF memset ceiling in
+`get_remote_host()`.  First build failed on
+`__builtin_memset(...) is not supported` at ~1176 bytes.  Shrinking
+the three counters from __u64 to __u16 brought it back under.  0.4.45
+adds a `_Static_assert(sizeof(struct remote_host) <= 1024, ...)` so
+the next growth fails loudly at compile time, not with a cryptic
+memset error.
+
+Proof events live on 09-18 morning: 12-15 algorithms represented on
+the home bucket.  vegas leads on event count and max tier-2 rate,
+but the log-joined `avg_Mbps` shows yeah and reno at 3x vegas on
+sustained rate.  That's the opening of 0.4.45.
 
 ## SESSION 2026-09-17 (morning) - origin-side swaps cannot help
 
@@ -121,7 +238,7 @@ bucket and homogenize; lp's filtered vote count is too low to
 move the EMA.  Re-check after a full day of 0.4.40 traffic.  If
 spread stays below 40%, treat 0.4.40 with suspicion.
 
-## SESSION 2026-09-17 (evening) - STOP: swap engine needs a fresh look
+## SESSION 2026-09-17 (evening) - 0.4.40-0.4.42: swap engine needs a fresh look
 
 Read this first. Three releases (0.4.40, 0.4.41, 0.4.42) in one
 session.  Each was defensible on its own reasoning; the pattern is
@@ -1671,7 +1788,22 @@ Fetched on target hosts by SHA-pinned URL (branch name has a slash, so
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-effectsize.py -o /usr/local/bin/swap-effectsize.py
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-trend.py -o /usr/local/bin/swap-trend.py
     sudo curl -sSLf https://raw.githubusercontent.com/cddeppe/bpftune/<SHA>/tools/swap-outcomes-bydir.py -o /usr/local/bin/swap-outcomes-bydir.py
-    sudo chmod +x /usr/local/bin/bucket-leaders.py /usr/local/bin/swap-effectsize.py /usr/local/bin/swap-trend.py
+    sudo chmod +x /usr/local/bin/bucket-leaders.py /usr/local/bin/swap-effectsize.py /usr/local/bin/swap-trend.py /usr/local/bin/swap-outcomes-bydir.py /usr/local/bin/bucket-spread.py
+
+## Known operational issues (cumulative)
+
+### bpftune stays active but cgroup sock_ops silently detach
+
+Observed 2026-09-17 morning on the heavy host.  `systemctl is-active
+bpftune` returned `active`, no journal entry, no error.  Effect:
+bpftune stopped affecting any socket for ~23 minutes before
+discovery.  Recovery: `systemctl restart bpftune`.
+
+Diagnosis: `sudo bpftool cgroup tree 2>/dev/null | grep -c -i
+conn_tuner` returns 0 when detached, 2 when healthy.
+
+Not root-caused.  Watch for this on any session where a host looks
+healthy but the map counts stop moving.
 
 ## Open questions
 1. Reference drift churn — home bucket `max_rate` moves 7M→47M across reads,
