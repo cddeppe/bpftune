@@ -291,8 +291,18 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             srate_raw = (__u64)tps->rate_delivered;
             smss = (__u64)tps->mss_cache;
             srate = sinter ? (srate_raw * smss * 1000000ULL) / sinter : 0;
-            bpf_printk("midsamp cookie=%llu port=%u rport=%u thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
-                       bpf_get_socket_cookie(ops), ops->local_port, bpf_ntohl(ops->remote_port), next, segs, smin, savg, srate);
+            {
+                /* 0.4.46: include the current alg so userspace can
+                 * credit this srate sample directly, without joining
+                 * through a possibly-stale recent met line.  statep
+                 * is not yet populated on this code path, so look it
+                 * up here. */
+                struct conn_state *sp_al = bpf_sk_storage_get(&sk_storage_map, sk, 0, 0);
+                int alg_idx = sp_al ? (int)(sp_al->state & (NUM_TCP_CONG_ALGS - 1)) : -1;
+                bpf_printk("midsamp cookie=%llu port=%u rport=%u alg=%d thr=%llu segs=%llu smin=%llu savg=%llu srate=%llu",
+                           bpf_get_socket_cookie(ops), ops->local_port, bpf_ntohl(ops->remote_port),
+                           alg_idx, next, segs, smin, savg, srate);
+            }
             switch (next) {
             case 1000:   *nextp = 5000;    break;
             case 5000:   *nextp = 10000;   break;

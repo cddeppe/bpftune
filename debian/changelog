@@ -1,16 +1,19 @@
+bpftune (0.4.46) UNRELEASED; urgency=medium
+
+  * midsamp: add alg= field so userspace can credit srate samples to
+    the correct algorithm without joining through a met line
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Fri, 18 Sep 2026 16:14:30 +0200
+
 bpftune (0.4.45) UNRELEASED; urgency=medium
 
   * swap target: use per-alg rate EMA instead of composite metric_value;
     metric still drives the trigger, rate drives the destination
   * swap log: add mt= (metric-would-have-picked) and rb= (rate-picked)
     for counterfactual comparison of outcomes
-  * midsamp: add alg= so userspace can credit rate samples without a
-    stale met-line join
   * STATE_VERSION 14 -> 15
-  * swap target uses per-alg rate EMA instead of composite metric; swap
-    log gains mt=/rb= for counterfactual comparison
 
- -- root <root@vps-3959.up-network.ch>  Fri, 18 Sep 2026 09:18:18 +0200
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Fri, 18 Sep 2026 09:18:18 +0200
 
 bpftune (0.4.43) unstable; urgency=medium
 
