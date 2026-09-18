@@ -5,7 +5,7 @@ bpftune dashboard installer (schema v2). Idempotent - safe to re-run.
     sudo python3 tools/bpftune-dashboard-install.py
 
 Writes three scripts next to itself:
-    bpftune-cli.py        text dashboard (from /tmp/bpftune-dashboard.py)
+    bpftune-cli.py        text dashboard
     bpftune-collector.py  CSV writer, runs the CLI, snapshots it
     bpftune-render.py     Chart.js static renderer
 
@@ -141,7 +141,7 @@ def run_and_verify():
             die("expected output missing: " + p)
 
 
-# =================== CLI (verbatim text dashboard) ===================
+# =================== CLI ===================
 
 CLI_SRC = r'''#!/usr/bin/env python3
 """bpftune live dashboard. Two columns, rates in Mbps."""
@@ -222,16 +222,22 @@ def col_build(logpath):
     v = sh("dpkg-query -W -f='${Version}' bpftune").strip() or "?"
     a = sh("systemctl is-active bpftune").strip() or "?"
     ts = sh("systemctl show bpftune -p ActiveEnterTimestamp --value").strip()
-    up = ts
-    if ts:
+    up = "(unknown)"
+    hhmm = ""
+    m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", ts)
+    if m:
         try:
-            t = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            up = f"{int((datetime.now(timezone.utc)-t).total_seconds()//60)}m"
+            t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            minutes = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
+            h, mm = divmod(minutes, 60)
+            up = f"{h}h {mm}m"
+            hhmm = m.group(1)[11:19]
         except Exception:
             pass
     return [
         f"version   {v}   service  {a}",
-        f"uptime    {up}   ({ts[11:19]} UTC)" if ts else "",
+        f"uptime    {up}   (started {hhmm} UTC)" if hhmm else f"uptime    {up}",
         f"log       {str(logpath) if logpath else '(not found)'}",
     ]
 
@@ -651,7 +657,8 @@ def main():
     a = p.parse_args()
     try:
         while True:
-            sys.stdout.write("\x1b[2J\x1b[H")
+            if not a.once:
+                sys.stdout.write("\x1b[2J\x1b[H")
             render()
             if a.once:
                 break
@@ -674,7 +681,7 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 Buckets from `bpftool --json map dump name remote_host_map`.
 Swaps from tail /var/log/bpftune-met-*.log.
 Snapshot: runs tools/bpftune-cli.py --once and stores stdout to
-          /var/lib/bpftune/history/current.txt
+          /var/lib/bpftune/history/current.txt (ANSI stripped)
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
 """
@@ -695,6 +702,8 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
 MIN_INST = 2
+
+ANSI_RX = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
@@ -871,9 +880,10 @@ def run_cli_snapshot():
     try:
         r = subprocess.run([sys.executable, str(CLI), "--once"],
                            capture_output=True, text=True, timeout=90)
+        clean = ANSI_RX.sub("", r.stdout)
         tmp = str(CURRENT_TXT) + ".tmp"
         with open(tmp, "w") as f:
-            f.write(r.stdout)
+            f.write(clean)
         os.replace(tmp, str(CURRENT_TXT))
         return True
     except Exception as e:
