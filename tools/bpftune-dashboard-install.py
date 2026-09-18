@@ -155,6 +155,12 @@ CONGS = ["cubic","bbr","htcp","dctcp","scalable","vegas","veno","westwood",
 LOG_TAIL_BYTES = 2_000_000
 BPS_TO_MBPS = 1_000_000.0 / 8.0
 
+RULE = "\u2500"      # ─
+DRULE = "\u2550"     # ═
+ARROW = "\u25b8"     # ▸
+VBAR = "\u2502"      # │
+MIDDOT = "\u00b7"    # ·
+
 
 def sh(cmd, timeout=15):
     try:
@@ -236,9 +242,9 @@ def col_build(logpath):
         except Exception:
             pass
     return [
-        f"version   {v}   service  {a}",
-        f"uptime    {up}   (started {hhmm} UTC)" if hhmm else f"uptime    {up}",
-        f"log       {str(logpath) if logpath else '(not found)'}",
+        f"version    {v}   service  {a}",
+        f"uptime     {up}   (started {hhmm} UTC)" if hhmm else f"uptime     {up}",
+        f"log        {str(logpath) if logpath else '(not found)'}",
     ]
 
 
@@ -246,17 +252,17 @@ def col_system():
     k = sh_noshell(["uname", "-r"]).strip()
     cc = sh_noshell(["sysctl", "-n", "net.ipv4.tcp_congestion_control"]).strip()
     return [
-        f"kernel      {k}",
-        f"default CC  {cc}",
+        f"kernel       {k}",
+        f"default CC   {cc}",
     ]
 
 
 def section_tunables(width):
     j = sh_noshell(["journalctl", "-u", "bpftune", "--no-pager", "-q"])
     names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
-    out = [" BPFTUNE-MANAGED TUNABLES", " " + "-"*width]
+    out = [f"{ARROW} BPFTUNE-MANAGED TUNABLES", RULE*width]
     if not names:
-        out.append(" (none seen in journal for this boot)")
+        out.append("  (none seen in journal for this boot)")
         return out
     ncol = 34
     for n in names:
@@ -267,18 +273,18 @@ def section_tunables(width):
         if "allowed_congestion_control" in n:
             v = f"({len(v.split())} algs)"
         if len(v) <= width - ncol - 3:
-            out.append(f" {short:<{ncol}} {v}")
+            out.append(f"  {short:<{ncol}} {v}")
         else:
-            out.append(f" {short:<{ncol}}")
+            out.append(f"  {short:<{ncol}}")
             for i in range(0, len(v), width - ncol - 1):
-                out.append(f" {'':<{ncol}} {v[i:i+width-ncol-1]}")
+                out.append(f"  {'':<{ncol}} {v[i:i+width-ncol-1]}")
     return out
 
 
 def col_buckets(hosts, n=5):
     if not hosts:
-        return ["(map unreadable)"]
-    lines = [f" {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}{'best_i':>10}{'n_alg':>7}"]
+        return ["  (map unreadable)"]
+    lines = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}{'best_i':>10}{'n_alg':>7}"]
     shown = 0
     for inst, addr, v in hosts:
         if addr in ("0.0.0.1", "?"):
@@ -301,15 +307,15 @@ def col_buckets(hosts, n=5):
         except Exception:
             rs = "0.0"
         bin_ = CONGS[int(bi)] if int(bi) < 16 else str(bi)
-        lines.append(f" {addr:<16}{inst:>6}{rtt:>9}{rs:>10}{bin_:>10}{used:>7}")
+        lines.append(f"  {addr:<16}{inst:>6}{rtt:>9}{rs:>10}{bin_:>10}{used:>7}")
     if shown == 0:
-        lines.append(" (only placeholder buckets)")
+        lines.append("  (only placeholder buckets)")
     return lines
 
 
 def col_metric(hosts):
     if not hosts:
-        return ["(map unreadable)"]
+        return ["  (map unreadable)"]
     metrics = hosts[0][2].get("metrics") or []
     rows = []
     for i, m in enumerate(metrics):
@@ -328,11 +334,11 @@ def col_metric(hosts):
         name = CONGS[i] if i < 16 else f"alg{i}"
         rows.append((name, val, mc, a))
     if not rows:
-        return ["(no metrics yet)"]
-    out = [f" {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"]
+        return ["  (no metrics yet)"]
+    out = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"]
     for name, val, mc, a in sorted(rows, key=lambda r: r[1] if r[1] else 1<<62):
         vm = f"{val/1e6:.1f}" if val else "0"
-        out.append(f" {name:<10}{vm:>9}{mc:>7}{a:>7}")
+        out.append(f"  {name:<10}{vm:>9}{mc:>7}{a:>7}")
     return out
 
 
@@ -370,8 +376,8 @@ def col_proof(text):
                     avg.setdefault(a, [0, 0])
                     avg[a][0] += r; avg[a][1] += 1
     if not per_alg:
-        return ["(none in tail)"]
-    out = [f" {'alg':<9}{'good':>5}{'prvd':>5}{'maxM':>8}{'avgM':>8}{'n':>5}"]
+        return ["  (none in tail)"]
+    out = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'maxM':>8}{'avgM':>8}{'n':>5}"]
     for a in sorted(per_alg.keys(), key=lambda x: -per_alg[x]["max"]):
         d = per_alg[a]
         name = CONGS[a] if a < 16 else f"alg{a}"
@@ -379,9 +385,9 @@ def col_proof(text):
         if a in avg and avg[a][1]:
             av = avg[a][0] / avg[a][1] / BPS_TO_MBPS
             an = avg[a][1]
-            out.append(f" {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{av:>8.1f}{an:>5}")
+            out.append(f"  {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{av:>8.1f}{an:>5}")
         else:
-            out.append(f" {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{'-':>8}{'-':>5}")
+            out.append(f"  {name:<9}{d['t1']:>5}{d['t2']:>5}{mx:>8.1f}{'-':>8}{'-':>5}")
     return out
 
 
@@ -399,11 +405,11 @@ def col_rate(text):
             continue
         out_map[int(mt.group(1))].append(int(ms.group(1)))
     if not out_map:
-        return ["(no midsamp lines)"]
-    out = [f" {'thr':>7}{'n':>5}{'mean':>9}{'min':>9}{'max':>9}"]
+        return ["  (no midsamp lines)"]
+    out = [f"  {'thr':>7}{'n':>5}{'mean':>9}{'min':>9}{'max':>9}"]
     for thr in sorted(out_map.keys()):
         vs = out_map[thr]
-        out.append(f" {thr:>7}{len(vs):>5}"
+        out.append(f"  {thr:>7}{len(vs):>5}"
                    f"{sum(vs)/len(vs)/BPS_TO_MBPS:>9.1f}"
                    f"{min(vs)/BPS_TO_MBPS:>9.1f}"
                    f"{max(vs)/BPS_TO_MBPS:>9.1f}")
@@ -455,14 +461,14 @@ def col_swap_outcomes(text):
     def pct(a):
         return f"{int(100.0*a/total)}%" if total else "n/a"
     out = [
-        f" measurable   {total:>4}  (unmeasurable {skip})",
-        f"   win        {win:>4}  {pct(win)}",
-        f"   null       {null:>4}  {pct(null)}",
-        f"   loss       {loss:>4}  {pct(loss)}",
+        f"  measurable    {total:>4}  (unmeasurable {skip})",
+        f"  win           {win:>4}  {pct(win)}",
+        f"  null          {null:>4}  {pct(null)}",
+        f"  loss          {loss:>4}  {pct(loss)}",
     ]
     if reasons:
         for k, v in sorted(reasons.items(), key=lambda x: -x[1]):
-            out.append(f"   no-post-type  {k:<14} {v}")
+            out.append(f"  no-post-type   {k:<14} {v}")
     return out
 
 
@@ -472,17 +478,17 @@ def col_churn(text):
     for s in sw:
         counts[s[1]] += 1
     if not counts:
-        return ["(no swaps in tail)"]
+        return ["  (no swaps in tail)"]
     one  = sum(1 for v in counts.values() if v == 1)
     mid  = sum(1 for v in counts.values() if 2 <= v <= 4)
     many = sum(1 for v in counts.values() if v >= 5)
     mx   = max(counts.values()) if counts else 0
     return [
-        f" cookies swapped:    {len(counts)}",
-        f"   1x               {one}",
-        f"   2-4x             {mid}",
-        f"   5x+              {many}",
-        f"   max per cookie   {mx}",
+        f"  cookies swapped     {len(counts)}",
+        f"    1x                {one}",
+        f"    2-4x              {mid}",
+        f"    5x+               {many}",
+        f"    max per cookie    {mx}",
     ]
 
 
@@ -519,14 +525,14 @@ def col_recent_swaps(text, n=6):
         else:                   status = " null"
         fn = CONGS[fa] if fa < 16 else str(fa)
         tn = CONGS[ta] if ta < 16 else str(ta)
-        rows.append(f" {fn:>9}->{tn:<9} d{d} {status} mt={mtn:<8} rb={rbn:<8}")
-    return rows[-n:] if rows else ["(none in tail)"]
+        rows.append(f"  {fn:>9} -> {tn:<9} d{d} {status} mt={mtn:<8} rb={rbn:<8}")
+    return rows[-n:] if rows else ["  (none in tail)"]
 
 
 def col_recent_proofs(text, n=6):
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
     if not lines:
-        return ["(none)"]
+        return ["  (none)"]
     out = []
     for l in lines:
         m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
@@ -534,29 +540,29 @@ def col_recent_proofs(text, n=6):
             continue
         a = int(m.group(2)); tn = CONGS[a] if a < 16 else f"alg{a}"
         tier = "proved" if m.group(4) == "2" else "good  "
-        out.append(f" {tn:<9} {int(m.group(3))/BPS_TO_MBPS:>7.1f} Mbps   {tier}")
+        out.append(f"  {tn:<9} {int(m.group(3))/BPS_TO_MBPS:>7.1f} Mbps   {tier}")
     return out
 
 
 CW = 58
-GAP = "  |  "
+GAP = "  " + VBAR + "  "
 FULL = CW*2 + len(GAP)
 
 
 def twocol(title_l, lines_l, title_r, lines_r):
-    out = [f" {title_l:<{CW}}{GAP}{title_r}",
-           f" {'-'*CW}{GAP}{'-'*CW}"]
+    out = [f"{ARROW} {title_l:<{CW-2}}{GAP}{ARROW} {title_r}",
+           f"{RULE*CW}{GAP}{RULE*CW}"]
     rows = max(len(lines_l), len(lines_r))
     for i in range(rows):
         l = lines_l[i] if i < len(lines_l) else ""
         r = lines_r[i] if i < len(lines_r) else ""
-        out.append(f" {l[:CW]:<{CW}}{GAP}{r[:CW]}")
+        out.append(f"{l[:CW]:<{CW}}{GAP}{r[:CW]}")
     return out
 
 
 def full(title, lines):
-    out = [f" {title}", f" {'-'*FULL}"]
-    out += [f" {l[:FULL]}" for l in lines]
+    out = [f"{ARROW} {title}", RULE*FULL]
+    out += [l[:FULL] for l in lines]
     return out
 
 
@@ -600,15 +606,14 @@ def col_divergence(text):
         if   r <= 0.9: g[1] += 1
         elif r >= 1.1: g[4] += 1
         else:          g[2] += 1
-    out = [" category             meas    win   null   loss  skipped",
-           " " + "-"*62]
+    out = [f"  {'category':<20}{'meas':>5}{'win':>7}{'null':>7}{'loss':>7}{'skipped':>9}",
+           RULE*62]
     for k in ("rate==metric", "rate!=metric", "pre-0.4.45"):
         n_all, w, nul, _u, l = groups[k]
         meas = w + nul + l
         def pct(x):
             return f"{int(100*x/meas)}%" if meas else "-"
-        out.append(f" {k:<20} {meas:>5} {pct(w):>6} {pct(nul):>6} "
-                   f"{pct(l):>6} {n_all-meas:>8}")
+        out.append(f"  {k:<20}{meas:>5}{pct(w):>7}{pct(nul):>7}{pct(l):>7}{n_all-meas:>9}")
     return out
 
 
@@ -616,15 +621,16 @@ def render():
     logpath = find_log()
     hosts   = read_map()
     text    = tail(logpath) if logpath else ""
-    print("=" * (FULL + 2))
-    print(f" bpftune dashboard   {os.uname().nodename}   "
-          f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
-    print("=" * (FULL + 2))
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(DRULE * (FULL + 2))
+    print(f"  bpftune  {MIDDOT}  {os.uname().nodename}  {MIDDOT}  {ts}")
+    print(DRULE * (FULL + 2))
+    print()
     for row in twocol("BUILD / SERVICE", col_build(logpath),
                       "SYSTEM FACTS",    col_system()):
         print(row)
     print()
-    for row in full("BPFTUNE-MANAGED TUNABLES", section_tunables(FULL - 1)[2:]):
+    for row in full("BPFTUNE-MANAGED TUNABLES", section_tunables(FULL)[2:]):
         print(row)
     print()
     for row in full("TOP DESTINATION BUCKETS", col_buckets(hosts)):
@@ -1297,12 +1303,19 @@ INDEX_HTML = r"""<!doctype html>
     color: var(--fg);
     overflow-x: auto;
     white-space: pre;
-    max-height: none;
   }
 
-  .chart-card canvas { display: block; }
-  .chart-card.rate canvas { min-height: 260px; }
-  .chart-card.small canvas { min-height: 140px; }
+  .chart-box {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+  .chart-box.h-sm { height: 100px; }
+  .chart-box.h-md { height: 150px; }
+  .chart-box.h-lg { height: 220px; }
+  .chart-box.h-xl { height: 280px; }
+  .chart-box > canvas { position: absolute; inset: 0; width: 100% !important;
+                        height: 100% !important; }
 
   .footer {
     margin-top: 32px; padding-top: 16px;
@@ -1317,6 +1330,7 @@ INDEX_HTML = r"""<!doctype html>
     .card { padding: 12px; }
     .controls { gap: 10px; }
     .stat .v { font-size: 14px; }
+    .chart-box.h-xl { height: 220px; }
   }
 </style>
 </head>
@@ -1370,34 +1384,34 @@ INDEX_HTML = r"""<!doctype html>
     <pre class="live" id="livepre">loading&hellip;</pre>
   </section>
 
-  <section class="card chart-card rate">
+  <section class="card chart-card">
     <h2><span class="dot"></span>rate_ema per algorithm</h2>
-    <canvas id="rate"></canvas>
+    <div class="chart-box h-xl"><canvas id="rate"></canvas></div>
   </section>
 
-  <section class="card chart-card small">
+  <section class="card chart-card">
     <h2><span class="dot"></span>reference rate</h2>
-    <canvas id="ref"></canvas>
+    <div class="chart-box h-sm"><canvas id="ref"></canvas></div>
   </section>
 
-  <section class="card chart-card small">
+  <section class="card chart-card">
     <h2><span class="dot"></span>tcp_rmem max (bytes)</h2>
-    <canvas id="rmem"></canvas>
+    <div class="chart-box h-sm"><canvas id="rmem"></canvas></div>
   </section>
 
   <section class="card chart-card">
     <h2><span class="dot"></span>divergence &mdash; win rate with 95% Wilson CI</h2>
-    <canvas id="div"></canvas>
+    <div class="chart-box h-md"><canvas id="div"></canvas></div>
   </section>
 
-  <section class="card chart-card small">
+  <section class="card chart-card">
     <h2><span class="dot"></span>swaps per bin</h2>
-    <canvas id="swaps"></canvas>
+    <div class="chart-box h-sm"><canvas id="swaps"></canvas></div>
   </section>
 
   <section class="card chart-card">
     <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
-    <canvas id="fleet"></canvas>
+    <div class="chart-box h-lg"><canvas id="fleet"></canvas></div>
   </section>
 
   <div class="footer">
@@ -1499,7 +1513,9 @@ INDEX_HTML = r"""<!doctype html>
 
   function mk(id, cfg) {
     if (charts[id]) { charts[id].destroy(); }
-    charts[id] = new Chart(document.getElementById(id), cfg);
+    var cv = document.getElementById(id);
+    if (!cv) return;
+    charts[id] = new Chart(cv, cfg);
   }
 
   function j(url) {
@@ -1532,17 +1548,18 @@ INDEX_HTML = r"""<!doctype html>
       maintainAspectRatio: false,
       animation: false,
       interaction: {mode: "nearest", intersect: false},
+      layout: {padding: {top: 4, right: 8, bottom: 0, left: 0}},
       scales: {
         x: {
           type: "time",
           time: {tooltipFormat: "MMM d, HH:mm"},
           grid: {display: false},
-          ticks: {maxRotation: 0, autoSkipPadding: 24},
+          ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4},
         },
         y: {
           beginAtZero: false,
           grid: {drawTicks: false},
-          ticks: {maxTicksLimit: 6, padding: 6},
+          ticks: {maxTicksLimit: 5, padding: 6},
         },
       },
       plugins: {
@@ -1632,7 +1649,7 @@ INDEX_HTML = r"""<!doctype html>
         plugins: {
           legend: {
             display: true,
-            position: "right",
+            position: "bottom",
             align: "start",
             labels: {
               boxWidth: 8, boxHeight: 8,
@@ -1695,14 +1712,14 @@ INDEX_HTML = r"""<!doctype html>
       options: timeOpts({
         scales: {
           x: {type: "time", grid: {display: false},
-              ticks: {maxRotation: 0}},
+              ticks: {maxRotation: 0, autoSkipPadding: 24}},
           y: {min: 0, max: 1, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 5,
+              ticks: {maxTicksLimit: 5, padding: 6,
                       callback: function (v) { return Math.round(v * 100) + "%"; }}},
         },
         plugins: {
           legend: {
-            display: true, position: "right", align: "start",
+            display: true, position: "bottom", align: "start",
             labels: {boxWidth: 8, boxHeight: 8, padding: 8,
                      font: {size: 10.5}, filter: function (item) {
                        return !/_lo$|_hi$/.test(item.text);
@@ -1727,9 +1744,9 @@ INDEX_HTML = r"""<!doctype html>
       },
       options: timeOpts({
         scales: {
-          x: {type: "time", grid: {display: false}},
+          x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0}},
           y: {beginAtZero: true, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 5}},
+              ticks: {maxTicksLimit: 4, padding: 6}},
         },
         plugins: {legend: {display: false}},
       }),
@@ -1748,18 +1765,19 @@ INDEX_HTML = r"""<!doctype html>
           backgroundColor: "#59a14f",
           borderColor: "#59a14f",
           borderRadius: 2,
-          maxBarThickness: 12,
+          maxBarThickness: 10,
         }],
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         animation: false, indexAxis: "y",
+        layout: {padding: {top: 4, right: 12, bottom: 0, left: 0}},
         scales: {
           x: {min: 0, max: 100, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 6,
+              ticks: {maxTicksLimit: 6, padding: 6,
                       callback: function (v) { return v + "%"; }}},
-          y: {grid: {display: false}, ticks: {font: {size: 10.5},
-              autoSkip: false}},
+          y: {grid: {display: false}, ticks: {font: {size: 10},
+              autoSkip: false, padding: 4}},
         },
         plugins: {legend: {display: false}},
       },
