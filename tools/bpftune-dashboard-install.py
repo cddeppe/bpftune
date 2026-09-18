@@ -337,7 +337,7 @@ def data_metric(hosts):
 def _proof_events(text):
     """Parse proof cookie=... and midsamp lines.
 
-    Two entirely independent streams are reported per algorithm:
+    Two independent streams are reported per algorithm:
 
       * proof events - formal `proof cookie=... alg=N rate=Y tier=T`
         lines. `proven_max` is the highest rate at which an algorithm
@@ -362,7 +362,6 @@ def _proof_events(text):
     samples = defaultdict(lambda: {"sum": 0, "n": 0, "samp_max": 0})
     met_by_cookie = defaultdict(list)
 
-    # pass 1 - proof events, and met index (cookie -> [(ts, alg), ...])
     for line in lines:
         if "proof cookie=" in line:
             m = re.search(r"alg=(\d+) rate=(\d+) tier=(\d+)", line)
@@ -386,7 +385,6 @@ def _proof_events(text):
             a  = int(mm.group(3))
             met_by_cookie[c].append((ts, a))
 
-    # pass 2 - midsamp samples, attributed via nearest met within window
     for line in lines:
         ms = re.search(
             r"(\d+\.\d+): .*midsamp cookie=(\d+) .* srate=(\d+)",
@@ -1461,6 +1459,7 @@ INDEX_HTML = r"""<!doctype html>
     font-size: 11px; color: var(--muted-2);
     line-height: 1.4;
   }
+  .lv-grid .note b { color: var(--muted); }
 
   .kv { display: flex; flex-direction: column; gap: 5px; }
   .kv .row {
@@ -1495,6 +1494,39 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
+
+  /* ---- proof leaderboard: inline bar cells ---- */
+  .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
+  .proof-tbl td:nth-child(4),
+  .proof-tbl td:nth-child(5),
+  .proof-tbl td:nth-child(6) { width: 30%; min-width: 90px; }
+  .bar-cell {
+    position: relative;
+    display: block;
+    height: 20px;
+    background: var(--subtle);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    position: absolute; inset: 0 auto 0 0;
+    border-radius: 3px;
+  }
+  .bar-cell.v-proven  .bar-fill { background: #59a14f; }
+  .bar-cell.v-avg     .bar-fill { background: #4e79a7; }
+  .bar-cell.v-sampled .bar-fill { background: #e15759; }
+  .bar-num {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 6px;
+    font-family: var(--mono); font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+    text-shadow:
+      0 0 2px var(--card-bg), 0 0 2px var(--card-bg),
+      0 0 2px var(--card-bg), 0 0 2px var(--card-bg);
+    pointer-events: none;
+  }
 
   .sp {
     display: inline-flex; align-items: center;
@@ -1698,14 +1730,20 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c6">
-      <h3>proof leaderboard</h3>
+      <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
-        two independent streams: <b>proven</b> from formal proof events,
-        <b>sampled</b> from midsamp current-rate samples attributed via
-        nearest <code>met</code> for the same cookie (60s window).
-        They measure different populations; sampled avg may exceed
-        proven max. Within the sampled stream, avg &le; max.
+        bar colors:
+        <b style="color:#4e79a7">sampled avg</b>,
+        <b style="color:#59a14f">proven max</b>,
+        <b style="color:#e15759">sampled max</b>.
+        All three scale to the same peak, so bar length is directly
+        comparable. <b>proven max</b> comes from formal proof events;
+        <b>sampled avg / max</b> from midsamp current-rate samples on
+        individual connections, attributed via nearest
+        <code>met</code> for the same cookie (60s window). Different
+        populations &mdash; sampled avg may exceed proven max on the
+        same row, by design.
       </div>
     </section>
 
@@ -1885,10 +1923,6 @@ INDEX_HTML = r"""<!doctype html>
     if (dt < 86400) return Math.floor(dt / 3600) + "h ago";
     return Math.floor(dt / 86400) + "d ago";
   }
-  function num(v, d) {
-    if (v == null) return '<span class="dim">-</span>';
-    return v.toFixed(d == null ? 1 : d);
-  }
 
   function renderBuild(b) {
     var rows = [
@@ -1979,19 +2013,39 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-proof", '<div class="placeholder">(none in tail)</div>');
       return;
     }
-    var html = '<table class="tbl"><thead><tr>' +
+    /* global peak so all bars compare on one scale */
+    var peak = 1;
+    rows.forEach(function (r) {
+      [r.proven_max, r.sampled_avg, r.sampled_max].forEach(function (v) {
+        if (v != null && v > peak) peak = v;
+      });
+    });
+    function bar(v, cls) {
+      if (v == null) {
+        return '<div class="bar-cell ' + cls + '">' +
+               '<div class="bar-num">-</div></div>';
+      }
+      var w = Math.max(2, Math.round(100 * v / peak));
+      return '<div class="bar-cell ' + cls + '">' +
+             '<div class="bar-fill" style="width:' + w + '%"></div>' +
+             '<div class="bar-num">' + v.toFixed(1) + '</div></div>';
+    }
+    var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
-      '<th>good</th><th>proved</th><th>proven max</th>' +
-      '<th>sampled avg</th><th>sampled max</th><th>n</th>' +
+      '<th>good</th><th>proved</th>' +
+      '<th style="text-align:left">proven max</th>' +
+      '<th style="text-align:left">sampled avg</th>' +
+      '<th style="text-align:left">sampled max</th>' +
+      '<th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
       html += '<tr>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
         '<td class="mono dim">' + r.good + '</td>' +
         '<td class="mono dim">' + r.proved + '</td>' +
-        '<td class="mono">' + num(r.proven_max) + '</td>' +
-        '<td class="mono">' + num(r.sampled_avg) + '</td>' +
-        '<td class="mono dim">' + num(r.sampled_max) + '</td>' +
+        '<td>' + bar(r.proven_max,  'v-proven' ) + '</td>' +
+        '<td>' + bar(r.sampled_avg, 'v-avg'    ) + '</td>' +
+        '<td>' + bar(r.sampled_max, 'v-sampled') + '</td>' +
         '<td class="mono dim">' +
           (r.samples == null ? "-" : r.samples) + '</td>' +
         '</tr>';
