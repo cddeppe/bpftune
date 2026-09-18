@@ -35,6 +35,9 @@ COLLECTOR = os.path.join(SELF_DIR, "bpftune-collector.py")
 RENDERER  = os.path.join(SELF_DIR, "bpftune-render.py")
 CLI       = os.path.join(SELF_DIR, "bpftune-cli.py")
 
+SWAP_COLS_REQUIRED = ["socket_rate_before", "dest", "dest_raw",
+                      "f_ema", "t_ema"]
+
 
 def _c(code, s):
     return "\033[" + code + "m" + s + "\033[0m"
@@ -62,7 +65,9 @@ def write_file(path, text, mode=0o644):
     os.replace(tmp, path)
 
 
-def _append_swaps_column(path, new_col):
+def _append_swaps_columns(path, new_cols):
+    """Append one or more columns to swaps.csv in place, empty for
+    existing rows. Preserves history."""
     with open(path, newline="") as f:
         rd = csv.reader(f)
         try:
@@ -70,15 +75,16 @@ def _append_swaps_column(path, new_col):
         except StopIteration:
             return
         rows = list(rd)
-    new_header = header + [new_col]
+    new_header = header + list(new_cols)
     tmp = path + ".tmp"
     with open(tmp, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(new_header)
+        pad = [""] * len(new_cols)
         for r in rows:
             while len(r) < len(header):
                 r.append("")
-            w.writerow(r + [""])
+            w.writerow(r + pad)
     os.replace(tmp, path)
 
 
@@ -95,16 +101,16 @@ def migrate():
         with open(SWAPS, newline="") as f:
             first = f.readline().strip()
         cols = first.split(",") if first else []
-        if "socket_rate_before" in cols:
-            say("  swaps.csv already schema v3 (has socket_rate_before)")
-        elif "collected_ts" in cols:
-            _append_swaps_column(SWAPS, "socket_rate_before")
-            say("  appended socket_rate_before column to swaps.csv")
-        elif "ts_epoch" in cols:
+        if "ts_epoch" in cols and "collected_ts" not in cols:
             os.rename(SWAPS, SWAPS_V1)
             say("  migrated swaps.csv -> swaps.v1.csv (schema v1)")
-        else:
-            warn("  swaps.csv has unrecognized header: " + first)
+            cols = []
+        missing = [c for c in SWAP_COLS_REQUIRED if c not in cols]
+        if missing and os.path.exists(SWAPS) and cols:
+            _append_swaps_columns(SWAPS, missing)
+            say("  appended swaps.csv columns: " + ", ".join(missing))
+        elif not missing:
+            say("  swaps.csv already has all required columns")
     else:
         say("  no swaps.csv yet (will be created)")
 
@@ -555,12 +561,16 @@ def data_rate(text):
 
 
 def _swaps_and_mets(text):
+    """CLI-side swap parser. The collector has its own copy with dest
+    parsing; here we only need what feeds the live-state panel, and the
+    dest= tail is harmlessly ignored by the regex's optional end."""
     sw = []
     met = defaultdict(list)
     rx_sw = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"swap cookie=(\d+) from=(\d+) to=(\d+) "
                        r"bc=(\d+) ac=(\d+) d=(\d+)"
-                       r"(?: mt=(\d+) rb=(\d+))?")
+                       r"(?: mt=(\d+) rb=(\d+))?"
+                       r"(?: dest=(\d+))?")
     rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
     for line in text.splitlines():
@@ -569,7 +579,7 @@ def _swaps_and_mets(text):
             sw.append((float(m.group(1)), int(m.group(2)),
                        int(m.group(3)), int(m.group(4)),
                        int(m.group(5)), int(m.group(6)), m.group(7),
-                       m.group(8), m.group(9), line))
+                       m.group(8), m.group(9), m.group(10), line))
             continue
         v = rx_mt.search(line)
         if v:
@@ -596,7 +606,8 @@ def _outcome(met, c, ts):
 def data_swap_outcomes(text):
     sw, met = _swaps_and_mets(text)
     win = null = loss = skip = 0
-    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+    for row in sw:
+        ts, c = row[0], row[1]
         o = _outcome(met, c, ts)
         if o is None:
             skip += 1
@@ -626,7 +637,9 @@ def data_divergence(text):
         "rate!=metric": {"total": 0, "win": 0, "null": 0, "loss": 0},
         "pre-0.4.45":   {"total": 0, "win": 0, "null": 0, "loss": 0},
     }
-    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+    for row in sw:
+        ts, c = row[0], row[1]
+        mt_i, rb_i = row[7], row[8]
         if mt_i is None or rb_i is None: key = "pre-0.4.45"
         elif mt_i == rb_i:               key = "rate==metric"
         else:                            key = "rate!=metric"
@@ -658,8 +671,8 @@ def data_divergence(text):
 def data_churn(text):
     sw, _ = _swaps_and_mets(text)
     counts = defaultdict(int)
-    for s in sw:
-        counts[s[1]] += 1
+    for row in sw:
+        counts[row[1]] += 1
     if not counts:
         return {"cookies": 0, "one": 0, "mid": 0, "many": 0, "max": 0}
     one  = sum(1 for v in counts.values() if v == 1)
@@ -672,7 +685,9 @@ def data_churn(text):
 def data_recent_swaps(text, n=10):
     sw, met = _swaps_and_mets(text)
     rows = []
-    for (ts, c, fa, ta, bc, ac, d, mt_i, rb_i, line) in sw:
+    for row in sw:
+        ts, c, fa, ta = row[0], row[1], row[2], row[3]
+        d, mt_i, rb_i = row[6], row[7], row[8]
         o = _outcome(met, c, ts)
         mt_alg = (CONGS[int(mt_i) & 15]
                   if mt_i and mt_i.isdigit() else None)
@@ -927,18 +942,34 @@ Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file byte
 offsets in .swaps_pos.json).
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
-Swap parsing reads a warmup window (WARMUP_BYTES before the current
-offset) to rebuild the cookie -> met index. Without it, a swap that
-fires in this tick's slice but whose last met line was in the previous
-tick's slice would have pre=None and socket_rate_before would be empty.
-Only the newly-read region emits swap rows; the warmup is used purely
-for the pre-lookup.
+`socket_rate_before` is looked up from a rolling cookie -> met cache
+persisted in the state file (bounded to 10 min of activity), so a swap
+whose pre-met line is in a previous tick's chunk - or a rotated file -
+still resolves.
+
+`dest` on swap lines is a u32 (network byte order) - decode via
+struct.pack(">I", n) -> inet_ntoa. IPv4-only; IPv6 sockets carry
+whatever the kernel put there, so any dest that doesn't decode to a
+plausible public IPv4 (first octet 0 or 127) is left empty. dest==1
+(0.0.0.1, the placeholder bucket with phantom instances) is also
+filtered.
+
+`dest_raw` preserves the raw integer even when `dest` is empty, so
+non-joinable rows can still be counted (empty `dest_raw` means the
+log line had no dest= at all - i.e. pre-0.4.47).
+
+`f_ema` / `t_ema` are the bucket's rate_ema for the from/to algorithm
+at the moment the collector reads the map. That's on the next tick -
+up to 60 s after the swap fired. HOW STALE THAT IS DEPENDS ON THE
+BUCKET: on the home bucket with 1600+ instances the EMA moves with
+every vote (dozens per minute) and is effectively live; on a
+60-instance bucket it may not have moved at all in a 60 s window, so
+the value seen could be hours old. Treat as approximate on
+low-instance buckets, near-current on high-instance buckets.
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
-`socket_rate_before` is the socket's own met `val=` at the moment just
-before the swap - raw bytes/sec, same units as the log.
 """
-import csv, json, os, re, subprocess, sys, time
+import csv, json, os, re, socket, struct, subprocess, sys, time
 from pathlib import Path
 
 HIST = Path("/var/lib/bpftune/history")
@@ -956,14 +987,13 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "hybla", "nv"]
 MIN_INST = 2
 
-# Read this much of the log *before* our saved offset to rebuild the
-# cookie -> met index for pre-swap rate lookups. Bounded per tick.
-WARMUP_BYTES = 500_000
+MET_CACHE_TTL_S = 600.0
 
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
     r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
-    r"(?: mt=(\d+) rb=(\d+))?")
+    r"(?: mt=(\d+) rb=(\d+))?"
+    r"(?: dest=(\d+))?")
 MET_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
     r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
@@ -988,12 +1018,28 @@ def tcp_rmem():
 
 
 def append_csv(path, row):
-    exists = path.exists() and path.stat().st_size > 0
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(row.keys()))
-        if not exists:
+    """Schema-order-safe append.
+
+    If the file exists, emit the row in the file's existing column
+    order (extra keys dropped, missing keys blank). If it doesn't
+    exist, write the header from the row's key order and then the row.
+
+    This makes schema evolution safe: adding a key to a row dict can't
+    misalign rows already in the file, because the writer always
+    conforms to the file's actual header."""
+    if path.exists() and path.stat().st_size > 0:
+        with open(path, newline="") as f:
+            try:
+                header = next(csv.reader(f))
+            except StopIteration:
+                header = list(row.keys())
+        with open(path, "a", newline="") as f:
+            csv.writer(f).writerow([row.get(c, "") for c in header])
+    else:
+        with open(path, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(row.keys()))
             w.writeheader()
-        w.writerow(row)
+            w.writerow(row)
 
 
 def find_log():
@@ -1006,17 +1052,17 @@ def list_logs():
                   key=lambda p: p.stat().st_mtime)
 
 
-def collect_buckets(ts_epoch):
+def read_map_data():
+    """Fetch remote_host_map and return {ip: value_dict, ...}."""
     out = sh(["bpftool", "--json", "map", "dump", "name",
               "remote_host_map"])
     try:
         data = json.loads(out)
     except Exception:
-        return 0
+        return None
     if not isinstance(data, list):
-        return 0
-    rm_min, rm_def, rm_max = tcp_rmem()
-    n = 0
+        return None
+    result = {}
     for e in data:
         if not isinstance(e, dict):
             continue
@@ -1025,16 +1071,26 @@ def collect_buckets(ts_epoch):
         k = fmt.get("key") or {}
         if not isinstance(v, dict):
             continue
+        b = k.get("in6_u", {}).get("u6_addr8")
+        if not isinstance(b, list) or len(b) != 16:
+            continue
+        addr = ".".join(str(x) for x in b[12:16])
+        result[addr] = v
+    return result
+
+
+def collect_buckets(ts_epoch, map_data):
+    if not map_data:
+        return 0
+    rm_min, rm_def, rm_max = tcp_rmem()
+    n = 0
+    for addr, v in map_data.items():
         try:
             inst = int(v.get("instances", 0))
         except Exception:
             continue
         if inst < MIN_INST:
             continue
-        b = k.get("in6_u", {}).get("u6_addr8")
-        if not isinstance(b, list) or len(b) != 16:
-            continue
-        addr = ".".join(str(x) for x in b[12:16])
         if addr == "0.0.0.1" or addr.startswith(("127.", "169.254.", "0.")):
             continue
         try:
@@ -1066,15 +1122,25 @@ def collect_buckets(ts_epoch):
 
 
 def _read_state():
+    """State file layout:
+        {"file_offsets": {name: byte, ...},
+         "met_cache":    {cookie: [boot_ts, met_val], ...}}
+    Legacy flat layout is migrated in place with an empty met cache."""
     if not SWAPS_POS.exists():
         return None
     try:
         d = json.loads(SWAPS_POS.read_text())
-        if isinstance(d, dict):
-            return d
     except Exception:
-        pass
-    return None
+        return None
+    if not isinstance(d, dict):
+        return None
+    if "file_offsets" in d and "met_cache" in d:
+        return d
+    return {
+        "file_offsets": {k: v for k, v in d.items()
+                         if isinstance(v, (int, float))},
+        "met_cache":    {},
+    }
 
 
 def _write_state(state):
@@ -1084,24 +1150,72 @@ def _write_state(state):
     os.replace(tmp, str(SWAPS_POS))
 
 
-def _parse_swaps_from(warmup_text, new_text, now_epoch):
-    """Build a cookie -> [(ts, val)] index from warmup_text and
-    new_text; emit swap rows only from new_text.
+def _lookup_ema(map_data, dest_ip, alg_index):
+    """Return rate_ema for alg_index on the bucket at dest_ip, or ""."""
+    if not dest_ip or not map_data or alg_index is None:
+        return ""
+    v = map_data.get(dest_ip)
+    if not v:
+        return ""
+    try:
+        ai = int(alg_index)
+    except (TypeError, ValueError):
+        return ""
+    if ai < 0 or ai >= 16:
+        return ""
+    metrics = v.get("metrics") or []
+    if ai >= len(metrics):
+        return ""
+    m = metrics[ai]
+    if not isinstance(m, dict):
+        return ""
+    ema = m.get("rate_ema")
+    if ema is None:
+        return ""
+    try:
+        return int(ema)
+    except (TypeError, ValueError):
+        return ""
 
-    The warmup supplies pre-swap rates for swaps whose last met line
-    was logged before our current read offset. Without it, every
-    socket_rate_before value came out empty."""
-    met = {}
-    for text in (warmup_text, new_text):
-        for line in text.splitlines():
-            m = MET_RX.search(line)
-            if m:
-                c = int(m.group(2))
-                met.setdefault(c, []).append(
-                    (float(m.group(1)), int(m.group(6))))
+
+def _decode_dest(n):
+    """Decode u32 (network byte order) to dotted IPv4, or "" if unusable.
+
+    - dest == 1 is the 0.0.0.1 placeholder bucket; skip it.
+    - first octet 0 means 0.x.x.x, which is what the log shows for
+      IPv6 sockets (ops->remote_ip4 holds garbage, not a real v4).
+    - first octet 127 is loopback, never a real destination."""
+    if n is None or n == 1:
+        return ""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return ""
+    first = (n >> 24) & 0xFF
+    if first == 0 or first == 127:
+        return ""
+    try:
+        return socket.inet_ntoa(struct.pack(">I", n & 0xFFFFFFFF))
+    except Exception:
+        return ""
+
+
+def _parse_swaps_from(text, now_epoch, met_cache, map_data):
+    lines = text.splitlines()
+
+    chunk_met = {}
+    for line in lines:
+        m = MET_RX.search(line)
+        if m:
+            c = int(m.group(2))
+            entry = (float(m.group(1)), int(m.group(6)))
+            if c in chunk_met:
+                chunk_met[c].append(entry)
+            else:
+                chunk_met[c] = [entry]
 
     n = 0
-    for line in new_text.splitlines():
+    for line in lines:
         m = SWAP_RX.search(line)
         if not m:
             continue
@@ -1112,19 +1226,44 @@ def _parse_swaps_from(warmup_text, new_text, now_epoch):
         d   = int(m.group(7))
         mt_i = m.group(8)
         rb_i = m.group(9)
-        pre = post = None
-        for (mts, mval) in met.get(c, []):
-            if mts < boot_ts + 0.001:
+        dest_s = m.group(10)
+
+        pre = None
+        pre_ts = -1.0
+        cached = met_cache.get(c)
+        if cached and len(cached) >= 2 and cached[0] < boot_ts + 0.001:
+            pre = cached[1]
+            pre_ts = cached[0]
+        for (mts, mval) in chunk_met.get(c, ()):
+            if mts < boot_ts + 0.001 and mts > pre_ts:
                 pre = mval
-            elif boot_ts + 3.0 <= mts <= boot_ts + 300.0:
+                pre_ts = mts
+
+        post = None
+        for (mts, mval) in chunk_met.get(c, ()):
+            if boot_ts + 3.0 <= mts <= boot_ts + 300.0:
                 post = mval
                 break
+
         outcome = ""
         if pre and post:
             r = post / pre
             outcome = "win" if r <= 0.9 else ("loss" if r >= 1.1 else "null")
         mt_alg = CONGS[int(mt_i) & 15] if mt_i and mt_i.isdigit() else ""
         rb_alg = CONGS[int(rb_i) & 15] if rb_i and rb_i.isdigit() else ""
+
+        dest_ip = ""
+        dest_raw = ""
+        if dest_s:
+            dest_raw = dest_s
+            try:
+                dest_ip = _decode_dest(int(dest_s))
+            except (TypeError, ValueError):
+                dest_ip = ""
+
+        f_ema = _lookup_ema(map_data, dest_ip, fa)
+        t_ema = _lookup_ema(map_data, dest_ip, ta)
+
         append_csv(SWAPS_CSV, {
             "collected_ts": now_epoch,
             "boot_ts": boot_ts,
@@ -1137,24 +1276,30 @@ def _parse_swaps_from(warmup_text, new_text, now_epoch):
             "diverges": "1" if (mt_alg and rb_alg and mt_alg != rb_alg) else "0",
             "outcome": outcome,
             "socket_rate_before": pre if pre is not None else "",
+            "dest": dest_ip,
+            "dest_raw": dest_raw,
+            "f_ema": f_ema,
+            "t_ema": t_ema,
         })
         n += 1
+
+    for c, entries in chunk_met.items():
+        latest = max(entries, key=lambda x: x[0])
+        cached = met_cache.get(c)
+        if cached is None or len(cached) < 2 or cached[0] < latest[0]:
+            met_cache[c] = [latest[0], latest[1]]
+
     return n
 
 
-def collect_swaps():
-    """Multi-file tailer with a bounded warmup window for pre-lookup.
-
-    Tracks a byte offset per log file in .swaps_pos.json. First time we
-    see a file, we offset to its current size so we only track forward.
-    On each tick: read up to WARMUP_BYTES *before* the saved offset
-    (to rebuild the cookie -> met index), then read the new region
-    (from which swap rows are emitted)."""
+def collect_swaps(map_data):
     state = _read_state()
-    first_run = state is None
-    if first_run:
-        state = {}
+    if state is None:
+        state = {"file_offsets": {}, "met_cache": {}}
+    file_offsets = state["file_offsets"]
+    met_cache    = state["met_cache"]
 
+    first_run = not file_offsets
     now_epoch = int(time.time())
     n = 0
 
@@ -1165,31 +1310,36 @@ def collect_swaps():
         except OSError:
             continue
 
-        if first_run or key not in state:
-            state[key] = size
+        if first_run or key not in file_offsets:
+            file_offsets[key] = size
             continue
 
-        pos = state.get(key, 0)
+        pos = file_offsets.get(key, 0)
         if size < pos:
             pos = 0
         if size == pos:
             continue
 
-        warmup_start = max(0, pos - WARMUP_BYTES)
-        warmup_len = pos - warmup_start
-
         try:
             with open(logpath, "rb") as f:
-                f.seek(warmup_start)
-                warmup = f.read(warmup_len).decode(
-                    "utf-8", errors="replace")
                 f.seek(pos)
-                new_text = f.read().decode("utf-8", errors="replace")
-                state[key] = f.tell()
+                chunk = f.read().decode("utf-8", errors="replace")
+                file_offsets[key] = f.tell()
         except OSError:
             continue
 
-        n += _parse_swaps_from(warmup, new_text, now_epoch)
+        n += _parse_swaps_from(chunk, now_epoch, met_cache, map_data)
+
+    if met_cache:
+        valid_ts = [v[0] for v in met_cache.values()
+                    if isinstance(v, list) and len(v) >= 2]
+        if valid_ts:
+            cutoff = max(valid_ts) - MET_CACHE_TTL_S
+            for c in list(met_cache.keys()):
+                v = met_cache[c]
+                if (not isinstance(v, list) or len(v) < 2
+                        or v[0] < cutoff):
+                    del met_cache[c]
 
     _write_state(state)
     return n
@@ -1217,8 +1367,9 @@ def run_cli_snapshot():
 
 def main():
     ts_epoch = int(time.time())
-    nb = collect_buckets(ts_epoch)
-    ns = collect_swaps()
+    map_data = read_map_data()
+    nb = collect_buckets(ts_epoch, map_data)
+    ns = collect_swaps(map_data)
     doc = run_cli_snapshot()
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
@@ -1230,6 +1381,8 @@ if __name__ == "__main__":
 
 
 # =================== renderer ===================
+# (unchanged from the last installer; kept verbatim so the script is
+# self-contained and the installer rewrites it every run)
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
