@@ -191,9 +191,6 @@ def tail_recent(budget=LOG_TAIL_BYTES):
     Reading across the newest few files keeps the picture continuous
     through a rotation, and self-limits once the new file has grown
     past the budget.
-
-    The collector does not use this: it only appends new swaps, so it
-    tracks whichever file is current.
     """
     paths = sorted(Path("/var/log").glob("bpftune-met-*.log"),
                    key=lambda p: p.stat().st_mtime, reverse=True)
@@ -932,8 +929,17 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`.
-Swaps from tail /var/log/bpftune-met-*.log.
+Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file
+byte offsets in .swaps_pos.json).
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
+
+The earlier collector tailed only the NEWEST log file. When bpftune
+created a fresh bpftune-met-live.log on upgrade, the collector started
+tailing a nearly-empty file and stopped seeing swaps - swaps.csv went
+stale, and every chart that reads from it (divergence, swaps per bin)
+went flat. The per-file offset scheme below tracks each log
+independently, so a rotation (or an upgrade that adds a new file) does
+not starve the CSV.
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
 """
@@ -942,9 +948,9 @@ from pathlib import Path
 
 HIST = Path("/var/lib/bpftune/history")
 HIST.mkdir(parents=True, exist_ok=True)
-BUCKETS_CSV = HIST / "buckets.v2.csv"
-SWAPS_CSV   = HIST / "swaps.csv"
-SWAPS_POS   = HIST / ".swaps_pos"
+BUCKETS_CSV  = HIST / "buckets.v2.csv"
+SWAPS_CSV    = HIST / "swaps.csv"
+SWAPS_POS    = HIST / ".swaps_pos.json"   # per-file byte offsets
 CURRENT_JSON = HIST / "current.json"
 
 SELF_DIR = Path(__file__).resolve().parent
@@ -994,6 +1000,11 @@ def append_csv(path, row):
 def find_log():
     files = list(Path("/var/log").glob("bpftune-met-*.log"))
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
+def list_logs():
+    return sorted(Path("/var/log").glob("bpftune-met-*.log"),
+                  key=lambda p: p.stat().st_mtime)
 
 
 def collect_buckets(ts_epoch):
@@ -1055,24 +1066,28 @@ def collect_buckets(ts_epoch):
     return n
 
 
-def collect_swaps():
-    logpath = find_log()
-    if not logpath:
-        return 0
-    pos = 0
-    if SWAPS_POS.exists():
-        try:
-            pos = int(SWAPS_POS.read_text().strip())
-        except Exception:
-            pos = 0
-    size = logpath.stat().st_size
-    if size < pos:
-        pos = 0
-    with open(logpath, "rb") as f:
-        f.seek(pos)
-        text = f.read().decode("utf-8", errors="replace")
-        new_pos = f.tell()
+def _read_state():
+    if not SWAPS_POS.exists():
+        return None
+    try:
+        d = json.loads(SWAPS_POS.read_text())
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return None
 
+
+def _write_state(state):
+    tmp = str(SWAPS_POS) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, str(SWAPS_POS))
+
+
+def _parse_swaps_from(text, now_epoch):
+    """Scan a chunk of log text, append any swap rows to SWAPS_CSV.
+    Returns the number of rows appended."""
     met = {}
     for line in text.splitlines():
         m = MET_RX.search(line)
@@ -1080,7 +1095,6 @@ def collect_swaps():
             c = int(m.group(2))
             met.setdefault(c, []).append((float(m.group(1)), int(m.group(6))))
 
-    now_epoch = int(time.time())
     n = 0
     for line in text.splitlines():
         m = SWAP_RX.search(line)
@@ -1119,8 +1133,54 @@ def collect_swaps():
             "outcome": outcome,
         })
         n += 1
+    return n
 
-    SWAPS_POS.write_text(str(new_pos))
+
+def collect_swaps():
+    """Multi-file tailer. Tracks a byte offset per log file in
+    .swaps_pos.json. First time we see a file, we offset to its current
+    size so we only track forward (no duplicate history). Rotations,
+    upgrades, and the addition of a new file (bpftune-met-live.log) are
+    all handled: each file has its own cursor, and a file that gets
+    truncated restarts from 0."""
+    state = _read_state()
+    first_run = state is None
+    if first_run:
+        state = {}
+
+    now_epoch = int(time.time())
+    n = 0
+
+    for logpath in list_logs():
+        key = logpath.name
+        try:
+            size = logpath.stat().st_size
+        except OSError:
+            continue
+
+        if first_run or key not in state:
+            # New file: skip existing content so we don't duplicate.
+            state[key] = size
+            continue
+
+        pos = state.get(key, 0)
+        if size < pos:
+            # truncated / rotated
+            pos = 0
+        if size == pos:
+            continue
+
+        try:
+            with open(logpath, "rb") as f:
+                f.seek(pos)
+                text = f.read().decode("utf-8", errors="replace")
+                state[key] = f.tell()
+        except OSError:
+            continue
+
+        n += _parse_swaps_from(text, now_epoch)
+
+    _write_state(state)
     return n
 
 
@@ -1355,6 +1415,9 @@ def emit_swaps(rows, now):
 
 
 def emit_fleet(buckets, now):
+    """Rate-board coverage per bucket, last 24h. Cap at top 25 by
+    coverage - the chart used to try to fit every bucket (80+) into a
+    short frame and the axis labels became unreadable."""
     lo = now - 86400
     width = 300
     rows = [r for r in buckets if (ts_of(r) or 0) > lo]
@@ -1362,8 +1425,8 @@ def emit_fleet(buckets, now):
     for r in rows:
         by[r.get("addr") or "unknown"].append(r)
 
-    labels, cov = [], []
-    for bid, rs in sorted(by.items()):
+    pairs = []
+    for bid, rs in by.items():
         bins = defaultdict(list)
         for r in rs:
             t = ts_of(r)
@@ -1374,8 +1437,12 @@ def emit_fleet(buckets, now):
         have = sum(1 for grp in bins.values()
                    if any((to_float(x.get("rate_best_v")) or 0) > 0
                           for x in grp))
-        labels.append(bid)
-        cov.append(round(100 * have / len(bins), 1))
+        pairs.append((bid, round(100 * have / len(bins), 1)))
+
+    pairs.sort(key=lambda p: -p[1])
+    pairs = pairs[:25]
+    labels = [p[0] for p in pairs]
+    cov    = [p[1] for p in pairs]
     write_json("fleet.json", {"buckets": labels, "coverage_24h": cov})
 
 
@@ -1918,16 +1985,6 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>reference rate &mdash; Mb/s</h2>
-    <div class="chart-box h-sm"><canvas id="ref"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>tcp_rmem max (bytes)</h2>
-    <div class="chart-box h-sm"><canvas id="rmem"></canvas></div>
-  </section>
-
-  <section class="card">
     <h2><span class="dot"></span>divergence &mdash; win rate with 95% Wilson CI</h2>
     <div class="chart-box h-md"><canvas id="div"></canvas></div>
   </section>
@@ -1939,7 +1996,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <section class="card">
     <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
-    <div class="chart-box h-lg"><canvas id="fleet"></canvas></div>
+    <div class="chart-box" id="fleetbox" style="height:500px"><canvas id="fleet"></canvas></div>
   </section>
 
   <div class="footer">
@@ -2497,18 +2554,6 @@ INDEX_HTML = r"""<!doctype html>
         },
       }),
     });
-
-    mk("ref", {
-      type: "line",
-      data: {datasets: lineData(["ref_rate"], s, ts, ["#e15759"])},
-      options: timeOpts(),
-    });
-
-    mk("rmem", {
-      type: "line",
-      data: {datasets: lineData(["tcp_rmem_max"], s, ts, ["#4e79a7"])},
-      options: timeOpts(),
-    });
   }
 
   function renderSwaps() {
@@ -2590,6 +2635,14 @@ INDEX_HTML = r"""<!doctype html>
 
   function renderFleet() {
     var f = state.fleet;
+    // Dynamic height: enough room for one row per bucket, min 200,
+    // max 800. Without this, 25 buckets were being squeezed into 220px
+    // and the y-axis labels became illegible.
+    var n = (f && f.buckets) ? f.buckets.length : 0;
+    var box = document.getElementById("fleetbox");
+    if (box) {
+      box.style.height = Math.max(200, Math.min(800, n * 22 + 40)) + "px";
+    }
     mk("fleet", {
       type: "bar",
       data: {
@@ -2600,20 +2653,21 @@ INDEX_HTML = r"""<!doctype html>
           backgroundColor: "#59a14f",
           borderColor: "#59a14f",
           borderRadius: 2,
-          maxBarThickness: 10,
+          maxBarThickness: 12,
         }],
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         animation: false, indexAxis: "y",
-        layout: {padding: {top: 4, right: 12, bottom: 0, left: 0}},
+        layout: {padding: {top: 4, right: 16, bottom: 0, left: 0}},
         scales: {
           x: {min: 0, max: 100, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 6, padding: 6,
                       callback: function (v) { return v + "%"; }}},
-          y: {grid: {display: false}, ticks: {font: {size: 10},
-              autoSkip: false, padding: 4}},
+          y: {grid: {display: false},
+              ticks: {font: {size: 10.5}, autoSkip: false, padding: 4}},
         },
+        plugins: {legend: {display: false}},
       },
     });
   }
