@@ -93,6 +93,7 @@ struct conn_state {
     __u64 bad_checkpoints;
     __u64 last_swap_at;      /* ns; settle windows computed per tick */
     __u64 last_metric;       /* most recent metric sample; 0 = unset */
+    __u64 last_rate_bps;     /* most recent delivered rate, bytes/sec; 0 = unset */
     __u64 last_time_check;   /* ns of last 60s-cadence vote */
     __u64 time_check_segs;   /* segments at last time check */
     __u64 best_seen_metric;  /* lowest metric seen on this socket */
@@ -194,6 +195,20 @@ struct remote_host {
 #define METRIC_MIN_SEGS 100
 #define METRIC_TRIGGER_SEGS 10000
 #define METRIC_AVG_CAP 32
+
+/* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
+ * bucket reference, it is stuck regardless of what the leader scores.
+ * Fires on the first vote -- the 3-10 minute stuck-window on a
+ * struggling stream cannot produce two votes to clear the moderate
+ * tier's 2-consecutive-bad requirement. */
+#define SLOW_VS_REF_PCT 10
+
+/* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
+ * bucket reference, it is stuck regardless of what the leader scores.
+ * Fires on the first vote -- the 3-10 minute stuck-window on a
+ * struggling stream cannot produce two votes to clear the moderate
+ * tier's 2-consecutive-bad requirement. */
+#define SLOW_VS_REF_PCT 10
 /* 0.4.45: rate EMA decay shift; divide-by-16, ~16-vote half life. */
 #define RATE_EMA_SHIFT          4
 /* 0.4.45: rate EMA units.  u16 max ~= 6.5 GB/s. */

@@ -1,3 +1,27 @@
+bpftune (0.4.51) UNRELEASED; urgency=medium
+
+  * new swap tier d=2: fire on slow-vs-reference, not just slow-vs-leader.
+    Observe: cookie 18631, cubic, delivered 26.9 Mbps (5% of the
+    536 Mbps reference) for 5.6 minutes and never crossed a checkpoint
+    capable of tripping the moderate tier (which requires 2 consecutive
+    bad votes and a 1.5x leader margin).  The metric compresses the
+    useful range: on this bucket a 26.9 Mbps socket scores 7.9M against
+    a 167 Mbps leader at 6.62M -- a 1.19x ratio, below the 1.5x bar.
+    The trigger never had a chance.
+
+    - new tier fires on the first vote when last_rate_bps * 100 <
+      reference * SLOW_VS_REF_PCT (10).  Same rate_ok and util_ok
+      guards as other tiers.  Targets swap_tgt, which already picks
+      second-best when the socket is already on the leader.
+    - conn_state gains last_rate_bps (u64, bytes/sec), written on
+      every vote, zeroed at every swap.  Not persisted; no
+      STATE_VERSION bump.
+
+  Fix: rate_app_limited is the app-limited bit; app_limited is a u32
+  counter.  swapctx reads the bit now.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 17:00:00 +0000
+
 bpftune (0.4.50) UNRELEASED; urgency=medium
 
   * swap trigger: skip swaps on sockets not using their window.
