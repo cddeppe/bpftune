@@ -202,6 +202,7 @@ struct remote_host {
  * struggling stream cannot produce two votes to clear the moderate
  * tier's 2-consecutive-bad requirement. */
 #define SLOW_VS_REF_PCT 10
+#define RATE_TRIGGER_PCT 50
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
  * bucket reference, it is stuck regardless of what the leader scores.
