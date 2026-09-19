@@ -103,6 +103,14 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops,
 		}
 		statep->state = (__u64)i;
 		statep->bad_checkpoints = 0;
+                /* 0.4.54: exploration pick = neither leader. */
+                if (remote_host &&
+                    (__u64)i != (remote_host->best_i & (NUM_TCP_CONG_ALGS - 1)) &&
+                    (__u64)i != (remote_host->rate_best_i & (NUM_TCP_CONG_ALGS - 1)))
+                        statep->exploring = 1;
+                else
+                        statep->exploring = 0;
+                statep->votes_on_alg = 0;
 	}
 	return 0;
 }
@@ -547,6 +555,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
         statep->last_metric = metric;
         statep->last_rate_bps = rate_delivered;
+        statep->votes_on_alg++;
         /* Track the best reading this socket has ever produced, and
          * which algorithm it was on at the time.  Used by the freeze
          * path once enough swaps have accumulated.  Skip the ~0
@@ -716,9 +725,11 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     }
                 }
             }
-            bool margin_met = (best_alt != ~((__u64)0) &&
-                               statep->last_metric != 0 &&
-                               statep->last_metric * 100 >= best_alt * SWAP_MARGIN_PCT);
+            /* 0.4.54: rate-based.  socket under 66% of leader. */
+            bool margin_met = (remote_host->rate_best_v > 0 &&
+                               statep->last_rate_bps > 0 &&
+                               statep->last_rate_bps * 150 <
+                               remote_host->rate_best_v * 100000ULL * 100);
             /* Post-freeze, "desperate" is judged relative to this
              * socket's own best_seen_metric rather than the bucket
              * leader.  A frozen socket that stays at ~best_seen (even
@@ -731,7 +742,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             bool desperate_post = (statep->last_metric * 100 >=
                                    statep->best_seen_metric * 200);
             bool desperate = (margin_met &&
-                              statep->last_metric * 100 >= best_alt * SWAP_BAD_DESPERATE_PCT &&
+                              statep->last_rate_bps * 400 <
+                              remote_host->rate_best_v * 100000ULL * 100 &&
                               (!statep->frozen || desperate_post));
 
             /* Settle window: fixed minimum gap between swaps on one
@@ -756,8 +768,17 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                    statep->last_rate_bps * 100 <
                                    remote_host->rate_best_v * 100000 * RATE_TRIGGER_PCT);
 
+            /* 0.4.54: exploration protection. */
+
+            bool protected_exploring = (statep->exploring &&
+
+                                        statep->votes_on_alg < EXPLORE_PROTECT_VOTES);
+
+
             if (!settle_expired) {
                 /* settle window -- wait */
+            } else if (protected_exploring) {
+                /* exploring, not enough votes on the alg yet */
             } else if (desperate && rate_ok && util_ok) {
                 /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;

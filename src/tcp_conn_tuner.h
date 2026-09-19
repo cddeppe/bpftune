@@ -99,6 +99,9 @@ struct conn_state {
     __u64 best_seen_metric;  /* lowest metric seen on this socket */
     __u64 best_seen_alg;     /* algorithm it was running then */
     __u64 frozen;            /* 1 = no more swaps on this socket */
+    /* 0.4.54: exploring=1 when assigned alg is neither leader. votes_on_alg counts votes on that alg; reset at every set_cong. */
+    __u64 exploring;
+    __u64 votes_on_alg;
     /* Short-trend history.  Along with last_metric these give the
      * socket's own last three samples.  Used by the flat-socket
      * gate in the moderate swap tier (0.4.37): if max/min over the
@@ -240,9 +243,12 @@ struct remote_host {
  * path or app problem that no algorithm can fix. */
 #define FREEZE_AFTER_SWAPS 4
 #define SWAP_BAD_DESPERATE_PCT 200  /* 2.0x leader -> immediate fire */
-#define MIN_LEADER_TRUST 3 /* min votes before targeting a leader */
+#define MIN_LEADER_TRUST 10 /* min votes before targeting a leader */
 #define SWAP_MAX       2
 #define T_SETTLE_NS     (10ULL * 1000000000ULL)  /* minimum gap between swaps on one socket */
+
+/* 0.4.54: minimum votes cast on an exploring algorithm before the socket can be swapped away. */
+#define EXPLORE_PROTECT_VOTES 3
 #define T_TIME_CHECK_NS  (60ULL * 1000000000ULL)  /* supplementary vote cadence */
 #define TIME_CHECK_MIN_SEGS 1000  /* require progress between checks */
 
