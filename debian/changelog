@@ -1,3 +1,15 @@
+bpftune (0.4.49) UNRELEASED; urgency=medium
+
+  * swapctx gains app_lim and util; guard against downgrade swaps.
+    - app_lim: kernel app_limited flag at swap time.  If set, the app
+      isn't asking for more and a swap cannot help.
+    - util: packets_out*100/cwnd, fraction of the window in use.
+    - rate_ok: block a swap when the target alg's rate_ema on this
+      bucket is below the source's.  Observed cookie 16102 swapped
+      nv(rate_ema=13) -> reno(rate_ema=3) and died at 12% loss.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 12:00:00 +0000
+
 bpftune (0.4.48) UNRELEASED; urgency=medium
 
   * instrumentation: estab / swapctx / closport printks for weekend data

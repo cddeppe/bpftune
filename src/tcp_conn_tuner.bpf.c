@@ -584,6 +584,16 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
 
         if (statep && !is_close) {
+            /* 0.4.49: block a swap to a target whose rate_ema on this
+             * bucket is lower than the source's.  Observed cookie 16102:
+             * nv(rate_ema=13) -> reno(rate_ema=3) because reno was the
+             * only alg to pass MIN_LEADER_TRUST; socket died at 12% loss. */
+            bool rate_ok = true;
+            if (remote_host->rate_best_v > 0 &&
+                remote_host->metrics[swap_tgt].rate_ema <
+                remote_host->metrics[s].rate_ema)
+                rate_ok = false;
+
             /* Flat-socket gate (0.4.37).  Data: over 340 swaps flat
              * sockets win 7.9% / null 90.6% / loss 1.6% -- the win
              * rate is inside the metric's noise band.  The moderate
@@ -711,7 +721,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 
             if (!settle_expired) {
                 /* settle window -- wait */
-            } else if (desperate) {
+            } else if (desperate && rate_ok) {
                 /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
@@ -727,12 +737,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=1 mt=%u rb=%u dest=%u",
                                bpf_get_socket_cookie(ops), from_i, to_i,
                                bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt, (__u32)bpf_ntohl(ops->remote_ip4));
-                    bpf_printk("swapctx cookie=%llu d=1 cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu",
+                    bpf_printk("swapctx cookie=%llu d=1 cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu app_lim=%u util=%llu",
                                bpf_get_socket_cookie(ops),
                                (__u64)tp->snd_cwnd, (__u64)tp->snd_ssthresh,
                                (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                (__u32)(s == remote_host->best_i),
-                               statep->swap_count);
+                               statep->swap_count,
+                               (__u32)tp->app_limited,
+                               (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                 }
             } else if (margin_met && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
@@ -745,12 +757,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                         fret = set_cong(ops, remote_host, tgt8);
                     bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d dest=%u",
                                bpf_get_socket_cookie(ops), s, tgt8, fret, (__u32)bpf_ntohl(ops->remote_ip4));
-                    bpf_printk("swapctx cookie=%llu d=f cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu",
+                    bpf_printk("swapctx cookie=%llu d=f cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu app_lim=%u util=%llu",
                                bpf_get_socket_cookie(ops),
                                (__u64)tp->snd_cwnd, (__u64)tp->snd_ssthresh,
                                (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                (__u32)(s == remote_host->best_i),
-                               statep->swap_count);
+                               statep->swap_count,
+                               (__u32)tp->app_limited,
+                               (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
@@ -778,6 +792,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                  * must re-demonstrate rather than
                                  * firing the moment the motion stops. */
                                 statep->bad_checkpoints = 0;
+                            } else if (!rate_ok) {
+                                /* target rate below source; skip swap */
+                                statep->bad_checkpoints = 0;
                             } else if (!set_cong(ops, remote_host, swap_tgt)) {
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
@@ -788,12 +805,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                 bpf_printk("swap cookie=%llu from=%u to=%u bc=%llu ac=%llu d=0 mt=%u rb=%u dest=%u",
                                            bpf_get_socket_cookie(ops), from_i, to_i,
                                            bc_fire, ac, (__u32)mt_alt_i, (__u32)swap_tgt, (__u32)bpf_ntohl(ops->remote_ip4));
-                                bpf_printk("swapctx cookie=%llu d=0 cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu",
+                                bpf_printk("swapctx cookie=%llu d=0 cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu app_lim=%u util=%llu",
                                            bpf_get_socket_cookie(ops),
                                            (__u64)tp->snd_cwnd, (__u64)tp->snd_ssthresh,
                                            (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                            (__u32)(s == remote_host->best_i),
-                                           statep->swap_count);
+                                           statep->swap_count,
+                                           (__u32)tp->app_limited,
+                                           (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                             }
                         }
                     }
