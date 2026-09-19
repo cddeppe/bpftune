@@ -1,3 +1,25 @@
+bpftune (0.4.54) UNRELEASED; urgency=medium
+
+  * three changes to reduce wasted swaps and fix the trigger operands.
+
+    1. MIN_LEADER_TRUST 3 -> 10.  Only 22 of ~150 buckets on the fleet
+       ever reach 10 votes on ANY algorithm.  A trusted leader from 3
+       samples is noise.
+    2. exploring protection.  set_cong() marks a socket exploring when
+       the assigned alg is neither the metric nor the rate leader.
+       Vote path counts votes on that alg; swap chain skips until
+       EXPLORE_PROTECT_VOTES (3) votes are cast.  Prior behavior
+       allowed swap after 1 vote, so exploration contributed one
+       sample per event.
+    3. trigger operands composite -> rate.  margin_met and desperate
+       compare last_rate_bps against rate_best_v, not last_metric
+       against best_alt.  Old composite thresholds 1.5x / 2.0x become
+       rate 66% / 25% of leader.  Over a 30-swap measured sample,
+       rate-based tiers scored 74% win / 4% loss while the composite
+       tier scored 57% win.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 19:00:00 +0000
+
 bpftune (0.4.53) UNRELEASED; urgency=medium
 
   * new srate companion printk on every vote, alongside midsamp.
