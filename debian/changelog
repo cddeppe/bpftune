@@ -1,3 +1,20 @@
+bpftune (0.4.52) UNRELEASED; urgency=medium
+
+  * new swap tier d=3: slow-vs-leader on rate, bypassing the composite.
+    Cookie 19233 (2026-09-19, illinois->yeah d=2) showed the composite
+    penalizing success: rate_term improved 7.43M -> 5.08M (raw 38 Mbps
+    -> 156 Mbps) while rtt_term rose 0.36 -> 2.64M from induced
+    queueing, so composite val went 8.55M -> 7.72M -- worse than
+    pre-swap.  The composite is not a valid outcome signal when
+    throughput improvements fill the bottleneck queue.
+        slow_vs_leader = (last_rate_bps * 100 <
+                          rate_best_v * 100000 * RATE_TRIGGER_PCT)
+    with RATE_TRIGGER_PCT = 50 (under half of the best algorithm's
+    demonstrated rate).  Guards: rate_ok, util_ok, !frozen.  Sits
+    between d=2 and moderate.  Depth labeled d=3.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 14:00:00 +0000
+
 bpftune (0.4.51) UNRELEASED; urgency=medium
 
   * new swap tier d=2: fire on slow-vs-reference, not just slow-vs-leader.
