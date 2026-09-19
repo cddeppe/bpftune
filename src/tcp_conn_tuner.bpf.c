@@ -475,6 +475,20 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 			           bpf_get_socket_cookie(ops), s, rate_delivered);
 		}
 	}
+    /* 0.4.53: raw delivered rate on every vote.
+     * midsamp only fires on rung crossings; sockets past the last
+     * rung only vote via the 60s time-check and had no raw rate
+     * for post-swap measurement.  This companion line carries it
+     * for every vote. */
+    {
+        __u64 _sinter = (__u64)tp->rate_interval_us;
+        __u64 _sraw   = (__u64)tp->rate_delivered;
+        __u64 _smss   = (__u64)tp->mss_cache;
+        __u64 _srate  = _sinter ? (_sraw * _smss * 1000000ULL) / _sinter : 0;
+        bpf_printk("srate cookie=%llu alg=%u srate=%llu",
+                   bpf_get_socket_cookie(ops), s, _srate);
+    }
+
     m = &remote_host->metrics[s];
 
     {

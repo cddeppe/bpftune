@@ -1,3 +1,19 @@
+bpftune (0.4.53) UNRELEASED; urgency=medium
+
+  * new srate companion printk on every vote, alongside midsamp.
+    Analysis of 212 swaps on 2026-09-19: 78% had no post-swap
+    midsamp and were therefore unmeasurable.  Reason: midsamp
+    only fires on rung crossings (1K..1M segs).  Sockets past the
+    last rung only vote via the 60s time-check, and the time-check
+    path never emitted a raw delivered rate.  So long-lived
+    sockets that produced a swap were untrackable.
+        srate cookie=N alg=N srate=N
+    fires on every vote regardless of which branch triggered it,
+    carrying the same rate_delivered * mss * 1e6 / rate_interval_us
+    the midsamp line uses.  Log-only; no state change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sun, 20 Sep 2026 01:00:00 +0000
+
 bpftune (0.4.52) UNRELEASED; urgency=medium
 
   * new swap tier d=3: slow-vs-leader on rate, bypassing the composite.
