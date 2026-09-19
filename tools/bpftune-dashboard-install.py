@@ -26,6 +26,7 @@ BUCKETS_V2     = os.path.join(HIST, "buckets.v2.csv")
 BUCKETS_LEGACY = os.path.join(HIST, "buckets.csv")
 SWAPS_V1       = os.path.join(HIST, "swaps.v1.csv")
 SWAPS          = os.path.join(HIST, "swaps.csv")
+SRATE          = os.path.join(HIST, "srate.csv")
 SWAPS_POS_V1   = os.path.join(HIST, ".swaps_pos")
 SWAPS_POS_V2   = os.path.join(HIST, ".swaps_pos.json")
 CURRENT_JSON   = os.path.join(HIST, "current.json")
@@ -36,7 +37,7 @@ RENDERER  = os.path.join(SELF_DIR, "bpftune-render.py")
 CLI       = os.path.join(SELF_DIR, "bpftune-cli.py")
 
 SWAP_COLS_REQUIRED = ["socket_rate_before", "dest", "dest_raw",
-                      "f_ema", "t_ema"]
+                      "f_ema", "t_ema", "srate_before"]
 
 
 def _c(code, s):
@@ -66,8 +67,8 @@ def write_file(path, text, mode=0o644):
 
 
 def _append_swaps_columns(path, new_cols):
-    """Append one or more columns to swaps.csv in place, empty for
-    existing rows. Preserves history."""
+    """Append one or more columns to a CSV in place, empty for existing
+    rows. Preserves history."""
     with open(path, newline="") as f:
         rd = csv.reader(f)
         try:
@@ -113,6 +114,11 @@ def migrate():
             say("  swaps.csv already has all required columns")
     else:
         say("  no swaps.csv yet (will be created)")
+
+    if os.path.exists(SRATE):
+        say("  srate.csv already present")
+    else:
+        say("  srate.csv will be created on first 0.4.53+ vote")
 
 
 def write_cron():
@@ -940,32 +946,41 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 Buckets from `bpftool --json map dump name remote_host_map`.
 Swaps from all /var/log/bpftune-met-*.log (multi-file, per-file byte
 offsets in .swaps_pos.json).
+Raw srate events from the same logs -> /var/lib/bpftune/history/srate.csv.
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
+Swap outcome columns:
+  outcome        -- from met `val=` (composite metric; lower is better).
+                    NOTE: this mislabels rate-driven wins as losses when
+                    the improvement comes from throughput (composite
+                    includes a latency term that goes the other way).
+  srate_before   -- last per-vote `srate=` (raw bytes/sec) for the
+                    cookie before the swap; higher is better.
+
+`srate.csv` (separate file): one row per `srate cookie=... alg=... srate=...`
+line, with the same cookie + boot_ts keys as swaps.csv. Produced by
+0.4.53+; empty file until then.
+
+Why srate_after is NOT a swaps.csv column: the source line lands up to
+60 s after the swap (next vote), so it's a future event relative to the
+row. Deferring the row breaks the "recent swaps" panel; rewriting past
+rows is O(file). Instead, srate.csv holds every raw vote and analysis
+joins it to swaps on (cookie, boot_ts) with a forward as-of merge.
+
 `socket_rate_before` is looked up from a rolling cookie -> met cache
-persisted in the state file (bounded to 10 min of activity), so a swap
-whose pre-met line is in a previous tick's chunk - or a rotated file -
-still resolves.
+persisted in the state file (bounded to 10 min of activity).
 
-`dest` on swap lines is a u32 (network byte order) - decode via
-struct.pack(">I", n) -> inet_ntoa. IPv4-only; IPv6 sockets carry
-whatever the kernel put there, so any dest that doesn't decode to a
-plausible public IPv4 (first octet 0 or 127) is left empty. dest==1
-(0.0.0.1, the placeholder bucket with phantom instances) is also
-filtered.
-
-`dest_raw` preserves the raw integer even when `dest` is empty, so
-non-joinable rows can still be counted (empty `dest_raw` means the
-log line had no dest= at all - i.e. pre-0.4.47).
+`dest` decodes u32 (network byte order) via struct.pack(">I", n) ->
+inet_ntoa. IPv6 sockets carry garbage in ops->remote_ip4 (first octet 0);
+loopback is 127; placeholder bucket 0.0.0.1 is dest==1. All three
+filtered to "". `dest_raw` preserves the integer so non-joinable rows
+can still be counted.
 
 `f_ema` / `t_ema` are the bucket's rate_ema for the from/to algorithm
-at the moment the collector reads the map. That's on the next tick -
-up to 60 s after the swap fired. HOW STALE THAT IS DEPENDS ON THE
-BUCKET: on the home bucket with 1600+ instances the EMA moves with
-every vote (dozens per minute) and is effectively live; on a
-60-instance bucket it may not have moved at all in a 60 s window, so
-the value seen could be hours old. Treat as approximate on
-low-instance buckets, near-current on high-instance buckets.
+at map-read time (up to 60 s after the swap fired). On the home bucket
+with 1600+ instances the EMA moves with every vote and is effectively
+live; on a 60-instance bucket it may be hours stale. Treat as
+approximate on low-instance buckets.
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
 """
@@ -976,6 +991,7 @@ HIST = Path("/var/lib/bpftune/history")
 HIST.mkdir(parents=True, exist_ok=True)
 BUCKETS_CSV  = HIST / "buckets.v2.csv"
 SWAPS_CSV    = HIST / "swaps.csv"
+SRATE_CSV    = HIST / "srate.csv"
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
@@ -997,6 +1013,9 @@ SWAP_RX = re.compile(
 MET_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
     r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
+SRATE_RX = re.compile(
+    r"(\d+\.\d+): bpf_trace_printk: srate cookie=(\d+) "
+    r"alg=(\d+) srate=(\d+)")
 
 
 def sh(args, timeout=15):
@@ -1018,15 +1037,10 @@ def tcp_rmem():
 
 
 def append_csv(path, row):
-    """Schema-order-safe append.
-
-    If the file exists, emit the row in the file's existing column
-    order (extra keys dropped, missing keys blank). If it doesn't
-    exist, write the header from the row's key order and then the row.
-
-    This makes schema evolution safe: adding a key to a row dict can't
-    misalign rows already in the file, because the writer always
-    conforms to the file's actual header."""
+    """Schema-order-safe append. Emits the row in the file's existing
+    column order if the file exists (extra keys dropped, missing keys
+    blank), else writes the header from the row's key order. Adding a
+    key to a row dict can't misalign rows already in the file."""
     if path.exists() and path.stat().st_size > 0:
         with open(path, newline="") as f:
             try:
@@ -1053,7 +1067,6 @@ def list_logs():
 
 
 def read_map_data():
-    """Fetch remote_host_map and return {ip: value_dict, ...}."""
     out = sh(["bpftool", "--json", "map", "dump", "name",
               "remote_host_map"])
     try:
@@ -1122,10 +1135,12 @@ def collect_buckets(ts_epoch, map_data):
 
 
 def _read_state():
-    """State file layout:
+    """State layout:
         {"file_offsets": {name: byte, ...},
-         "met_cache":    {cookie: [boot_ts, met_val], ...}}
-    Legacy flat layout is migrated in place with an empty met cache."""
+         "met_cache":    {cookie: [boot_ts, met_val]},
+         "srate_cache":  {cookie: [boot_ts, srate]}}
+    Legacy flat layout is migrated in place. Missing sub-keys are
+    defaulted rather than versioned."""
     if not SWAPS_POS.exists():
         return None
     try:
@@ -1135,11 +1150,13 @@ def _read_state():
     if not isinstance(d, dict):
         return None
     if "file_offsets" in d and "met_cache" in d:
+        d.setdefault("srate_cache", {})
         return d
     return {
         "file_offsets": {k: v for k, v in d.items()
                          if isinstance(v, (int, float))},
         "met_cache":    {},
+        "srate_cache":  {},
     }
 
 
@@ -1151,7 +1168,6 @@ def _write_state(state):
 
 
 def _lookup_ema(map_data, dest_ip, alg_index):
-    """Return rate_ema for alg_index on the bucket at dest_ip, or ""."""
     if not dest_ip or not map_data or alg_index is None:
         return ""
     v = map_data.get(dest_ip)
@@ -1179,12 +1195,6 @@ def _lookup_ema(map_data, dest_ip, alg_index):
 
 
 def _decode_dest(n):
-    """Decode u32 (network byte order) to dotted IPv4, or "" if unusable.
-
-    - dest == 1 is the 0.0.0.1 placeholder bucket; skip it.
-    - first octet 0 means 0.x.x.x, which is what the log shows for
-      IPv6 sockets (ops->remote_ip4 holds garbage, not a real v4).
-    - first octet 127 is loopback, never a real destination."""
     if n is None or n == 1:
         return ""
     try:
@@ -1200,19 +1210,25 @@ def _decode_dest(n):
         return ""
 
 
-def _parse_swaps_from(text, now_epoch, met_cache, map_data):
+def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
     lines = text.splitlines()
 
     chunk_met = {}
+    chunk_srate = {}
     for line in lines:
         m = MET_RX.search(line)
         if m:
             c = int(m.group(2))
-            entry = (float(m.group(1)), int(m.group(6)))
-            if c in chunk_met:
-                chunk_met[c].append(entry)
-            else:
-                chunk_met[c] = [entry]
+            chunk_met.setdefault(c, []).append(
+                (float(m.group(1)), int(m.group(6))))
+            continue
+        s = SRATE_RX.search(line)
+        if s:
+            c   = int(s.group(2))
+            alg = int(s.group(3))
+            sr  = int(s.group(4))
+            chunk_srate.setdefault(c, []).append(
+                (float(s.group(1)), alg, sr))
 
     n = 0
     for line in lines:
@@ -1228,6 +1244,7 @@ def _parse_swaps_from(text, now_epoch, met_cache, map_data):
         rb_i = m.group(9)
         dest_s = m.group(10)
 
+        # met-based pre/post (composite val=) - existing outcome column
         pre = None
         pre_ts = -1.0
         cached = met_cache.get(c)
@@ -1249,6 +1266,21 @@ def _parse_swaps_from(text, now_epoch, met_cache, map_data):
         if pre and post:
             r = post / pre
             outcome = "win" if r <= 0.9 else ("loss" if r >= 1.1 else "null")
+
+        # srate_before: newest srate strictly before this swap, from
+        # cache + this chunk. srate_after is intentionally not
+        # precomputed here; see docstring.
+        srate_pre = None
+        srate_pre_ts = -1.0
+        cached_s = srate_cache.get(c)
+        if cached_s and len(cached_s) >= 2 and cached_s[0] < boot_ts:
+            srate_pre = cached_s[1]
+            srate_pre_ts = cached_s[0]
+        for (sts, _a, sr) in chunk_srate.get(c, ()):
+            if sts < boot_ts and sts > srate_pre_ts:
+                srate_pre = sr
+                srate_pre_ts = sts
+
         mt_alg = CONGS[int(mt_i) & 15] if mt_i and mt_i.isdigit() else ""
         rb_alg = CONGS[int(rb_i) & 15] if rb_i and rb_i.isdigit() else ""
 
@@ -1280,14 +1312,30 @@ def _parse_swaps_from(text, now_epoch, met_cache, map_data):
             "dest_raw": dest_raw,
             "f_ema": f_ema,
             "t_ema": t_ema,
+            "srate_before": srate_pre if srate_pre is not None else "",
         })
         n += 1
 
+    # Cache newest met and srate per cookie for future ticks
     for c, entries in chunk_met.items():
         latest = max(entries, key=lambda x: x[0])
         cached = met_cache.get(c)
         if cached is None or len(cached) < 2 or cached[0] < latest[0]:
             met_cache[c] = [latest[0], latest[1]]
+
+    for c, entries in chunk_srate.items():
+        latest = max(entries, key=lambda x: x[0])
+        cached = srate_cache.get(c)
+        if cached is None or len(cached) < 2 or cached[0] < latest[0]:
+            srate_cache[c] = [latest[0], latest[2]]
+        for (sts, alg, sr) in entries:
+            append_csv(SRATE_CSV, {
+                "collected_ts": now_epoch,
+                "boot_ts": sts,
+                "cookie": c,
+                "alg": CONGS[alg] if 0 <= alg < 16 else str(alg),
+                "srate": sr,
+            })
 
     return n
 
@@ -1295,9 +1343,10 @@ def _parse_swaps_from(text, now_epoch, met_cache, map_data):
 def collect_swaps(map_data):
     state = _read_state()
     if state is None:
-        state = {"file_offsets": {}, "met_cache": {}}
+        state = {"file_offsets": {}, "met_cache": {}, "srate_cache": {}}
     file_offsets = state["file_offsets"]
     met_cache    = state["met_cache"]
+    srate_cache  = state.setdefault("srate_cache", {})
 
     first_run = not file_offsets
     now_epoch = int(time.time())
@@ -1328,18 +1377,21 @@ def collect_swaps(map_data):
         except OSError:
             continue
 
-        n += _parse_swaps_from(chunk, now_epoch, met_cache, map_data)
+        n += _parse_swaps_from(chunk, now_epoch, met_cache,
+                               srate_cache, map_data)
 
-    if met_cache:
-        valid_ts = [v[0] for v in met_cache.values()
+    for cache in (met_cache, srate_cache):
+        if not cache:
+            continue
+        valid_ts = [v[0] for v in cache.values()
                     if isinstance(v, list) and len(v) >= 2]
         if valid_ts:
             cutoff = max(valid_ts) - MET_CACHE_TTL_S
-            for c in list(met_cache.keys()):
-                v = met_cache[c]
+            for c in list(cache.keys()):
+                v = cache[c]
                 if (not isinstance(v, list) or len(v) < 2
                         or v[0] < cutoff):
-                    del met_cache[c]
+                    del cache[c]
 
     _write_state(state)
     return n
@@ -1381,8 +1433,6 @@ if __name__ == "__main__":
 
 
 # =================== renderer ===================
-# (unchanged from the last installer; kept verbatim so the script is
-# self-contained and the installer rewrites it every run)
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
