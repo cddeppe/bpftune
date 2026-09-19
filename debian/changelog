@@ -1,3 +1,20 @@
+bpftune (0.4.50) UNRELEASED; urgency=medium
+
+  * swap trigger: skip swaps on sockets not using their window.
+    Weekend data (192 swapctx samples, 2026-09-19): 60% of swaps
+    fired at util<10%; 78% had ssthresh=INT_MAX (no loss ever);
+    42% had packets_out<=1.  The trigger compared a raw metric that
+    saturates on idle sockets against a util-filtered bucket leader
+    -- the 0.4.40 util gate guarded the vote path only, not the
+    fire condition.  Now util_ok gates both the desperate and
+    moderate swap calls, same METRIC_MIN_UTIL_PCT=10 the vote path
+    already uses.  Freeze is not gated (self-relative decision).
+  * swapctx app_lim field: was reading tp->app_limited (u32 counter)
+    instead of tp->rate_app_limited (u8:1 bitfield).  Log format
+    unchanged; value becomes 0 or 1 as intended.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Sat, 19 Sep 2026 14:30:00 +0000
+
 bpftune (0.4.49) UNRELEASED; urgency=medium
 
   * swapctx gains app_lim and util; guard against downgrade swaps.

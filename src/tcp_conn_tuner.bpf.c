@@ -593,6 +593,15 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                 remote_host->metrics[swap_tgt].rate_ema <
                 remote_host->metrics[s].rate_ema)
                 rate_ok = false;
+            /* 0.4.50: skip swaps on sockets not using their window.
+             * Weekend data: 60% of swaps fired at util<10%; 42% had
+             * pkts_out<=1.  Those sockets were idle; no algorithm
+             * change can help them.  Same threshold the vote path
+             * already uses (METRIC_MIN_UTIL_PCT). */
+            bool util_ok = true;
+            if (tp->snd_cwnd > 0 &&
+                (__u64)tp->packets_out * 100 < (__u64)tp->snd_cwnd * METRIC_MIN_UTIL_PCT)
+                util_ok = false;
 
             /* Flat-socket gate (0.4.37).  Data: over 340 swaps flat
              * sockets win 7.9% / null 90.6% / loss 1.6% -- the win
@@ -721,7 +730,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 
             if (!settle_expired) {
                 /* settle window -- wait */
-            } else if (desperate && rate_ok) {
+            } else if (desperate && rate_ok && util_ok) {
                 /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
@@ -743,7 +752,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                (__u32)(s == remote_host->best_i),
                                statep->swap_count,
-                               (__u32)tp->app_limited,
+                               (__u32)tp->rate_app_limited,
                                (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                 }
             } else if (margin_met && !statep->frozen) {
@@ -763,7 +772,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                (__u32)(s == remote_host->best_i),
                                statep->swap_count,
-                               (__u32)tp->app_limited,
+                               (__u32)tp->rate_app_limited,
                                (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                     statep->frozen = 1;
                     statep->last_swap_at = now;
@@ -795,6 +804,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                             } else if (!rate_ok) {
                                 /* target rate below source; skip swap */
                                 statep->bad_checkpoints = 0;
+                            } else if (!util_ok) {
+                                /* socket not using window; skip swap */
+                                statep->bad_checkpoints = 0;
                             } else if (!set_cong(ops, remote_host, swap_tgt)) {
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
@@ -811,7 +823,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                            (__u64)tp->packets_out, (__u64)tp->snd_wnd,
                                            (__u32)(s == remote_host->best_i),
                                            statep->swap_count,
-                                           (__u32)tp->app_limited,
+                                           (__u32)tp->rate_app_limited,
                                            (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                             }
                         }
