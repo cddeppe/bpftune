@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 bpftune dashboard installer. Idempotent - safe to re-run.
@@ -36,8 +37,6 @@ COLLECTOR = os.path.join(SELF_DIR, "bpftune-collector.py")
 RENDERER  = os.path.join(SELF_DIR, "bpftune-render.py")
 CLI       = os.path.join(SELF_DIR, "bpftune-cli.py")
 
-# Must match CONGS in the collector/CLI/renderer. Used only during
-# bucket migration to append the ss_<alg> score columns.
 CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
@@ -74,8 +73,6 @@ def write_file(path, text, mode=0o644):
 
 
 def _append_columns(path, new_cols):
-    """Append columns to a CSV in place, empty for existing rows.
-    Preserves history. Consumers using DictReader treat empty as null."""
     with open(path, newline="") as f:
         rd = csv.reader(f)
         try:
@@ -679,9 +676,6 @@ def _outcome_srate(srate, c, ts):
 
 
 def _outcome_sustained(srate, c, ts):
-    """Median of srate samples in [t+60, t+300], compared to last srate
-    before the swap. Excludes the cwnd-reset dip; this is the accurate
-    throughput measure."""
     tl = srate.get(c, [])
     pre = None
     post = []
@@ -1097,7 +1091,7 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`. Each
-bucket's per-alg row now carries mv_<alg> (metric_value), re_<alg>
+bucket's per-alg row carries mv_<alg> (metric_value), re_<alg>
 (rate_ema), and ss_<alg> (swap_score; 256 = neutral, above = swaps
 into that alg have been helping).
 
@@ -1111,8 +1105,8 @@ Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 Note on outcome: this collector writes the *composite* outcome
 (met val= ratio, first-post) into swaps.csv. The sustained srate
 outcome (median srate in [t+60, t+300]) is computed downstream by the
-CLI (current.json) and the renderer (swaps.json) - it needs a
-future window the collector cannot see from a single tick.
+CLI (current.json) and the renderer (swaps.json) - it needs a future
+window the collector cannot see from a single tick.
 """
 import csv, json, os, re, socket, struct, subprocess, sys, time
 from pathlib import Path
@@ -1168,9 +1162,7 @@ def tcp_rmem():
 
 def append_csv(path, row):
     """Schema-order-safe append. Emits in the file's existing column
-    order if the file exists; else header from row key order. Adding
-    a key to a row dict cannot misalign rows already in the file, but
-    a column not present in the file header is dropped - migrate first."""
+    order if the file exists; else header from row key order."""
     if path.exists() and path.stat().st_size > 0:
         with open(path, newline="") as f:
             try:
@@ -1550,9 +1542,15 @@ if __name__ == "__main__":
 # =================== renderer ===================
 # Bounded-memory load_csv: deque on the DictReader keeps only the last
 # N rows in memory regardless of file size. Fixes the renderer OOM on
-# large buckets.v2.csv. If a future range needs more history than
-# these caps allow, switch to streaming binning (bin on read, discard
-# raw rows) - deque is the surgical fix, not the endgame.
+# large buckets.v2.csv.
+#
+# Two live-refresh fixes are in the HTML below:
+#   * default bucket is the one with the most RECENT row, not the
+#     biggest 24h mean - a bucket that went quiet at 8am no longer
+#     gets selected over one that's live right now.
+#   * `now` card and the currently selected chart re-fetch every 30 s;
+#     the full dashboard (dropdown + divergence + swaps + fleet) every
+#     5 min to match the renderer cron cadence.
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
@@ -1587,8 +1585,6 @@ RANGES = {
     "all": (None,       21600),
 }
 
-# Bounded-memory caps. Sized to comfortably cover the 24h range at
-# current bucket and vote rates.
 MAX_ROWS_BUCKETS = 150000
 MAX_ROWS_SWAPS   =  50000
 MAX_ROWS_SRATE   = 150000
@@ -1648,9 +1644,8 @@ def buckets_source():
 
 def load_csv(path, max_rows=None):
     """Read a CSV. If max_rows is set, keeps only the last max_rows
-    rows in memory (uses collections.deque as an O(1)-per-row bounded
-    buffer). Correct for append-only, chronologically-sorted files,
-    which is what every CSV here is."""
+    rows in memory (bounded deque). Correct for append-only,
+    chronologically-sorted files, which is what every CSV here is."""
     if not path or not os.path.exists(path):
         return [], []
     with open(path, newline="") as f:
@@ -1699,21 +1694,26 @@ def emit_meta(buckets, algs, now):
     for bid, rs in by.items():
         inst = [to_float(r.get("instances")) for r in rs]
         inst = [v for v in inst if v is not None]
+        last = max((ts_of(r) or 0) for r in rs)
         entries.append({
             "id": bid,
             "points": len(rs),
             "instances_mean": round(sum(inst) / len(inst), 2) if inst else 0,
+            "last_ts": int(last),
         })
-    entries.sort(key=lambda e: e["instances_mean"], reverse=True)
-
-    header, _ = load_csv(buckets_source(), max_rows=1)
+    # Prefer buckets with recent activity; break ties on 24h mean.
+    # A bucket with 500 rows but no data in 11 hours would show a
+    # frozen "now" card and rate chart if selected by default.
+    entries.sort(key=lambda e: (e["last_ts"], e["instances_mean"]),
+                 reverse=True)
     write_json("meta.json", {
         "generated_ts":  now,
         "ranges":        list(RANGES),
         "algs":          algs,
         "buckets":       entries,
         "default_bucket": entries[0]["id"] if entries else "all",
-        "has_tcp_rmem":  "tcp_rmem_max" in header,
+        "has_tcp_rmem":  "tcp_rmem_max" in (
+            load_csv(buckets_source(), max_rows=1)[0] or []),
     })
 
 
@@ -1746,9 +1746,6 @@ def emit_bucket(bid, rows, algs, now):
 
 
 def _attach_sustained_outcomes(swaps, srate_rows):
-    """Adds `_outcome_sustained` to each swap dict in place: median
-    srate in [t+60, t+300] vs last srate before the swap. Excludes the
-    immediate cwnd-reset dip."""
     by_cookie = defaultdict(list)
     for r in srate_rows:
         c = to_float(r.get("cookie"))
@@ -1771,10 +1768,7 @@ def _attach_sustained_outcomes(swaps, srate_rows):
         if not lst:
             continue
         ts_list = [x[0] for x in lst]
-        # pre is srate_before (already captured by the collector; the
-        # srate cache in the collector used the same "last before" rule)
         pre = sb
-        # post samples in [t+60, t+300]
         lo = bisect.bisect_left(ts_list, t + SUSTAINED_LO_S)
         hi = bisect.bisect_right(ts_list, t + SUSTAINED_HI_S)
         if lo >= hi:
@@ -1795,7 +1789,6 @@ def emit_swaps(rows, srate_rows, now):
     doc = {}
     for rng, (span, width) in RANGES.items():
         lo = None if span is None else now - span
-        # per-bin per-diverges: composite + sustained rates
         acc = defaultdict(lambda: {
             0: {"cw": 0, "cl": 0, "uu": 0, "ul": 0},
             1: {"cw": 0, "cl": 0, "uu": 0, "ul": 0},
@@ -3051,7 +3044,7 @@ INDEX_HTML = r"""<!doctype html>
     var s = doc.series[rng];
     var ts = s.ts;
 
-    function makeSeries(prefix, ignoreZero) {
+    function makeSeries(prefix) {
       return algs.map(function (a) {
         return prefix + a;
       }).filter(function (c) { return c in s; });
@@ -3073,8 +3066,6 @@ INDEX_HTML = r"""<!doctype html>
     });
 
     var ssCols = makeSeries("ss_");
-    // swap_score is u16; converter is identity. Only chart bins that
-    // actually have data this range.
     mk("sscore", {
       type: "line",
       data: {datasets: lineData(ssCols, s, ts, PALETTE, null, 0)},
@@ -3258,9 +3249,58 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
+  function refreshNowCardAndChart() {
+    var id = $("bucket").value;
+    if (id) loadBucket(id);
+  }
+
+  function refreshAll() {
+    var keep = $("bucket").value;
+    Promise.all([
+      j("data/meta.json"),
+      j("data/swaps.json"),
+      j("data/fleet.json"),
+    ]).then(function (results) {
+      state.meta  = results[0];
+      state.swaps = results[1];
+      state.fleet = results[2];
+
+      var bs = $("bucket");
+      var html = "";
+      var stillThere = false;
+      for (var k = 0; k < state.meta.buckets.length; k++) {
+        var b = state.meta.buckets[k];
+        html += '<option value="' + b.id + '">' + b.id +
+                ' (' + b.points + ')</option>';
+        if (b.id === keep) stillThere = true;
+      }
+      bs.innerHTML = html;
+      bs.value = stillThere ? keep : state.meta.default_bucket;
+
+      var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
+                      .replace("T", " ").slice(0, 19) + "Z";
+      if (footgen) footgen.textContent = "rendered " + stamp;
+      status("updated " + relTime(state.meta.generated_ts));
+
+      return loadBucket(bs.value);
+    }).then(function () {
+      renderDivergenceCharts();
+      renderSwaps();
+      renderFleet();
+    }).catch(function (e) {
+      err("refresh: " + (e && e.message ? e.message : e), e);
+    });
+  }
+
   function boot() {
     liveRefresh();
-    setInterval(liveRefresh, 30000);
+    setInterval(function () {
+      liveRefresh();
+      refreshNowCardAndChart();
+    }, 30000);
+
+    // Charts: match the renderer cron cadence (5 min).
+    setInterval(refreshAll, 300000);
 
     status("loading charts\u2026");
     loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
@@ -3339,9 +3379,6 @@ def main():
         print("renderer: no buckets CSV found yet")
         return 1
 
-    # Bounded loads - see load_csv docstring. Caps sized for the 24h
-    # range at current rates; if a future change needs more history,
-    # streaming binning is the next step.
     header, buckets = load_csv(bfile, max_rows=MAX_ROWS_BUCKETS)
     _, swaps = load_csv(os.path.join(HIST, "swaps.csv"), max_rows=MAX_ROWS_SWAPS)
     _, srate = load_csv(os.path.join(HIST, "srate.csv"), max_rows=MAX_ROWS_SRATE)
