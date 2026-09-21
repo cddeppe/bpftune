@@ -279,8 +279,18 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
                 if (cur32 > 1024) cur32 = 1024;
                 rh->metrics[tgt].swap_score = (__u16)cur32;
         }
-        bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu",
-                   bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q);
+        /* 0.4.58: consecutive failed swaps to this alg.  Two in a
+         * row is a pattern; a later rising rate_ema clears it in the
+         * vote path.  Win/null clears; loss increments. */
+        if (ratio_q <= 230) {           /* ratio <= 0.9 = loss */
+                if (rh->metrics[tgt].bad_streak < 255)
+                        rh->metrics[tgt].bad_streak++;
+        } else {                        /* ratio > 0.9 = win/null */
+                rh->metrics[tgt].bad_streak = 0;
+        }
+        bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu streak=%u",
+                   bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
+                   (__u32)rh->metrics[tgt].bad_streak);
         statep->swap_target = 0xff;
         statep->pre_swap_rate = 0;
 }
@@ -1068,10 +1078,17 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             {
                 __u64 r100k = rate_delivered / RATE_EMA_BYTES_PER_UNIT;
                 if (r100k > 65535) r100k = 65535;
-                if (m->rate_ema == 0)
+                if (m->rate_ema == 0) {
                     m->rate_ema = (__u16)r100k;
-                else
+                } else {
+                    __u16 old_ema = m->rate_ema;
                     m->rate_ema = (__u16)(((__u32)m->rate_ema * 15 + (__u32)r100k) >> RATE_EMA_SHIFT);
+                    /* 0.4.58: rising throughput on this alg is evidence
+                     * conditions changed for it.  Re-admit it as a swap
+                     * target -- clear the bad_streak. */
+                    if (m->rate_ema > old_ema && m->bad_streak)
+                        m->bad_streak = 0;
+                }
             }
         __u64 __div = m->metric_count + 1;
             if (__div > METRIC_AVG_CAP)

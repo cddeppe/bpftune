@@ -1,3 +1,19 @@
+bpftune (0.4.58) UNRELEASED; urgency=medium
+
+  * swap trust: two consecutive failed swaps to an algorithm remove it
+    from the target pool.  Rising rate_ema (evidence conditions changed
+    for it) or a good swap clears the streak.
+    - tcp_conn_metric gains bad_streak (u8)
+    - score_pending_swap increments on ratio<=0.9, clears otherwise
+    - vote path clears when rate_ema rises on a vote
+    - pass-3 skips any alg with bad_streak >= SWAP_BAD_STREAK_TRUST
+    Observed on 2026-09-21 evening: the score-weighted pick locked
+    onto bic (swap_score 414) while westwood at rate_ema 245 was
+    never tested.  Without a fail-streak, a lucky first winner
+    monopolizes the target slot.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Mon, 21 Sep 2026 19:30:00 +0000
+
 bpftune (0.4.57) UNRELEASED; urgency=medium
 
   * Skip swaps to the socket's own algorithm.  The tier chain picked

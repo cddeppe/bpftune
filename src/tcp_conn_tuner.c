@@ -330,6 +330,10 @@ static void reanchor_best(int map_fd)
 		        __u64 ss, weighted;
 		        if (r.metrics[j].metric_count < MIN_LEADER_TRUST) continue;
 		        if (rv == 0) continue;
+		        /* 0.4.58: exclude algorithms that failed the last
+		         * SWAP_BAD_STREAK_TRUST swaps.  Rising rate_ema on
+		         * a later vote clears this; a good swap clears it. */
+		        if (r.metrics[j].bad_streak >= SWAP_BAD_STREAK_TRUST) continue;
 		        ss = r.metrics[j].swap_score;
 		        if (ss == 0) ss = SWAP_SCORE_NEUTRAL;
 		        weighted = rv * ss / SWAP_SCORE_NEUTRAL;

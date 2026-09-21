@@ -146,6 +146,8 @@ struct tcp_conn_metric {
 
 	__u16 rate_ema;
 	__u16 swap_score;
+	__u8  bad_streak;   /* 0.4.58: consecutive failed swaps to this alg */
+	__u8  _pad0;
 };
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
@@ -224,6 +226,10 @@ struct remote_host {
  * loses the race automatically. */
 #define SWAP_SCORE_NEUTRAL       256
 #define SWAP_SCORE_STEP_DIV      16
+/* 0.4.58: two consecutive failed swaps is a pattern; three costs too
+ * much.  Rising rate_ema on a later vote clears this -- network
+ * conditions changed, re-admit as a target. */
+#define SWAP_BAD_STREAK_TRUST    2
 #define SWAP_OUTCOME_MIN_RNAL_NS (60ULL * 1000000000ULL)
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
