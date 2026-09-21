@@ -1,3 +1,16 @@
+bpftune (0.4.57) UNRELEASED; urgency=medium
+
+  * Skip swaps to the socket's own algorithm.  The tier chain picked
+    swap_tgt = best_alt_i unconditionally; if the socket was already
+    on the metric leader and no rate leader existed, swap_tgt == s.
+    set_cong() then reset cwnd for a no-op algorithm change and
+    incremented swap_count toward freeze.
+    Observed: cookie 45881 swapped cubic->cubic three times (d3) and
+    then froze on cubic.  One-line guard inserted before the tier
+    chain; freeze already guarded tgt8 != s.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Mon, 21 Sep 2026 17:30:00 +0000
+
 bpftune (0.4.56) UNRELEASED; urgency=medium
 
   * FIX 0.4.55: /16 mask was applied to the ESTABLISHED key switch only,

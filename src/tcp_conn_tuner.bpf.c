@@ -827,6 +827,11 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
 
             if (!settle_expired) {
                 /* settle window -- wait */
+            } else if (swap_tgt == s) {
+                /* 0.4.57: already on the best target for this
+                 * bucket.  A no-op swap still resets cwnd and
+                 * counts toward freeze (cookie 45881 swapped
+                 * cubic->cubic three times then froze). */
             } else if (protected_exploring) {
                 /* exploring, not enough votes on the alg yet */
             } else if (desperate && rate_ok && util_ok) {
