@@ -40,10 +40,6 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
 
-# Per (bucket, alg) columns captured from remote_host_map.
-#   ss_* = swap_score,  256 = neutral, higher = swaps into this alg helped
-#   bs_* = bad_streak,  >= 2 excludes the alg from being a swap target
-#   ns_* = null_streak, >= 3 excludes the alg from being a swap target
 SCORE_COLS = (["ss_" + a for a in CONGS]
               + ["bs_" + a for a in CONGS]
               + ["ns_" + a for a in CONGS])
@@ -474,14 +470,39 @@ def data_buckets(hosts, n=8):
     return rows
 
 
+def _vote_sum(v):
+    """Total metric_count across all algs for one bucket. Used to pick
+    the bucket whose leaderboard is most informative: a bucket that
+    went quiet hours ago has a huge lifetime `instances` count but no
+    votes, which would leave the leaderboard empty except for whichever
+    alg was last tried on it."""
+    metrics = v.get("metrics") or []
+    total = 0
+    for m in metrics:
+        if isinstance(m, dict):
+            try:
+                total += int(m.get("metric_count", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
 def data_metric(hosts):
+    """Metric leaderboard, sourced from the busiest bucket by votes.
+
+    read_map sorts by lifetime `instances`, which never decays: it can
+    point at a bucket that has been idle for hours, whose metrics array
+    has one live alg and fifteen all-zero slots. We instead pick the
+    bucket with the highest total vote count so the leaderboard reflects
+    a busiest set of algorithms, and we show all 16 algs including
+    zeros so the field is visible."""
     if not hosts:
         return []
-    metrics = hosts[0][2].get("metrics") or []
+    picked = max(hosts, key=lambda x: _vote_sum(x[2]))
+    metrics = picked[2].get("metrics") or []
     rows = []
-    for i, m in enumerate(metrics):
-        if not isinstance(m, dict):
-            continue
+    for i in range(16):
+        m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
         try:
             val = int(m.get("metric_value", 0) or 0)
             mc  = int(m.get("metric_count", 0) or 0)
@@ -490,13 +511,11 @@ def data_metric(hosts):
             bs  = int(m.get("bad_streak", 0) or 0)
             ns  = int(m.get("null_streak", 0) or 0)
         except Exception:
-            continue
-        if mc == 0 and a == 0:
-            continue
+            val, mc, a, ss, bs, ns = 0, 0, 0, 0, 0, 0
         if val in (0, (1<<64)-1):
             val = 0
         rows.append({
-            "alg":    CONGS[i] if i < 16 else "alg%d" % i,
+            "alg":    CONGS[i],
             "metric": round(val / 1e6, 1) if val else 0,
             "votes":  mc,
             "alive":  a,
@@ -504,6 +523,8 @@ def data_metric(hosts):
             "bad_streak":   bs,
             "null_streak":  ns,
         })
+    # Order by metric if the alg has been tried, else push to the end
+    # (so untried algs sort last instead of jumbling the top).
     rows.sort(key=lambda r: r["metric"] if r["metric"] else 1<<62)
     return rows
 
@@ -1553,16 +1574,14 @@ if __name__ == "__main__":
 
 # =================== renderer ===================
 # Bounded-memory load_csv: deque on the DictReader keeps only the last
-# N rows in memory regardless of file size. Fixes the renderer OOM on
-# large buckets.v2.csv.
+# N rows in memory regardless of file size.
 #
-# Per-alg series now include ss_<alg> (swap_score), bs_<alg>
-# (bad_streak), ns_<alg> (null_streak) alongside re_<alg>.
+# Per-alg series include re_<alg> (rate_ema), ss_<alg> (swap_score),
+# bs_<alg> (bad_streak), ns_<alg> (null_streak).
 #
 # Frontend refreshes:
 #   * `now` card + currently selected chart: every 30 s.
-#   * full dashboard (dropdown + divergence + swaps + fleet): every
-#     5 min to match the renderer cron cadence.
+#   * full dashboard: every 5 min to match the renderer cron cadence.
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
@@ -1571,15 +1590,11 @@ Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv + srate.csv,
 writes index.html and data/*.json. The browser also fetches
 current.json (every 30s).
 
-load_csv is bounded-memory: keeps the last N rows only. If the file
-grows past that, the oldest data drops off the front of each range,
-but the renderer never OOMs.
+load_csv is bounded-memory: keeps the last N rows only.
 
 For swap outcomes there are two views:
   * composite - from swaps.csv, `outcome` column (met val= ratio).
   * sustained - median srate in [t+60, t+300] joined from srate.csv.
-               Excludes the cwnd-reset dip; this is the accurate
-               throughput measure.
 
 `collected_ts` is the only date-safe timestamp (falls back to
 `ts_epoch` for v1 rows).
@@ -1655,9 +1670,6 @@ def buckets_source():
 
 
 def load_csv(path, max_rows=None):
-    """Read a CSV. If max_rows is set, keeps only the last max_rows
-    rows in memory (bounded deque). Correct for append-only,
-    chronologically-sorted files, which is what every CSV here is."""
     if not path or not os.path.exists(path):
         return [], []
     with open(path, newline="") as f:
@@ -1713,7 +1725,6 @@ def emit_meta(buckets, algs, now):
             "instances_mean": round(sum(inst) / len(inst), 2) if inst else 0,
             "last_ts": int(last),
         })
-    # Prefer buckets with recent activity; break ties on 24h mean.
     entries.sort(key=lambda e: (e["last_ts"], e["instances_mean"]),
                  reverse=True)
     write_json("meta.json", {
@@ -2178,10 +2189,9 @@ INDEX_HTML = r"""<!doctype html>
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
 
-  /* metric leaderboard per-cell coloring */
   .cell-good { color: var(--good); font-weight: 600; }
   .cell-bad  { color: var(--bad);  font-weight: 600; }
-  .cell-dim  { color: var(--muted); }
+  .cell-dim  { color: var(--muted-2); }
 
   .list { display: flex; flex-direction: column; }
   .list .item {
@@ -2389,7 +2399,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c6">
-      <h3>metric leaderboard <span class="cnt">score 256=neutral &middot; bad&ge;2 / null&ge;3 exclude</span></h3>
+      <h3>metric leaderboard <span class="cnt">busiest bucket &middot; score 256=neutral &middot; bad&ge;2 / null&ge;3 exclude</span></h3>
       <div id="lv-metric"></div>
     </section>
 
@@ -2702,9 +2712,6 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-metric", '<div class="placeholder">(no metrics yet)</div>');
       return;
     }
-    // Swap score: >256 green, <256 red, exactly 256 neutral.
-    // Bad streak: 0 green, >=2 red (excludes alg from swap targeting).
-    // Null streak: 0 green, >=3 red (excludes alg from swap targeting).
     function colorSwapScore(v) {
       if (v == null) return "cell-dim";
       if (v > 256) return "cell-good";
@@ -2728,9 +2735,10 @@ INDEX_HTML = r"""<!doctype html>
       '<th>swap_score</th><th>bad_streak</th><th>null_streak</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
+      var dim = (r.votes === 0 && r.alive === 0) ? " dim" : "";
       html += '<tr>' +
-        '<td class="name">' + esc(r.alg) + '</td>' +
-        '<td class="mono">' + r.metric.toFixed(1) + '</td>' +
+        '<td class="name' + dim + '">' + esc(r.alg) + '</td>' +
+        '<td class="mono' + dim + '">' + r.metric.toFixed(1) + '</td>' +
         '<td class="mono dim">' + fmtN(r.votes) + '</td>' +
         '<td class="mono dim">' + fmtN(r.alive) + '</td>' +
         '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
@@ -3130,9 +3138,6 @@ INDEX_HTML = r"""<!doctype html>
       }),
     });
 
-    // Two indicator series on one chart: bad_streak (dashed) and
-    // null_streak (solid). Same palette so an alg is identifiable
-    // across the page.
     var bsCols = makeSeries("bs_");
     var nsCols = makeSeries("ns_");
     var streakSets = [];
