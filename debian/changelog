@@ -1,3 +1,19 @@
+bpftune (0.4.55) UNRELEASED; urgency=medium
+
+  * IPv4 /16 bucket merge.  The tuner keyed on full remote IP; Google's
+    CDN edges (142.251.150.4, 142.251.157.4, ...) fragmented into ~15
+    separate buckets each with too little traffic to learn.  Only 22 of
+    ~150 fleet buckets ever reach 10 votes on any algorithm.
+    IPv4 keys now masked to /16 so all edges of the same CDN share one
+    bucket's learned state.  IPv6 unchanged (still full-address keys).
+    Individual IPs still appear verbatim on swap dest= lines, so
+    per-IP analysis from the log is preserved.
+  * tcp_conn_metric: add swap_score (u16, unused in this release).
+    Reserved for 0.4.56's swap-outcome feedback.
+  * STATE_VERSION 15 -> 16.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Mon, 21 Sep 2026 11:00:00 +0000
+
 bpftune (0.4.54) UNRELEASED; urgency=medium
 
   * three changes to reduce wasted swaps and fix the trigger operands.

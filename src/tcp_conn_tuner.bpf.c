@@ -161,7 +161,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
     switch (ops->family) {
     case AF_INET:
         key->s6_addr32[2] = bpf_htonl(0xffff);
-        key->s6_addr32[3] = ops->remote_ip4;
+        key->s6_addr32[3] = ops->remote_ip4 & bpf_htonl(0xFFFF0000)   /* 0.4.55: /16 merge */;
         break;
     case AF_INET6:
         key->s6_addr32[0] = ops->remote_ip6[0];

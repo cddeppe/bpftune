@@ -138,6 +138,7 @@ struct tcp_conn_metric {
 	/* 0.4.45: rate EMA in 100KB/s units; swap target reads it. */
 
 	__u16 rate_ema;
+	__u16 swap_score;
 };
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
