@@ -120,6 +120,13 @@ struct conn_state {
 	__u64 good_bitmap;
 	__u64 proved_bitmap;
 	__u64 cleaned;
+
+
+	/* 0.4.56: pending-swap scoring. */
+
+	__u64 pre_swap_rate;
+
+	__u64 swap_target;
 };
 
 struct tcp_conn_metric {
@@ -207,6 +214,17 @@ struct remote_host {
  * tier's 2-consecutive-bad requirement. */
 #define SLOW_VS_REF_PCT 10
 #define RATE_TRIGGER_PCT 50
+
+/* 0.4.56: floor per-bucket reference used by d2.  Mobile buckets at
+ * 4 Mbps ref make "10% of ref" 0.4 Mbps, which nothing trips. */
+#define REF_FLOOR_BPS           2000000ULL
+
+/* 0.4.56: per-(bucket,alg) swap outcome score.  256 neutral; target
+ * picker computes rate_ema * score / 256 so a repeatedly-failing alg
+ * loses the race automatically. */
+#define SWAP_SCORE_NEUTRAL       256
+#define SWAP_SCORE_STEP_DIV      16
+#define SWAP_OUTCOME_MIN_RNAL_NS (60ULL * 1000000000ULL)
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
  * bucket reference, it is stuck regardless of what the leader scores.

@@ -164,10 +164,10 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
         key->s6_addr32[3] = ops->remote_ip4 & bpf_htonl(0xFFFF0000)   /* 0.4.55: /16 merge */;
         break;
     case AF_INET6:
-        key->s6_addr32[0] = ops->remote_ip6[0];
-        key->s6_addr32[1] = ops->remote_ip6[1];
-        key->s6_addr32[2] = ops->remote_ip6[2];
-        key->s6_addr32[3] = ops->remote_ip6[3];
+        key->s6_addr32[0] = ops->remote_ip6[0];  /* 0.4.56: /32 */
+        key->s6_addr32[1] = 0;
+        key->s6_addr32[2] = 0;
+        key->s6_addr32[3] = 0;
         break;
     default:
         return 1;
@@ -241,6 +241,48 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
         }
     }
     return 1;
+}
+
+/* 0.4.56: score the pending swap once >=60s have elapsed.  Cur rate
+ * vs the captured pre-swap rate sets target alg's swap_score; 256 is
+ * neutral.  Called from the vote path. */
+static __always_inline void
+score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
+                   struct conn_state *statep, __u64 now, __u64 cur_rate)
+{
+        __u8 tgt;
+        __u64 pre, elapsed, ratio_q;
+
+        if (statep->swap_target == 0xff) return;
+        if (statep->pre_swap_rate == 0)  return;
+        elapsed = now - statep->last_swap_at;
+        if (elapsed < SWAP_OUTCOME_MIN_RNAL_NS) return;
+
+        pre = statep->pre_swap_rate;
+        tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
+        ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
+        if (ratio_q > 1024) ratio_q = 1024;
+
+        /* read-modify-write u16 field via pointer cast */
+        {
+                __u16 cur16 = rh->metrics[tgt].swap_score;
+                __u32 cur32 = cur16 ? cur16 : SWAP_SCORE_NEUTRAL;
+                /* BPF: no signed division.  Compute |delta| unsigned,
+                 * then add/subtract based on which side is larger. */
+                if (ratio_q >= cur32) {
+                        __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_STEP_DIV;
+                        cur32 += step;
+                } else {
+                        __u32 drop = (__u32)(cur32 - ratio_q) / SWAP_SCORE_STEP_DIV;
+                        cur32 = (drop > cur32) ? 0 : cur32 - drop;
+                }
+                if (cur32 > 1024) cur32 = 1024;
+                rh->metrics[tgt].swap_score = (__u16)cur32;
+        }
+        bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu",
+                   bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q);
+        statep->swap_target = 0xff;
+        statep->pre_swap_rate = 0;
 }
 
 SEC("sockops")
@@ -367,13 +409,13 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     switch (ops->family) {
     case AF_INET:
         key->s6_addr32[2] = bpf_htonl(0xffff);
-        key->s6_addr32[3] = ops->remote_ip4;
+        key->s6_addr32[3] = ops->remote_ip4 & bpf_htonl(0xFFFF0000);
         break;
     case AF_INET6:
-        key->s6_addr32[0] = ops->remote_ip6[0];
-        key->s6_addr32[1] = ops->remote_ip6[1];
-        key->s6_addr32[2] = ops->remote_ip6[2];
-        key->s6_addr32[3] = ops->remote_ip6[3];
+        key->s6_addr32[0] = ops->remote_ip6[0];  /* 0.4.56: /32 */
+        key->s6_addr32[1] = 0;
+        key->s6_addr32[2] = 0;
+        key->s6_addr32[3] = 0;
         break;
     default:
         return 1;
@@ -555,6 +597,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
         statep->last_metric = metric;
         statep->last_rate_bps = rate_delivered;
+        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), rate_delivered);
         statep->votes_on_alg++;
         /* Track the best reading this socket has ever produced, and
          * which algorithm it was on at the time.  Used by the freeze
@@ -601,6 +644,10 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             greedy = false;
         mt_alt_i = best_alt_i;
         swap_tgt = best_alt_i;
+        /* 0.4.56: score-weighted target is picked by userspace in the
+         * reanchor (rate_best_i).  BPF just reads it.  Keeping the
+         * multiply/select out of the vote path; the 16-way loop with
+         * div blows the 1M insn verifier limit. */
         if (remote_host->rate_best_v != 0) {
             __u8 rt = (__u8)(remote_host->rate_best_i & (NUM_TCP_CONN_METRICS - 1));
             if (rt != s && remote_host->metrics[rt].rate_ema > 0)
@@ -755,10 +802,13 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
              * requirement above already prevents thrash. */
             bool settle_expired = (now >= statep->last_swap_at + T_SETTLE_NS);
 
+            __u64 eff_ref = remote_host->max_rate_delivered;
+            if (eff_ref < REF_FLOOR_BPS)
+                eff_ref = REF_FLOOR_BPS;
             bool slow_vs_ref = (statep->last_rate_bps > 0 &&
-                                remote_host->max_rate_delivered > 0 &&
+                                eff_ref > 0 &&
                                 statep->last_rate_bps * 100 <
-                                remote_host->max_rate_delivered * SLOW_VS_REF_PCT);
+                                eff_ref * SLOW_VS_REF_PCT);
 
             /* 0.4.52: slow-vs-leader.  Uses the rate directly, bypassing
              * the composite.  A swap that raises throughput fills the
@@ -789,6 +839,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->swap_count++;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->pre_swap_rate = statep->last_rate_bps;
+                    statep->swap_target = swap_tgt;
                     statep->last_rate_bps = 0;
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
@@ -817,6 +869,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->pre_swap_rate = statep->last_rate_bps;
+                    statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
@@ -829,6 +883,10 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                         statep->swap_count++;
                         statep->last_swap_at = now;
                         statep->last_metric = 0;
+
+                        /* 0.4.56: stage pre-swap rate and target for scoring. */
+                        statep->pre_swap_rate = statep->last_rate_bps;
+                        statep->swap_target = swap_tgt;
                         statep->last_rate_bps = 0;
                         statep->hist_1 = 0;
                         statep->hist_2 = 0;
@@ -857,6 +915,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->pre_swap_rate = statep->last_rate_bps;
+                    statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
@@ -869,6 +929,10 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                         statep->swap_count++;
                         statep->last_swap_at = now;
                         statep->last_metric = 0;
+
+                        /* 0.4.56: stage pre-swap rate and target for scoring. */
+                        statep->pre_swap_rate = statep->last_rate_bps;
+                        statep->swap_target = swap_tgt;
                         statep->last_rate_bps = 0;
                         statep->hist_1 = 0;
                         statep->hist_2 = 0;
@@ -907,6 +971,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    statep->pre_swap_rate = statep->last_rate_bps;
+                    statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
                     statep->hist_1 = 0;
                     statep->hist_2 = 0;
@@ -942,6 +1008,10 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                 statep->swap_count++;
                                 statep->last_swap_at = now;
                                 statep->last_metric = 0;
+
+                                /* 0.4.56: stage pre-swap rate and target for scoring. */
+                                statep->pre_swap_rate = statep->last_rate_bps;
+                                statep->swap_target = swap_tgt;
                                 statep->last_rate_bps = 0;
                                 statep->hist_1 = 0;
                                 statep->hist_2 = 0;

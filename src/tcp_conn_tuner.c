@@ -320,19 +320,24 @@ static void reanchor_best(int map_fd)
 		{
 
 		    __u64 rate_bi = ~((__u64)0), rate_bv = 0;
-
+		    __u64 best_weighted = 0;
 		    int j;
-
+		    /* 0.4.56: pick by rate_ema * swap_score so a target with a
+		     * bad swap track record gets demoted automatically.  Store
+		     * raw rate_ema in rate_bv -- BPF's trigger math needs a rate. */
 		    for (j = 0; j < NUM_TCP_CONN_METRICS; j++) {
-
 		        __u64 rv = r.metrics[j].rate_ema;
-
+		        __u64 ss, weighted;
 		        if (r.metrics[j].metric_count < MIN_LEADER_TRUST) continue;
-
 		        if (rv == 0) continue;
-
-		        if (rate_bv == 0 || rv > rate_bv) { rate_bi = (__u64)j; rate_bv = rv; }
-
+		        ss = r.metrics[j].swap_score;
+		        if (ss == 0) ss = SWAP_SCORE_NEUTRAL;
+		        weighted = rv * ss / SWAP_SCORE_NEUTRAL;
+		        if (rate_bv == 0 || weighted > best_weighted) {
+		            rate_bi = (__u64)j;
+		            rate_bv = rv;
+		            best_weighted = weighted;
+		        }
 		    }
 
 		    new_rbi = (rate_bv == 0) ? 0 : rate_bi;

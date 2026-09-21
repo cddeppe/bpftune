@@ -1,3 +1,21 @@
+bpftune (0.4.56) UNRELEASED; urgency=medium
+
+  * FIX 0.4.55: /16 mask was applied to the ESTABLISHED key switch only,
+    not the vote-path switch.  Sockets created under the merged key
+    (82.43.0.0) voted under the full-IP key (CLIENT-IP); every IPv4
+    vote was dropped since 0.4.55 deployed.
+  * IPv4 /16 and IPv6 /32 applied to both key construction sites.
+  * d2 threshold uses a 16 Mbps reference floor, so low-rate mobile
+    buckets (ref ~4 Mbps) don't set a bar nothing trips.
+  * swap_score feedback: score_pending_swap in BPF records post/pre
+    ratio >=60s after each swap; userspace pass-3 picks the rate target
+    by rate_ema * swap_score so a repeatedly-failing algorithm loses
+    the race automatically.  Selection weighted in userspace because
+    the 16-way loop in the vote path blows the 1M insn verifier limit.
+  * STATE_VERSION 16.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Mon, 21 Sep 2026 16:00:00 +0000
+
 bpftune (0.4.55) UNRELEASED; urgency=medium
 
   * IPv4 /16 bucket merge.  The tuner keyed on full remote IP; Google's
