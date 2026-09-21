@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 bpftune dashboard installer. Idempotent - safe to re-run.
@@ -40,7 +39,14 @@ CLI       = os.path.join(SELF_DIR, "bpftune-cli.py")
 CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
-SS_COLS = ["ss_" + a for a in CONGS]
+
+# Per (bucket, alg) columns captured from remote_host_map.
+#   ss_* = swap_score,  256 = neutral, higher = swaps into this alg helped
+#   bs_* = bad_streak,  >= 2 excludes the alg from being a swap target
+#   ns_* = null_streak, >= 3 excludes the alg from being a swap target
+SCORE_COLS = (["ss_" + a for a in CONGS]
+              + ["bs_" + a for a in CONGS]
+              + ["ns_" + a for a in CONGS])
 
 SWAP_COLS_REQUIRED = ["socket_rate_before", "dest", "dest_raw",
                       "f_ema", "t_ema", "srate_before"]
@@ -106,16 +112,16 @@ def migrate():
         with open(BUCKETS_V2, newline="") as f:
             first = f.readline().strip()
         cols = first.split(",") if first else []
-        missing = [c for c in SS_COLS if c not in cols]
+        missing = [c for c in SCORE_COLS if c not in cols]
         if missing and cols:
-            say("  appending %d swap_score columns to buckets.v2.csv "
+            say("  appending %d score/streak columns to buckets.v2.csv "
                 "(one-time rewrite of %d MB - be patient)"
                 % (len(missing),
                    os.path.getsize(BUCKETS_V2) // (1024 * 1024) or 1))
             _append_columns(BUCKETS_V2, missing)
             say("  buckets.v2.csv migrated")
         else:
-            say("  buckets.v2.csv already has ss_* columns")
+            say("  buckets.v2.csv already has ss_*/bs_*/ns_* columns")
 
     if os.path.exists(SWAPS):
         with open(SWAPS, newline="") as f:
@@ -481,6 +487,8 @@ def data_metric(hosts):
             mc  = int(m.get("metric_count", 0) or 0)
             a   = int(m.get("sockets_alive", 0) or 0)
             ss  = int(m.get("swap_score", 0) or 0)
+            bs  = int(m.get("bad_streak", 0) or 0)
+            ns  = int(m.get("null_streak", 0) or 0)
         except Exception:
             continue
         if mc == 0 and a == 0:
@@ -492,7 +500,9 @@ def data_metric(hosts):
             "metric": round(val / 1e6, 1) if val else 0,
             "votes":  mc,
             "alive":  a,
-            "swap_score": ss,
+            "swap_score":   ss,
+            "bad_streak":   bs,
+            "null_streak":  ns,
         })
     rows.sort(key=lambda r: r["metric"] if r["metric"] else 1<<62)
     return rows
@@ -980,10 +990,14 @@ def render_text(d):
     for row in _full("TOP DESTINATION BUCKETS", bk):
         print(row)
     print()
-    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}{'score':>7}"]
+    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"
+          f"{'score':>7}{'bad':>5}{'null':>6}"]
     for r in d["metric"]:
         mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
-                  f"{r['votes']:>7}{r['alive']:>7}{r.get('swap_score',0):>7}")
+                  f"{r['votes']:>7}{r['alive']:>7}"
+                  f"{r.get('swap_score',0):>7}"
+                  f"{r.get('bad_streak',0):>5}"
+                  f"{r.get('null_streak',0):>6}")
     pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'p_max':>8}"
           f"{'s_avg':>8}{'s_max':>8}{'n':>5}"]
     for r in d["proof"]:
@@ -993,8 +1007,8 @@ def render_text(d):
         n  = f"{r['samples']}" if r["samples"] is not None else "-"
         pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
                   f"{pm:>8}{sa:>8}{sm:>8}{n:>5}")
-    for row in _twocol("ALGORITHM LEADERBOARD (metric, score)", mt,
-                       "PROOF LEADERBOARD (speed)",     pr):
+    for row in _twocol("ALGORITHM LEADERBOARD (metric, score, streaks)",
+                       mt, "PROOF LEADERBOARD (speed)", pr):
         print(row)
     print()
     rt = [f"  {'thr':>7}{'n':>5}{'mean':>9}{'min':>9}{'max':>9}"]
@@ -1091,9 +1105,13 @@ COLLECTOR_SRC = r'''#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`. Each
-bucket's per-alg row carries mv_<alg> (metric_value), re_<alg>
-(rate_ema), and ss_<alg> (swap_score; 256 = neutral, above = swaps
-into that alg have been helping).
+bucket's per-alg row carries:
+
+  mv_<alg>  metric_value
+  re_<alg>  rate_ema
+  ss_<alg>  swap_score  (256 = neutral, higher = swaps into this alg helped)
+  bs_<alg>  bad_streak  (>= 2 excludes the alg as a swap target)
+  ns_<alg>  null_streak (>= 3 excludes the alg as a swap target)
 
 Swaps from all /var/log/bpftune-met-*.log (per-file byte offsets in
 .swaps_pos.json).
@@ -1101,12 +1119,6 @@ Raw srate events from the same logs -> /var/lib/bpftune/history/srate.csv.
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
-
-Note on outcome: this collector writes the *composite* outcome
-(met val= ratio, first-post) into swaps.csv. The sustained srate
-outcome (median srate in [t+60, t+300]) is computed downstream by the
-CLI (current.json) and the renderer (swaps.json) - it needs a future
-window the collector cannot see from a single tick.
 """
 import csv, json, os, re, socket, struct, subprocess, sys, time
 from pathlib import Path
@@ -1161,8 +1173,6 @@ def tcp_rmem():
 
 
 def append_csv(path, row):
-    """Schema-order-safe append. Emits in the file's existing column
-    order if the file exists; else header from row key order."""
     if path.exists() and path.stat().st_size > 0:
         with open(path, newline="") as f:
             try:
@@ -1244,6 +1254,8 @@ def collect_buckets(ts_epoch, map_data):
             row["mv_" + CONGS[i]] = int(m.get("metric_value", 0) or 0)
             row["re_" + CONGS[i]] = int(m.get("rate_ema", 0) or 0)
             row["ss_" + CONGS[i]] = int(m.get("swap_score", 0) or 0)
+            row["bs_" + CONGS[i]] = int(m.get("bad_streak", 0) or 0)
+            row["ns_" + CONGS[i]] = int(m.get("null_streak", 0) or 0)
         row["tcp_rmem_min"] = rm_min
         row["tcp_rmem_def"] = rm_def
         row["tcp_rmem_max"] = rm_max
@@ -1544,12 +1556,12 @@ if __name__ == "__main__":
 # N rows in memory regardless of file size. Fixes the renderer OOM on
 # large buckets.v2.csv.
 #
-# Two live-refresh fixes are in the HTML below:
-#   * default bucket is the one with the most RECENT row, not the
-#     biggest 24h mean - a bucket that went quiet at 8am no longer
-#     gets selected over one that's live right now.
-#   * `now` card and the currently selected chart re-fetch every 30 s;
-#     the full dashboard (dropdown + divergence + swaps + fleet) every
+# Per-alg series now include ss_<alg> (swap_score), bs_<alg>
+# (bad_streak), ns_<alg> (null_streak) alongside re_<alg>.
+#
+# Frontend refreshes:
+#   * `now` card + currently selected chart: every 30 s.
+#   * full dashboard (dropdown + divergence + swaps + fleet): every
 #     5 min to match the renderer cron cadence.
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
@@ -1702,8 +1714,6 @@ def emit_meta(buckets, algs, now):
             "last_ts": int(last),
         })
     # Prefer buckets with recent activity; break ties on 24h mean.
-    # A bucket with 500 rows but no data in 11 hours would show a
-    # frozen "now" card and rate chart if selected by default.
     entries.sort(key=lambda e: (e["last_ts"], e["instances_mean"]),
                  reverse=True)
     write_json("meta.json", {
@@ -1721,7 +1731,11 @@ def emit_bucket(bid, rows, algs, now):
     doc = {"id": bid, "series": {}}
     for rng, (span, width) in RANGES.items():
         lo = None if span is None else now - span
-        cols = [f"re_{a}" for a in algs] + [f"ss_{a}" for a in algs] + EXTRA_COLS
+        cols = ([f"re_{a}" for a in algs]
+                + [f"ss_{a}" for a in algs]
+                + [f"bs_{a}" for a in algs]
+                + [f"ns_{a}" for a in algs]
+                + EXTRA_COLS)
         if rng == "24h":
             cols += [f"mv_{a}" for a in algs]
         ts, out = bin_series(rows, lo, width, cols)
@@ -2164,6 +2178,11 @@ INDEX_HTML = r"""<!doctype html>
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
 
+  /* metric leaderboard per-cell coloring */
+  .cell-good { color: var(--good); font-weight: 600; }
+  .cell-bad  { color: var(--bad);  font-weight: 600; }
+  .cell-dim  { color: var(--muted); }
+
   .list { display: flex; flex-direction: column; }
   .list .item {
     display: grid;
@@ -2370,7 +2389,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c6">
-      <h3>metric leaderboard <span class="cnt">swap_score: 256 = neutral</span></h3>
+      <h3>metric leaderboard <span class="cnt">score 256=neutral &middot; bad&ge;2 / null&ge;3 exclude</span></h3>
       <div id="lv-metric"></div>
     </section>
 
@@ -2432,6 +2451,11 @@ INDEX_HTML = r"""<!doctype html>
   <section class="card">
     <h2><span class="dot"></span>swap_score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
     <div class="chart-box h-xl"><canvas id="sscore"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = swap target penalty in effect</span></h2>
+    <div class="chart-box h-xl"><canvas id="streaks"></canvas></div>
   </section>
 
   <section class="card">
@@ -2678,24 +2702,43 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-metric", '<div class="placeholder">(no metrics yet)</div>');
       return;
     }
+    // Swap score: >256 green, <256 red, exactly 256 neutral.
+    // Bad streak: 0 green, >=2 red (excludes alg from swap targeting).
+    // Null streak: 0 green, >=3 red (excludes alg from swap targeting).
+    function colorSwapScore(v) {
+      if (v == null) return "cell-dim";
+      if (v > 256) return "cell-good";
+      if (v < 256) return "cell-bad";
+      return "cell-dim";
+    }
+    function colorBadStreak(v) {
+      if (v == null) return "cell-dim";
+      if (v >= 2) return "cell-bad";
+      if (v === 0) return "cell-good";
+      return "";
+    }
+    function colorNullStreak(v) {
+      if (v == null) return "cell-dim";
+      if (v >= 3) return "cell-bad";
+      if (v === 0) return "cell-good";
+      return "";
+    }
     var html = '<table class="tbl"><thead><tr>' +
       '<th>alg</th><th>metric</th><th>votes</th><th>alive</th>' +
-      '<th>swap_score</th>' +
+      '<th>swap_score</th><th>bad_streak</th><th>null_streak</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
-      var ss = (r.swap_score == null) ? null : r.swap_score;
-      var ssClass = "";
-      if (ss != null) {
-        if (ss >= 320) ssClass = ' style="color:var(--good)"';
-        else if (ss <= 192) ssClass = ' style="color:var(--bad)"';
-      }
       html += '<tr>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
         '<td class="mono">' + r.metric.toFixed(1) + '</td>' +
         '<td class="mono dim">' + fmtN(r.votes) + '</td>' +
         '<td class="mono dim">' + fmtN(r.alive) + '</td>' +
-        '<td class="mono"' + ssClass + '>' +
-          (ss == null ? "-" : ss) + '</td>' +
+        '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
+          (r.swap_score == null ? "-" : r.swap_score) + '</td>' +
+        '<td class="mono ' + colorBadStreak(r.bad_streak) + '">' +
+          (r.bad_streak == null ? "-" : r.bad_streak) + '</td>' +
+        '<td class="mono ' + colorNullStreak(r.null_streak) + '">' +
+          (r.null_streak == null ? "-" : r.null_streak) + '</td>' +
         '</tr>';
     });
     setHTML("lv-metric", html + '</tbody></table>');
@@ -3086,6 +3129,44 @@ INDEX_HTML = r"""<!doctype html>
         },
       }),
     });
+
+    // Two indicator series on one chart: bad_streak (dashed) and
+    // null_streak (solid). Same palette so an alg is identifiable
+    // across the page.
+    var bsCols = makeSeries("bs_");
+    var nsCols = makeSeries("ns_");
+    var streakSets = [];
+    streakSets = streakSets.concat(
+      lineData(bsCols, s, ts, PALETTE, null, 0).map(function (ds) {
+        ds.borderDash = [4, 3];
+        ds.label = ds.label.replace(/^bs_/, "") + " bad";
+        return ds;
+      }));
+    streakSets = streakSets.concat(
+      lineData(nsCols, s, ts, PALETTE, null, 0).map(function (ds) {
+        ds.label = ds.label.replace(/^ns_/, "") + " null";
+        return ds;
+      }));
+    mk("streaks", {
+      type: "line",
+      data: {datasets: streakSets},
+      options: timeOpts({
+        scales: {
+          x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"},
+              grid: {display: false},
+              ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
+          y: {beginAtZero: true, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 6, padding: 6, precision: 0}},
+        },
+        plugins: {
+          legend: {
+            display: true, position: "bottom", align: "start",
+            labels: {boxWidth: 8, boxHeight: 8, padding: 8,
+                     font: {size: 10.5}},
+          },
+        },
+      }),
+    });
   }
 
   function renderDivChart(canvasId, suffix) {
@@ -3299,7 +3380,6 @@ INDEX_HTML = r"""<!doctype html>
       refreshNowCardAndChart();
     }, 30000);
 
-    // Charts: match the renderer cron cadence (5 min).
     setInterval(refreshAll, 300000);
 
     status("loading charts\u2026");
