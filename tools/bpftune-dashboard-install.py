@@ -36,6 +36,13 @@ COLLECTOR = os.path.join(SELF_DIR, "bpftune-collector.py")
 RENDERER  = os.path.join(SELF_DIR, "bpftune-render.py")
 CLI       = os.path.join(SELF_DIR, "bpftune-cli.py")
 
+# Must match CONGS in the collector/CLI/renderer. Used only during
+# bucket migration to append the ss_<alg> score columns.
+CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
+         "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
+         "hybla", "nv"]
+SS_COLS = ["ss_" + a for a in CONGS]
+
 SWAP_COLS_REQUIRED = ["socket_rate_before", "dest", "dest_raw",
                       "f_ema", "t_ema", "srate_before"]
 
@@ -67,6 +74,8 @@ def write_file(path, text, mode=0o644):
 
 
 def _append_columns(path, new_cols):
+    """Append columns to a CSV in place, empty for existing rows.
+    Preserves history. Consumers using DictReader treat empty as null."""
     with open(path, newline="") as f:
         rd = csv.reader(f)
         try:
@@ -96,6 +105,21 @@ def migrate():
     else:
         say("  no buckets.csv to migrate")
 
+    if os.path.exists(BUCKETS_V2):
+        with open(BUCKETS_V2, newline="") as f:
+            first = f.readline().strip()
+        cols = first.split(",") if first else []
+        missing = [c for c in SS_COLS if c not in cols]
+        if missing and cols:
+            say("  appending %d swap_score columns to buckets.v2.csv "
+                "(one-time rewrite of %d MB - be patient)"
+                % (len(missing),
+                   os.path.getsize(BUCKETS_V2) // (1024 * 1024) or 1))
+            _append_columns(BUCKETS_V2, missing)
+            say("  buckets.v2.csv migrated")
+        else:
+            say("  buckets.v2.csv already has ss_* columns")
+
     if os.path.exists(SWAPS):
         with open(SWAPS, newline="") as f:
             first = f.readline().strip()
@@ -114,8 +138,13 @@ def migrate():
         say("  no swaps.csv yet (will be created)")
 
     if os.path.exists(SRATE):
-        say("  srate.csv present (%d rows)" % max(
-            0, sum(1 for _ in open(SRATE)) - 1))
+        rows = 0
+        try:
+            with open(SRATE) as f:
+                rows = max(0, sum(1 for _ in f) - 1)
+        except Exception:
+            pass
+        say("  srate.csv present (%d rows)" % rows)
     else:
         say("  srate.csv will be created on first 0.4.53+ vote")
 
@@ -123,6 +152,7 @@ def migrate():
 def write_cron():
     body = (
         "# managed by bpftune-dashboard-install.py\n"
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
         "* * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
         "*/5 * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
         % (COLLECTOR, RENDERER)
@@ -181,15 +211,13 @@ CLI_SRC = r'''#!/usr/bin/env python3
 Default: human-readable text (two columns).
 --json : single JSON object of the same data - used by the collector.
 
-Two outcome scales are reported side by side:
+Three outcome scales are reported:
 
   composite  - met `val=` ratio (post/pre), from the composite metric.
-  srate      - per-vote `srate=` ratio, raw bytes/sec. Direction is
-               flipped (throughput, so higher is better).
-
-They frequently disagree. A swap can improve throughput while
-worsening the composite (which carries a latency term); the srate
-view is the throughput truth.
+  srate      - first per-vote `srate=` (raw bytes/sec) after the swap.
+  sustained  - median of srate samples in [t+60, t+300]. Excludes the
+               immediate cwnd-reset dip after a swap; this is the
+               accurate throughput measure. Higher is better.
 """
 import argparse, json, os, re, subprocess, sys, time
 from collections import defaultdict
@@ -207,6 +235,9 @@ ARROW  = "\u25b8"
 VBAR   = "\u2502"
 MIDDOT = "\u00b7"
 
+SUSTAINED_LO_S = 60.0
+SUSTAINED_HI_S = 300.0
+
 
 def sh(cmd, timeout=15):
     try:
@@ -222,6 +253,16 @@ def sh_noshell(args, timeout=12):
                               timeout=timeout).stdout
     except Exception:
         return ""
+
+
+def median(xs):
+    if not xs:
+        return None
+    s = sorted(xs)
+    n = len(s)
+    if n % 2:
+        return float(s[n // 2])
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
 def find_log():
@@ -442,6 +483,7 @@ def data_metric(hosts):
             val = int(m.get("metric_value", 0) or 0)
             mc  = int(m.get("metric_count", 0) or 0)
             a   = int(m.get("sockets_alive", 0) or 0)
+            ss  = int(m.get("swap_score", 0) or 0)
         except Exception:
             continue
         if mc == 0 and a == 0:
@@ -453,6 +495,7 @@ def data_metric(hosts):
             "metric": round(val / 1e6, 1) if val else 0,
             "votes":  mc,
             "alive":  a,
+            "swap_score": ss,
         })
     rows.sort(key=lambda r: r["metric"] if r["metric"] else 1<<62)
     return rows
@@ -573,8 +616,6 @@ def data_rate(text):
 
 
 def _swaps_mets_srates(text):
-    """Parse the tail for swaps, met, and srate events. srate is the
-    0.4.53+ per-vote raw throughput line."""
     sw = []
     met = defaultdict(list)
     srate = defaultdict(list)
@@ -632,7 +673,29 @@ def _outcome_srate(srate, c, ts):
     if not pre or not post:
         return None
     r = post / pre
-    # throughput: higher is better. Ratio inverted vs composite.
+    if r >= 1.1:  return "win"
+    if r <= 0.9:  return "loss"
+    return "null"
+
+
+def _outcome_sustained(srate, c, ts):
+    """Median of srate samples in [t+60, t+300], compared to last srate
+    before the swap. Excludes the cwnd-reset dip; this is the accurate
+    throughput measure."""
+    tl = srate.get(c, [])
+    pre = None
+    post = []
+    for (sts, sr) in tl:
+        if sts < ts:
+            pre = sr
+        elif SUSTAINED_LO_S <= (sts - ts) <= SUSTAINED_HI_S:
+            post.append(sr)
+    if not pre or not post:
+        return None
+    pm = median(post)
+    if pm is None or pre <= 0:
+        return None
+    r = pm / pre
     if r >= 1.1:  return "win"
     if r <= 0.9:  return "loss"
     return "null"
@@ -658,6 +721,7 @@ def data_swap_outcomes(text):
     sw, met, srate = _swaps_mets_srates(text)
     c_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
     s_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
+    sust_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
     for row in sw:
         ts, c = row[0], row[1]
         o = _outcome_composite(met, c, ts)
@@ -666,22 +730,24 @@ def data_swap_outcomes(text):
         o2 = _outcome_srate(srate, c, ts)
         if o2 is None: s_counts["skip"] += 1
         else: s_counts[o2] += 1
+        o3 = _outcome_sustained(srate, c, ts)
+        if o3 is None: sust_counts["skip"] += 1
+        else: sust_counts[o3] += 1
     return {
         "composite": _finalize_outcome(c_counts),
         "srate":     _finalize_outcome(s_counts),
+        "sustained": _finalize_outcome(sust_counts),
     }
 
 
 def data_divergence(text):
     sw, met, srate = _swaps_mets_srates(text)
-    groups = {
-        "rate==metric": {"total": 0, "win": 0, "null": 0, "loss": 0,
-                         "win_s": 0, "null_s": 0, "loss_s": 0},
-        "rate!=metric": {"total": 0, "win": 0, "null": 0, "loss": 0,
-                         "win_s": 0, "null_s": 0, "loss_s": 0},
-        "pre-0.4.45":   {"total": 0, "win": 0, "null": 0, "loss": 0,
-                         "win_s": 0, "null_s": 0, "loss_s": 0},
-    }
+    keys = ("rate==metric", "rate!=metric", "pre-0.4.45")
+    groups = {k: {"total": 0,
+                  "win": 0, "null": 0, "loss": 0,
+                  "win_s": 0, "null_s": 0, "loss_s": 0,
+                  "win_u": 0, "null_u": 0, "loss_u": 0}
+              for k in keys}
     for row in sw:
         ts, c = row[0], row[1]
         mt_i, rb_i = row[7], row[8]
@@ -694,34 +760,47 @@ def data_divergence(text):
         if o: g[o] += 1
         o2 = _outcome_srate(srate, c, ts)
         if o2: g[o2 + "_s"] += 1
+        o3 = _outcome_sustained(srate, c, ts)
+        if o3: g[o3 + "_u"] += 1
 
     rows = []
-    for k in ("rate==metric", "rate!=metric", "pre-0.4.45"):
+    for k in keys:
         g = groups[k]
         cmeas = g["win"] + g["null"] + g["loss"]
         smeas = g["win_s"] + g["null_s"] + g["loss_s"]
-        def c_pct(x):
+        umeas = g["win_u"] + g["null_u"] + g["loss_u"]
+        def cp(x):
             return round(100.0 * x / cmeas, 1) if cmeas else 0
-        def s_pct(x):
+        def sp(x):
             return round(100.0 * x / smeas, 1) if smeas else 0
+        def up(x):
+            return round(100.0 * x / umeas, 1) if umeas else 0
         rows.append({
             "category":  k,
             "measured":  cmeas,
-            "win_pct":   c_pct(g["win"]),
-            "null_pct":  c_pct(g["null"]),
-            "loss_pct":  c_pct(g["loss"]),
+            "win_pct":   cp(g["win"]),
+            "null_pct":  cp(g["null"]),
+            "loss_pct":  cp(g["loss"]),
             "win":       g["win"],
             "null":      g["null"],
             "loss":      g["loss"],
             "skipped":   g["total"] - cmeas,
             "measured_srate": smeas,
-            "win_pct_srate":  s_pct(g["win_s"]),
-            "null_pct_srate": s_pct(g["null_s"]),
-            "loss_pct_srate": s_pct(g["loss_s"]),
+            "win_pct_srate":  sp(g["win_s"]),
+            "null_pct_srate": sp(g["null_s"]),
+            "loss_pct_srate": sp(g["loss_s"]),
             "win_srate":      g["win_s"],
             "null_srate":     g["null_s"],
             "loss_srate":     g["loss_s"],
             "skipped_srate":  g["total"] - smeas,
+            "measured_sustained": umeas,
+            "win_pct_sustained":  up(g["win_u"]),
+            "null_pct_sustained": up(g["null_u"]),
+            "loss_pct_sustained": up(g["loss_u"]),
+            "win_sustained":      g["win_u"],
+            "null_sustained":     g["null_u"],
+            "loss_sustained":     g["loss_u"],
+            "skipped_sustained":  g["total"] - umeas,
         })
     return rows
 
@@ -748,6 +827,7 @@ def data_recent_swaps(text, n=10):
         d, mt_i, rb_i = row[6], row[7], row[8]
         o  = _outcome_composite(met, c, ts)
         o2 = _outcome_srate(srate, c, ts)
+        o3 = _outcome_sustained(srate, c, ts)
         mt_alg = (CONGS[int(mt_i) & 15]
                   if mt_i and mt_i.isdigit() else None)
         rb_alg = (CONGS[int(rb_i) & 15]
@@ -756,8 +836,9 @@ def data_recent_swaps(text, n=10):
             "from_alg": CONGS[fa] if fa < 16 else str(fa),
             "to_alg":   CONGS[ta] if ta < 16 else str(ta),
             "d":        int(d),
-            "outcome":       o,
-            "outcome_srate": o2,
+            "outcome":            o,
+            "outcome_srate":      o2,
+            "outcome_sustained":  o3,
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
         })
@@ -905,10 +986,10 @@ def render_text(d):
     for row in _full("TOP DESTINATION BUCKETS", bk):
         print(row)
     print()
-    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"]
+    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}{'score':>7}"]
     for r in d["metric"]:
         mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
-                  f"{r['votes']:>7}{r['alive']:>7}")
+                  f"{r['votes']:>7}{r['alive']:>7}{r.get('swap_score',0):>7}")
     pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'p_max':>8}"
           f"{'s_avg':>8}{'s_max':>8}{'n':>5}"]
     for r in d["proof"]:
@@ -918,7 +999,7 @@ def render_text(d):
         n  = f"{r['samples']}" if r["samples"] is not None else "-"
         pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
                   f"{pm:>8}{sa:>8}{sm:>8}{n:>5}")
-    for row in _twocol("ALGORITHM LEADERBOARD (metric)", mt,
+    for row in _twocol("ALGORITHM LEADERBOARD (metric, score)", mt,
                        "PROOF LEADERBOARD (speed)",     pr):
         print(row)
     print()
@@ -927,7 +1008,8 @@ def render_text(d):
         rt.append(f"  {r['thr']:>7}{r['n']:>5}{r['mean']:>9.1f}"
                   f"{r['min']:>9.1f}{r['max']:>9.1f}")
     so_lines = _outcome_lines(d["swap_outcomes"]["composite"], "composite") + \
-               _outcome_lines(d["swap_outcomes"]["srate"], "srate (throughput)")
+               _outcome_lines(d["swap_outcomes"]["sustained"],
+                              "sustained (accurate)")
     for row in _twocol("RATE PROGRESSION (client, Mbps)", rt,
                        "SWAP OUTCOMES", so_lines):
         print(row)
@@ -938,16 +1020,18 @@ def render_text(d):
         dv.append(f"  {r['category']:<20}{r['measured']:>5}"
                   f"{r['win_pct']:>6.0f}%{r['null_pct']:>6.0f}%"
                   f"{r['loss_pct']:>6.0f}%{r['skipped']:>9}")
-    for row in _full("DIVERGENCE composite (swap target: rate vs metric)", dv):
+    for row in _full("DIVERGENCE composite", dv):
         print(row)
     print()
     dvs = [f"  {'category':<20}{'meas':>5}{'win':>7}{'null':>7}{'loss':>7}{'skipped':>9}",
            RULE*62]
     for r in d["divergence"]:
-        dvs.append(f"  {r['category']:<20}{r['measured_srate']:>5}"
-                   f"{r['win_pct_srate']:>6.0f}%{r['null_pct_srate']:>6.0f}%"
-                   f"{r['loss_pct_srate']:>6.0f}%{r['skipped_srate']:>9}")
-    for row in _full("DIVERGENCE srate (throughput)", dvs):
+        dvs.append(f"  {r['category']:<20}{r['measured_sustained']:>5}"
+                   f"{r['win_pct_sustained']:>6.0f}%"
+                   f"{r['null_pct_sustained']:>6.0f}%"
+                   f"{r['loss_pct_sustained']:>6.0f}%"
+                   f"{r['skipped_sustained']:>9}")
+    for row in _full("DIVERGENCE sustained (srate, accurate)", dvs):
         print(row)
     print()
     ch = d["churn"]
@@ -967,13 +1051,13 @@ def render_text(d):
     rs = []
     for r in d["recent_swaps"]:
         c = {"win": "W", "loss": "L", "null": "n"}.get(r["outcome"], "?")
-        s = {"win": "W", "loss": "L", "null": "n"}.get(r["outcome_srate"], "?")
+        s = {"win": "W", "loss": "L", "null": "n"}.get(r["outcome_sustained"], "?")
         rs.append(f"  {r['from_alg']:>9} -> {r['to_alg']:<9} "
-                  f"comp={c} srate={s} mt={r['mt_alg'] or '-':<8} "
+                  f"comp={c} sust={s} mt={r['mt_alg'] or '-':<8} "
                   f"rb={r['rb_alg'] or '-':<8}")
     if not rs:
         rs = ["  (none in tail)"]
-    for row in _full("RECENT SWAPS (comp vs srate)", rs):
+    for row in _full("RECENT SWAPS (comp vs sustained)", rs):
         print(row)
     print()
 
@@ -1012,13 +1096,23 @@ if __name__ == "__main__":
 COLLECTOR_SRC = r'''#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
-Buckets from `bpftool --json map dump name remote_host_map`.
+Buckets from `bpftool --json map dump name remote_host_map`. Each
+bucket's per-alg row now carries mv_<alg> (metric_value), re_<alg>
+(rate_ema), and ss_<alg> (swap_score; 256 = neutral, above = swaps
+into that alg have been helping).
+
 Swaps from all /var/log/bpftune-met-*.log (per-file byte offsets in
 .swaps_pos.json).
 Raw srate events from the same logs -> /var/lib/bpftune/history/srate.csv.
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
+
+Note on outcome: this collector writes the *composite* outcome
+(met val= ratio, first-post) into swaps.csv. The sustained srate
+outcome (median srate in [t+60, t+300]) is computed downstream by the
+CLI (current.json) and the renderer (swaps.json) - it needs a
+future window the collector cannot see from a single tick.
 """
 import csv, json, os, re, socket, struct, subprocess, sys, time
 from pathlib import Path
@@ -1074,7 +1168,9 @@ def tcp_rmem():
 
 def append_csv(path, row):
     """Schema-order-safe append. Emits in the file's existing column
-    order if the file exists; else header from row key order."""
+    order if the file exists; else header from row key order. Adding
+    a key to a row dict cannot misalign rows already in the file, but
+    a column not present in the file header is dropped - migrate first."""
     if path.exists() and path.stat().st_size > 0:
         with open(path, newline="") as f:
             try:
@@ -1155,6 +1251,7 @@ def collect_buckets(ts_epoch, map_data):
             m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
             row["mv_" + CONGS[i]] = int(m.get("metric_value", 0) or 0)
             row["re_" + CONGS[i]] = int(m.get("rate_ema", 0) or 0)
+            row["ss_" + CONGS[i]] = int(m.get("swap_score", 0) or 0)
         row["tcp_rmem_min"] = rm_min
         row["tcp_rmem_def"] = rm_def
         row["tcp_rmem_max"] = rm_max
@@ -1451,9 +1548,11 @@ if __name__ == "__main__":
 
 
 # =================== renderer ===================
-# Emits composite AND srate divergence series, so the dashboard can
-# show two side-by-side charts. srate outcome is computed here by
-# joining swaps.csv to srate.csv on cookie + boot_ts (>).
+# Bounded-memory load_csv: deque on the DictReader keeps only the last
+# N rows in memory regardless of file size. Fixes the renderer OOM on
+# large buckets.v2.csv. If a future range needs more history than
+# these caps allow, switch to streaming binning (bin on read, discard
+# raw rows) - deque is the surgical fix, not the endgame.
 
 RENDERER_SRC = r'''#!/usr/bin/env python3
 """bpftune renderer - static Chart.js dashboard + live CLI panel.
@@ -1462,17 +1561,21 @@ Cron: every 5 minutes. Reads buckets.v2.csv + swaps.csv + srate.csv,
 writes index.html and data/*.json. The browser also fetches
 current.json (every 30s).
 
-For swap outcomes: composite reads `outcome` from swaps.csv; srate
-joins swaps.csv to srate.csv on cookie + boot_ts with a forward as-of
-match (first srate strictly after the swap). The two frequently
-disagree - a swap can improve throughput while worsening the
-composite (which carries a latency term).
+load_csv is bounded-memory: keeps the last N rows only. If the file
+grows past that, the oldest data drops off the front of each range,
+but the renderer never OOMs.
+
+For swap outcomes there are two views:
+  * composite - from swaps.csv, `outcome` column (met val= ratio).
+  * sustained - median srate in [t+60, t+300] joined from srate.csv.
+               Excludes the cwnd-reset dip; this is the accurate
+               throughput measure.
 
 `collected_ts` is the only date-safe timestamp (falls back to
 `ts_epoch` for v1 rows).
 """
 import bisect, csv, json, math, os, time
-from collections import defaultdict
+from collections import defaultdict, deque
 
 HIST = "/var/lib/bpftune/history"
 DATA = os.path.join(HIST, "data")
@@ -1484,8 +1587,17 @@ RANGES = {
     "all": (None,       21600),
 }
 
+# Bounded-memory caps. Sized to comfortably cover the 24h range at
+# current bucket and vote rates.
+MAX_ROWS_BUCKETS = 150000
+MAX_ROWS_SWAPS   =  50000
+MAX_ROWS_SRATE   = 150000
+
 EXTRA_COLS = ["ref_rate", "rate_best_i", "rate_best_v", "instances",
               "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max"]
+
+SUSTAINED_LO_S = 60.0
+SUSTAINED_HI_S = 300.0
 
 
 def to_float(v):
@@ -1497,6 +1609,16 @@ def to_float(v):
 
 def truthy(v):
     return str(v).strip().lower() in ("1", "true", "yes", "y")
+
+
+def median(xs):
+    if not xs:
+        return None
+    s = sorted(xs)
+    n = len(s)
+    if n % 2:
+        return float(s[n // 2])
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
 def ts_of(row):
@@ -1524,12 +1646,21 @@ def buckets_source():
     return None
 
 
-def load_csv(path):
+def load_csv(path, max_rows=None):
+    """Read a CSV. If max_rows is set, keeps only the last max_rows
+    rows in memory (uses collections.deque as an O(1)-per-row bounded
+    buffer). Correct for append-only, chronologically-sorted files,
+    which is what every CSV here is."""
     if not path or not os.path.exists(path):
         return [], []
     with open(path, newline="") as f:
         rd = csv.DictReader(f)
-        return rd.fieldnames or [], list(rd)
+        header = rd.fieldnames or []
+        if max_rows is None:
+            rows = list(rd)
+        else:
+            rows = list(deque(rd, maxlen=max_rows))
+    return header, rows
 
 
 def bin_series(rows, lo, width, cols):
@@ -1575,7 +1706,7 @@ def emit_meta(buckets, algs, now):
         })
     entries.sort(key=lambda e: e["instances_mean"], reverse=True)
 
-    header, _ = load_csv(buckets_source())
+    header, _ = load_csv(buckets_source(), max_rows=1)
     write_json("meta.json", {
         "generated_ts":  now,
         "ranges":        list(RANGES),
@@ -1590,7 +1721,7 @@ def emit_bucket(bid, rows, algs, now):
     doc = {"id": bid, "series": {}}
     for rng, (span, width) in RANGES.items():
         lo = None if span is None else now - span
-        cols = [f"re_{a}" for a in algs] + EXTRA_COLS
+        cols = [f"re_{a}" for a in algs] + [f"ss_{a}" for a in algs] + EXTRA_COLS
         if rng == "24h":
             cols += [f"mv_{a}" for a in algs]
         ts, out = bin_series(rows, lo, width, cols)
@@ -1614,11 +1745,10 @@ def emit_bucket(bid, rows, algs, now):
     write_json("bucket_%s.json" % safe, doc)
 
 
-def _attach_srate_outcomes(swaps, srate_rows):
-    """Adds `_outcome_srate` to each swap dict in place. Match rule:
-    for a given cookie, the first srate row with boot_ts strictly
-    greater than the swap's boot_ts. srate_before must also be present;
-    without it we can't compute a ratio."""
+def _attach_sustained_outcomes(swaps, srate_rows):
+    """Adds `_outcome_sustained` to each swap dict in place: median
+    srate in [t+60, t+300] vs last srate before the swap. Excludes the
+    immediate cwnd-reset dip."""
     by_cookie = defaultdict(list)
     for r in srate_rows:
         c = to_float(r.get("cookie"))
@@ -1629,10 +1759,9 @@ def _attach_srate_outcomes(swaps, srate_rows):
         by_cookie[int(c)].append((t, s))
     for lst in by_cookie.values():
         lst.sort()
-    srate_ts = {c: [t for (t, _) in lst] for c, lst in by_cookie.items()}
 
     for r in swaps:
-        r["_outcome_srate"] = None
+        r["_outcome_sustained"] = None
         c = to_float(r.get("cookie"))
         t = to_float(r.get("boot_ts"))
         sb = to_float(r.get("srate_before"))
@@ -1641,26 +1770,35 @@ def _attach_srate_outcomes(swaps, srate_rows):
         lst = by_cookie.get(int(c))
         if not lst:
             continue
-        idx = bisect.bisect_right(srate_ts[int(c)], t)
-        if idx >= len(lst):
+        ts_list = [x[0] for x in lst]
+        # pre is srate_before (already captured by the collector; the
+        # srate cache in the collector used the same "last before" rule)
+        pre = sb
+        # post samples in [t+60, t+300]
+        lo = bisect.bisect_left(ts_list, t + SUSTAINED_LO_S)
+        hi = bisect.bisect_right(ts_list, t + SUSTAINED_HI_S)
+        if lo >= hi:
             continue
-        sa = lst[idx][1]
-        ratio = sa / sb
-        r["_outcome_srate"] = (
+        samples = [lst[i][1] for i in range(lo, hi)]
+        pm = median(samples)
+        if pm is None or pre <= 0:
+            continue
+        ratio = pm / pre
+        r["_outcome_sustained"] = (
             "win"  if ratio >= 1.1 else
             "loss" if ratio <= 0.9 else
             "null")
 
 
 def emit_swaps(rows, srate_rows, now):
-    _attach_srate_outcomes(rows, srate_rows)
+    _attach_sustained_outcomes(rows, srate_rows)
     doc = {}
     for rng, (span, width) in RANGES.items():
         lo = None if span is None else now - span
-        # per-bin, per-diverges: composite and srate buckets
+        # per-bin per-diverges: composite + sustained rates
         acc = defaultdict(lambda: {
-            0: {"cw": 0, "cl": 0, "sw": 0, "sl": 0},
-            1: {"cw": 0, "cl": 0, "sw": 0, "sl": 0},
+            0: {"cw": 0, "cl": 0, "uu": 0, "ul": 0},
+            1: {"cw": 0, "cl": 0, "uu": 0, "ul": 0},
         })
         for r in rows:
             t = ts_of(r)
@@ -1673,30 +1811,29 @@ def emit_swaps(rows, srate_rows, now):
                 acc[b][d]["cw"] += 1
             elif o == "loss":
                 acc[b][d]["cl"] += 1
-            o2 = r["_outcome_srate"]
+            o2 = r["_outcome_sustained"]
             if o2 == "win":
-                acc[b][d]["sw"] += 1
+                acc[b][d]["uu"] += 1
             elif o2 == "loss":
-                acc[b][d]["sl"] += 1
+                acc[b][d]["ul"] += 1
 
         base = lo if lo is not None else 0
         node = {"ts": [], "swaps": []}
         for d in (0, 1):
-            node["d%d_rate"        % d] = []
-            node["d%d_lo"          % d] = []
-            node["d%d_hi"          % d] = []
-            node["d%d_n"           % d] = []
-            node["d%d_rate_srate"  % d] = []
-            node["d%d_lo_srate"    % d] = []
-            node["d%d_hi_srate"    % d] = []
-            node["d%d_n_srate"     % d] = []
+            node["d%d_rate"           % d] = []
+            node["d%d_lo"             % d] = []
+            node["d%d_hi"             % d] = []
+            node["d%d_n"              % d] = []
+            node["d%d_rate_sustained" % d] = []
+            node["d%d_lo_sustained"   % d] = []
+            node["d%d_hi_sustained"   % d] = []
+            node["d%d_n_sustained"    % d] = []
 
         for b in sorted(acc):
             node["ts"].append(int(base + b * width + width / 2))
             total = 0
             for d in (0, 1):
                 bucket = acc[b][d]
-                # composite
                 cw, cl = bucket["cw"], bucket["cl"]
                 cn = cw + cl
                 total += cn
@@ -1705,14 +1842,13 @@ def emit_swaps(rows, srate_rows, now):
                 node["d%d_lo"   % d].append(lo_)
                 node["d%d_hi"   % d].append(hi_)
                 node["d%d_n"    % d].append(cn)
-                # srate
-                sw, sl = bucket["sw"], bucket["sl"]
-                sn = sw + sl
-                lo2, hi2 = wilson(sw, sn)
-                node["d%d_rate_srate" % d].append(sw / sn if sn else None)
-                node["d%d_lo_srate"   % d].append(lo2)
-                node["d%d_hi_srate"   % d].append(hi2)
-                node["d%d_n_srate"    % d].append(sn)
+                uw, ul = bucket["uu"], bucket["ul"]
+                un = uw + ul
+                lo2, hi2 = wilson(uw, un)
+                node["d%d_rate_sustained" % d].append(uw / un if un else None)
+                node["d%d_lo_sustained"   % d].append(lo2)
+                node["d%d_hi_sustained"   % d].append(hi2)
+                node["d%d_n_sustained"    % d].append(un)
             node["swaps"].append(total)
         doc[rng] = node
     write_json("swaps.json", doc)
@@ -2241,7 +2377,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c6">
-      <h3>metric leaderboard</h3>
+      <h3>metric leaderboard <span class="cnt">swap_score: 256 = neutral</span></h3>
       <div id="lv-metric"></div>
     </section>
 
@@ -2253,13 +2389,8 @@ INDEX_HTML = r"""<!doctype html>
         <b style="color:#4e79a7">sampled avg</b>,
         <b style="color:#59a14f">proven max</b>,
         <b style="color:#e15759">sampled max</b>.
-        All three scale to the same peak, so bar length is directly
-        comparable. <b>proven max</b> comes from formal proof events;
-        <b>sampled avg / max</b> from midsamp current-rate samples on
-        individual connections, attributed via nearest
-        <code>met</code> for the same cookie (60s window). Different
-        populations &mdash; sampled avg may exceed proven max on the
-        same row, by design.
+        Different populations &mdash; sampled avg may exceed proven max
+        on the same row, by design.
       </div>
     </section>
 
@@ -2272,10 +2403,9 @@ INDEX_HTML = r"""<!doctype html>
       <h3>swap outcomes</h3>
       <div id="lv-swapout"></div>
       <div class="note">
-        <b>composite</b> = met val= ratio (lower is better on composite).
-        <b>srate</b> = per-vote raw throughput ratio (higher is better).
-        They frequently disagree &mdash; a swap can improve throughput
-        while worsening the composite (latency term).
+        <b>composite</b> = met val= ratio. <b>sustained</b> = median srate
+        in [t+60, t+300] &mdash; excludes the cwnd-reset dip; this is
+        the accurate throughput measure.
       </div>
     </section>
 
@@ -2295,7 +2425,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c12">
-      <h3>recent swaps <span class="cnt">composite vs srate</span></h3>
+      <h3>recent swaps <span class="cnt">composite vs sustained</span></h3>
       <div id="lv-swaps"></div>
     </section>
 
@@ -2307,14 +2437,19 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 
   <section class="card">
+    <h2><span class="dot"></span>swap_score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
+    <div class="chart-box h-xl"><canvas id="sscore"></canvas></div>
+  </section>
+
+  <section class="card">
     <h2><span class="dot"></span>divergence &mdash; composite win rate <span class="sub">95% Wilson CI</span></h2>
     <div class="chart-box h-md"><canvas id="div"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>divergence &mdash; throughput win rate <span class="sub">srate &middot; 95% Wilson CI</span></h2>
-    <div class="chart-box h-md"><canvas id="div_srate"></canvas></div>
-    <div class="chart-note" id="div_srate_note"></div>
+    <h2><span class="dot"></span>divergence &mdash; sustained win rate <span class="sub">median srate in [t+60, t+300] &middot; 95% Wilson CI</span></h2>
+    <div class="chart-box h-md"><canvas id="div_sustained"></canvas></div>
+    <div class="chart-note" id="div_sustained_note"></div>
   </section>
 
   <section class="card">
@@ -2552,13 +2687,22 @@ INDEX_HTML = r"""<!doctype html>
     }
     var html = '<table class="tbl"><thead><tr>' +
       '<th>alg</th><th>metric</th><th>votes</th><th>alive</th>' +
+      '<th>swap_score</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
+      var ss = (r.swap_score == null) ? null : r.swap_score;
+      var ssClass = "";
+      if (ss != null) {
+        if (ss >= 320) ssClass = ' style="color:var(--good)"';
+        else if (ss <= 192) ssClass = ' style="color:var(--bad)"';
+      }
       html += '<tr>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
         '<td class="mono">' + r.metric.toFixed(1) + '</td>' +
         '<td class="mono dim">' + fmtN(r.votes) + '</td>' +
         '<td class="mono dim">' + fmtN(r.alive) + '</td>' +
+        '<td class="mono"' + ssClass + '>' +
+          (ss == null ? "-" : ss) + '</td>' +
         '</tr>';
     });
     setHTML("lv-metric", html + '</tbody></table>');
@@ -2643,30 +2787,31 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderSwapOutcomes(payload) {
-    if (payload && payload.composite && payload.srate) {
+    if (payload && payload.composite && payload.sustained) {
       var c = payload.composite;
-      var s = payload.srate;
+      var s = payload.sustained;
       var html =
-        '<div class="outcome-group"><div class="grp-k">composite metric</div>' +
-        bigTriple(c) +
-        '<div class="kv" style="margin-top:6px">' +
-          '<div class="row"><span class="k">measurable</span>' +
-            '<span class="v">' + c.measurable + '</span></div>' +
-          '<div class="row"><span class="k">unmeasurable</span>' +
-            '<span class="v dim">' + c.unmeasurable + '</span></div>' +
-        '</div></div>' +
-        '<div class="outcome-group"><div class="grp-k">throughput (srate)</div>' +
-        bigTriple(s) +
-        '<div class="kv" style="margin-top:6px">' +
-          '<div class="row"><span class="k">measurable</span>' +
-            '<span class="v">' + s.measurable + '</span></div>' +
-          '<div class="row"><span class="k">unmeasurable</span>' +
-            '<span class="v dim">' + s.unmeasurable + '</span></div>' +
-        '</div></div>';
+        '<div class="outcome-group">' +
+          '<div class="grp-k">composite metric</div>' + bigTriple(c) +
+          '<div class="kv" style="margin-top:6px">' +
+            '<div class="row"><span class="k">measurable</span>' +
+              '<span class="v">' + c.measurable + '</span></div>' +
+            '<div class="row"><span class="k">unmeasurable</span>' +
+              '<span class="v dim">' + c.unmeasurable + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="outcome-group">' +
+          '<div class="grp-k">sustained (accurate)</div>' + bigTriple(s) +
+          '<div class="kv" style="margin-top:6px">' +
+            '<div class="row"><span class="k">measurable</span>' +
+              '<span class="v">' + s.measurable + '</span></div>' +
+            '<div class="row"><span class="k">unmeasurable</span>' +
+              '<span class="v dim">' + s.unmeasurable + '</span></div>' +
+          '</div>' +
+        '</div>';
       setHTML("lv-swapout", html);
       return;
     }
-    // legacy flat shape (old current.json still cached)
     var so = payload || {win:0,win_pct:0,null:0,null_pct:0,
                          loss:0,loss_pct:0,measurable:0,unmeasurable:0};
     setHTML("lv-swapout", bigTriple(so) +
@@ -2685,14 +2830,13 @@ INDEX_HTML = r"""<!doctype html>
     }
     var html = '<table class="tbl"><thead><tr>' +
       '<th>category</th><th style="width:32%">composite</th>' +
-      '<th style="width:32%">srate</th>' +
+      '<th style="width:32%">sustained</th>' +
       '<th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
       function bar(w, n, l) {
         var out = '<div class="cellbar">';
-        var meas = r.measured > 0;
-        if (meas || (w + n + l) > 0) {
+        if ((w + n + l) > 0) {
           if (w > 0) out += '<span class="w" style="width:' + w + '%">' +
             (w >= 8 ? w.toFixed(0) + '%' : '') + '</span>';
           if (n > 0) out += '<span class="n" style="width:' + n + '%">' +
@@ -2708,10 +2852,10 @@ INDEX_HTML = r"""<!doctype html>
       html += '<tr>' +
         '<td class="name">' + esc(r.category) + '</td>' +
         '<td>' + bar(r.win_pct, r.null_pct, r.loss_pct) + '</td>' +
-        '<td>' + bar(r.win_pct_srate, r.null_pct_srate, r.loss_pct_srate) +
-          '</td>' +
+        '<td>' + bar(r.win_pct_sustained, r.null_pct_sustained,
+                     r.loss_pct_sustained) + '</td>' +
         '<td class="mono dim">' + r.measured + ' / ' +
-          r.measured_srate + '</td>' +
+          r.measured_sustained + '</td>' +
         '</tr>';
     });
     setHTML("lv-div", html + '</tbody></table>');
@@ -2765,8 +2909,8 @@ INDEX_HTML = r"""<!doctype html>
           esc(r.mt_alg || "-") + ' rb=' + esc(r.rb_alg || "-") + '</span>' +
         '<span class="pillcol"><span class="lbl">comp</span>' +
           pill(r.outcome) + '</span>' +
-        '<span class="pillcol"><span class="lbl">srate</span>' +
-          pill(r.outcome_srate) + '</span>' +
+        '<span class="pillcol"><span class="lbl">sust</span>' +
+          pill(r.outcome_sustained) + '</span>' +
         '</div>';
     });
     setHTML("lv-swaps", html + '</div>');
@@ -2907,12 +3051,41 @@ INDEX_HTML = r"""<!doctype html>
     var s = doc.series[rng];
     var ts = s.ts;
 
+    function makeSeries(prefix, ignoreZero) {
+      return algs.map(function (a) {
+        return prefix + a;
+      }).filter(function (c) { return c in s; });
+    }
+
+    var rateCols = makeSeries("re_");
     mk("rate", {
       type: "line",
-      data: {datasets: lineData(algs.map(function (a) {
-        return "re_" + a;
-      }), s, ts, PALETTE, scaleRe, 0)},
+      data: {datasets: lineData(rateCols, s, ts, PALETTE, scaleRe, 0)},
       options: timeOpts({
+        plugins: {
+          legend: {
+            display: true, position: "bottom", align: "start",
+            labels: {boxWidth: 8, boxHeight: 8, padding: 8,
+                     font: {size: 10.5}},
+          },
+        },
+      }),
+    });
+
+    var ssCols = makeSeries("ss_");
+    // swap_score is u16; converter is identity. Only chart bins that
+    // actually have data this range.
+    mk("sscore", {
+      type: "line",
+      data: {datasets: lineData(ssCols, s, ts, PALETTE, null, 0)},
+      options: timeOpts({
+        scales: {
+          x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"},
+              grid: {display: false},
+              ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
+          y: {beginAtZero: false, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 6, padding: 6}},
+        },
         plugins: {
           legend: {
             display: true, position: "bottom", align: "start",
@@ -2924,12 +3097,12 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
-  function renderDivChart(canvasId, srateSuffix) {
+  function renderDivChart(canvasId, suffix) {
     var doc = state.swaps, rng = $("range").value;
     var d = doc[rng];
     if (!d) return;
     var ts = d.ts;
-    var sfx = srateSuffix ? "_srate" : "";
+    var sfx = suffix || "";
 
     function mkLine(key, label, color, dash) {
       return {
@@ -2981,12 +3154,12 @@ INDEX_HTML = r"""<!doctype html>
     });
   }
 
-  function srateHasData() {
+  function sustainedHasData() {
     var doc = state.swaps;
     if (!doc) return false;
     var d = doc["24h"] || doc["7d"] || doc["all"];
     if (!d) return false;
-    var arr = d.d1_n_srate || [];
+    var arr = d.d1_n_sustained || [];
     for (var i = 0; i < arr.length; i++) {
       if ((arr[i] || 0) > 0) return true;
     }
@@ -3023,19 +3196,19 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderDivergenceCharts() {
-    renderDivChart("div", false);
-    renderDivChart("div_srate", true);
-    var note = document.getElementById("div_srate_note");
+    renderDivChart("div", "");
+    renderDivChart("div_sustained", "_sustained");
+    var note = document.getElementById("div_sustained_note");
     if (note) {
-      if (srateHasData()) {
-        note.textContent = "srate = per-vote raw throughput. Win = ratio >= 1.1. " +
-          "Rate-based outcomes can disagree with composite — that's expected, " +
-          "the composite carries a latency term.";
+      if (sustainedHasData()) {
+        note.textContent = "sustained = median srate in [t+60, t+300], " +
+          "compared to last srate before the swap. Excludes the cwnd-reset " +
+          "dip. This is the accurate throughput measure.";
         note.style.color = "";
       } else {
-        note.textContent = "no srate data yet. Requires 0.4.53+ emitting `srate` " +
-          "lines AND the collector writing srate.csv. Will populate on the " +
-          "first swap after both are live.";
+        note.textContent = "no sustained data yet. Requires 0.4.53+ emitting " +
+          "`srate` lines AND the collector writing srate.csv AND a swap " +
+          "landing with 60+ s of post-swap votes. Will populate on its own.";
         note.style.color = "#9aa0a6";
       }
     }
@@ -3166,9 +3339,12 @@ def main():
         print("renderer: no buckets CSV found yet")
         return 1
 
-    header, buckets = load_csv(bfile)
-    _, swaps = load_csv(os.path.join(HIST, "swaps.csv"))
-    _, srate = load_csv(os.path.join(HIST, "srate.csv"))
+    # Bounded loads - see load_csv docstring. Caps sized for the 24h
+    # range at current rates; if a future change needs more history,
+    # streaming binning is the next step.
+    header, buckets = load_csv(bfile, max_rows=MAX_ROWS_BUCKETS)
+    _, swaps = load_csv(os.path.join(HIST, "swaps.csv"), max_rows=MAX_ROWS_SWAPS)
+    _, srate = load_csv(os.path.join(HIST, "srate.csv"), max_rows=MAX_ROWS_SRATE)
 
     algs = sorted({c[3:] for c in header if c.startswith("re_")})
 
