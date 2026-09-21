@@ -331,9 +331,13 @@ static void reanchor_best(int map_fd)
 		        if (r.metrics[j].metric_count < MIN_LEADER_TRUST) continue;
 		        if (rv == 0) continue;
 		        /* 0.4.58: exclude algorithms that failed the last
-		         * SWAP_BAD_STREAK_TRUST swaps.  Rising rate_ema on
-		         * a later vote clears this; a good swap clears it. */
+		         * SWAP_BAD_STREAK_TRUST swaps.  0.4.59: also exclude
+		         * on SWAP_NULL_STREAK_TRUST consecutive nulls -- a
+		         * target that keeps producing no change isn't
+		         * rescuing this bucket.  Rising rate_ema or a good
+		         * swap clears both. */
 		        if (r.metrics[j].bad_streak >= SWAP_BAD_STREAK_TRUST) continue;
+		        if (r.metrics[j].null_streak >= SWAP_NULL_STREAK_TRUST) continue;
 		        ss = r.metrics[j].swap_score;
 		        if (ss == 0) ss = SWAP_SCORE_NEUTRAL;
 		        weighted = rv * ss / SWAP_SCORE_NEUTRAL;
@@ -490,7 +494,7 @@ static void stop_reanchor(void)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 16
+#define STATE_VERSION 17
 struct state_header {
         __u32 magic;
         __u32 version;

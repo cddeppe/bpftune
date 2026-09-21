@@ -282,15 +282,26 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
         /* 0.4.58: consecutive failed swaps to this alg.  Two in a
          * row is a pattern; a later rising rate_ema clears it in the
          * vote path.  Win/null clears; loss increments. */
-        if (ratio_q <= 230) {           /* ratio <= 0.9 = loss */
+        /* 0.4.59: ratio_q = post/pre * 256.  Three outcomes:
+         *   <= 230   loss  (ratio <= 0.9)   -> bad_streak++
+         *   >= 282   win   (ratio >= 1.1)   -> both = 0
+         *   between  null  (no change)      -> null_streak++
+         * A null isn't proof of failure but it isn't a win either --
+         * three in a row and the target gets excluded. */
+        if (ratio_q <= 230) {
                 if (rh->metrics[tgt].bad_streak < 255)
                         rh->metrics[tgt].bad_streak++;
-        } else {                        /* ratio > 0.9 = win/null */
+        } else if (ratio_q >= 282) {
                 rh->metrics[tgt].bad_streak = 0;
+                rh->metrics[tgt].null_streak = 0;
+        } else {
+                if (rh->metrics[tgt].null_streak < 255)
+                        rh->metrics[tgt].null_streak++;
         }
-        bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu streak=%u",
+        bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu bad=%u null=%u",
                    bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
-                   (__u32)rh->metrics[tgt].bad_streak);
+                   (__u32)rh->metrics[tgt].bad_streak,
+                   (__u32)rh->metrics[tgt].null_streak);
         statep->swap_target = 0xff;
         statep->pre_swap_rate = 0;
 }
@@ -1086,8 +1097,12 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     /* 0.4.58: rising throughput on this alg is evidence
                      * conditions changed for it.  Re-admit it as a swap
                      * target -- clear the bad_streak. */
-                    if (m->rate_ema > old_ema && m->bad_streak)
-                        m->bad_streak = 0;
+                    if (m->rate_ema > old_ema) {
+                        if (m->bad_streak)
+                            m->bad_streak = 0;
+                        if (m->null_streak)
+                            m->null_streak = 0;
+                    }
                 }
             }
         __u64 __div = m->metric_count + 1;

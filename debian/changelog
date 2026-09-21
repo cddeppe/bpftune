@@ -1,3 +1,20 @@
+bpftune (0.4.59) UNRELEASED; urgency=medium
+
+  * null_streak: three consecutive null swaps to an algorithm exclude it
+    from the target pool.  A null is neither a loss nor a win, but it
+    still costs a cwnd reset and proves nothing.  Split from bad_streak
+    so loss and null can be tuned independently.
+
+    - tcp_conn_metric: null_streak (u8), replaces the _pad0 slot
+      (struct size unchanged)
+    - score_pending_swap: ratio >= 1.1 clears both streaks; <= 0.9
+      increments bad_streak; between, increments null_streak
+    - rate_ema rising on a normal vote clears both
+    - pass-3 excludes on bad_streak >= 2 or null_streak >= 3
+    - STATE_VERSION 16 -> 17
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Mon, 21 Sep 2026 21:00:00 +0000
+
 bpftune (0.4.58) UNRELEASED; urgency=medium
 
   * swap trust: two consecutive failed swaps to an algorithm remove it

@@ -147,7 +147,7 @@ struct tcp_conn_metric {
 	__u16 rate_ema;
 	__u16 swap_score;
 	__u8  bad_streak;   /* 0.4.58: consecutive failed swaps to this alg */
-	__u8  _pad0;
+	__u8  null_streak;  /* 0.4.59: consecutive null swaps to this alg */
 };
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
@@ -230,6 +230,9 @@ struct remote_host {
  * much.  Rising rate_ema on a later vote clears this -- network
  * conditions changed, re-admit as a target. */
 #define SWAP_BAD_STREAK_TRUST    2
+/* 0.4.59: three consecutive nulls (no change either way) is not
+ * chance.  A null costs a cwnd reset and proves nothing. */
+#define SWAP_NULL_STREAK_TRUST   3
 #define SWAP_OUTCOME_MIN_RNAL_NS (60ULL * 1000000000ULL)
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
