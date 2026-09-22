@@ -490,18 +490,21 @@ def _vote_sum(v):
 def data_metric(hosts):
     """Swap target leaderboard.
 
-    Sourced from the busiest bucket by total metric_count (read_map
-    sorts by lifetime `instances`, which never decays, so a quiet
-    bucket would otherwise dominate).
+    Sourced from the busiest bucket by total metric_count.
 
-    The target picker weights rate_ema by swap_score / 256:
+    The picker's score is a three-way product:
 
-        weighted = rate_ema * swap_score / 256
+        score = rate_ema * (swap_score / 256) * penalty
 
-    'delivers fast now' * 'has a rescue history'. It also excludes any
-    algorithm with bad_streak >= 2 or null_streak >= 3. Rows are sorted
-    by weighted with excluded algs pushed to the bottom, so the top
-    row is what the picker would choose right now."""
+    where penalty is the recent-failure decay:
+
+        penalty = 16 / (16 + bad_streak*4 + null_streak*2)
+
+    penalty is 1.0 when bad_streak and null_streak are both zero
+    (no failures to decay), falls as streaks grow, and always stays
+    positive - it's a multiplier, not a gate. The old hard exclusion
+    (alg excluded if bad>=2 or null>=3) is gone. Sorted by score; the
+    top row is what the picker would choose right now."""
     if not hosts:
         return []
     picked = max(hosts, key=lambda x: _vote_sum(x[2]))
@@ -521,8 +524,10 @@ def data_metric(hosts):
             val, mc, a, ss, bs, ns, re_ = 0, 0, 0, 0, 0, 0, 0
         if val in (0, (1<<64)-1):
             val = 0
-        excluded = (bs >= 2) or (ns >= 3)
-        weighted = 0 if excluded else (re_ * ss) // 256
+        penalty = 16.0 / (16.0 + bs * 4.0 + ns * 2.0)
+        score   = (re_ * (ss / 256.0)) * penalty
+        # Only cells where the alg has any history.
+        active = (mc > 0) or (a > 0) or (re_ > 0) or (ss > 0)
         rows.append({
             "alg":    CONGS[i],
             "metric": round(val / 1e6, 1) if val else 0,
@@ -530,12 +535,15 @@ def data_metric(hosts):
             "alive":  a,
             "rate_ema":    re_,
             "swap_score":  ss,
-            "weighted":    weighted,
+            "penalty":     round(penalty, 3),
+            "score":       round(score, 2),
             "bad_streak":  bs,
             "null_streak": ns,
-            "excluded":    excluded,
+            "active":      active,
         })
-    rows.sort(key=lambda r: (r["excluded"], -r["weighted"]))
+    # Sort: active algs first by score desc; inactive (never tried on
+    # this bucket) fall to the bottom in stable order.
+    rows.sort(key=lambda r: (0 if r["active"] else 1, -r["score"]))
     return rows
 
 
@@ -1021,18 +1029,19 @@ def render_text(d):
     for row in _full("TOP DESTINATION BUCKETS", bk):
         print(row)
     print()
-    # Swap target picker: weighted = rate_ema * swap_score / 256.
-    mt = [f"  {'alg':<10}{'metric':>9}{'re':>6}{'score':>7}"
-          f"{'weighted':>10}{'bad':>5}{'null':>6}{'x':>3}"]
+    # Swap target picker: score = rate_ema * ss/256 * penalty.
+    mt = [f"  {'alg':<10}{'metric':>9}{'re':>6}{'ss':>6}"
+          f"{'pen':>6}{'score':>9}{'bad':>5}{'null':>6}"]
     for r in d["metric"]:
-        x = "x" if r.get("excluded") else ""
+        pen = r.get("penalty", 1.0)
+        pen_s = f"{pen:.2f}"
         mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
                   f"{r.get('rate_ema',0):>6}"
-                  f"{r.get('swap_score',0):>7}"
-                  f"{r.get('weighted',0):>10}"
+                  f"{r.get('swap_score',0):>6}"
+                  f"{pen_s:>6}"
+                  f"{r.get('score',0):>9.1f}"
                   f"{r.get('bad_streak',0):>5}"
-                  f"{r.get('null_streak',0):>6}"
-                  f"{x:>3}")
+                  f"{r.get('null_streak',0):>6}")
     pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'p_max':>8}"
           f"{'s_avg':>8}{'s_max':>8}{'n':>5}"]
     for r in d["proof"]:
@@ -1042,7 +1051,7 @@ def render_text(d):
         n  = f"{r['samples']}" if r["samples"] is not None else "-"
         pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
                   f"{pm:>8}{sa:>8}{sm:>8}{n:>5}")
-    for row in _twocol("SWAP TARGET LEADERBOARD (weighted = re*ss/256)",
+    for row in _twocol("SWAP TARGET LEADERBOARD (score = re*ss/256*pen)",
                        mt, "PROOF LEADERBOARD (speed)", pr):
         print(row)
     print()
@@ -1145,8 +1154,8 @@ bucket's per-alg row carries:
   mv_<alg>  metric_value
   re_<alg>  rate_ema
   ss_<alg>  swap_score  (256 = neutral, higher = swaps into this alg helped)
-  bs_<alg>  bad_streak  (>= 2 excludes the alg as a swap target)
-  ns_<alg>  null_streak (>= 3 excludes the alg as a swap target)
+  bs_<alg>  bad_streak  (feeds the picker's penalty; no longer a gate)
+  ns_<alg>  null_streak (feeds the picker's penalty; no longer a gate)
 
 Swaps from all /var/log/bpftune-met-*.log (per-file byte offsets in
 .swaps_pos.json).
@@ -1592,6 +1601,10 @@ if __name__ == "__main__":
 #
 # Per-alg series include re_<alg>, ss_<alg>, bs_<alg>, ns_<alg>.
 #
+# Swap target leaderboard: score = rate_ema * ss/256 * penalty, where
+# penalty = 16 / (16 + bad*4 + null*2). No exclusions - streaks are a
+# multiplier, not a gate.
+#
 # Frontend refreshes:
 #   * `now` card + currently selected chart: every 30 s.
 #   * full dashboard: every 5 min to match the renderer cron cadence.
@@ -1604,13 +1617,6 @@ writes index.html and data/*.json. The browser also fetches
 current.json (every 30s).
 
 load_csv is bounded-memory: keeps the last N rows only.
-
-For swap outcomes there are two views:
-  * composite - from swaps.csv, `outcome` column (met val= ratio).
-  * sustained - median srate in [t+60, t+300] joined from srate.csv.
-
-`collected_ts` is the only date-safe timestamp (falls back to
-`ts_epoch` for v1 rows).
 """
 import bisect, csv, json, math, os, time
 from collections import defaultdict, deque
@@ -2161,8 +2167,6 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
-  table.tbl tr.excluded td { opacity: .45; }
-  table.tbl tr.excluded td.name { text-decoration: line-through; }
   table.tbl tr.pick td { background: var(--accent-dim); }
   table.tbl tr.pick td.name::after {
     content: " \25b8 pick";
@@ -2170,6 +2174,7 @@ INDEX_HTML = r"""<!doctype html>
     text-transform: uppercase; letter-spacing: .05em;
     margin-left: 6px; font-weight: 600;
   }
+  table.tbl tr.inactive td { opacity: .45; }
 
   .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
   .proof-tbl td:nth-child(4),
@@ -2429,12 +2434,12 @@ INDEX_HTML = r"""<!doctype html>
       <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
-        <b>weighted</b> = <code>rate_ema &times; swap_score / 256</code>
-        &mdash; the multiplier the target picker applies. Sorted by
-        weighted, so the top row is what the picker would choose right
-        now. <b>bad_streak &ge; 2</b> or <b>null_streak &ge; 3</b> takes
-        an alg out of the running entirely; those rows are struck
-        through and pushed to the bottom.
+        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>,
+        <b>penalty</b> = <code>16 / (16 + bad&times;4 + null&times;2)</code>.
+        Penalty starts at 1.0 (no failures) and falls as bad/null streaks
+        grow, but is always positive &mdash; streaks are a multiplier, not
+        a gate. Sorted by score; the top row is what the picker would
+        choose right now.
       </div>
     </section>
 
@@ -2499,7 +2504,7 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = swap target penalty in effect</span></h2>
+    <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
     <div class="chart-box h-xl"><canvas id="streaks"></canvas></div>
   </section>
 
@@ -2753,46 +2758,47 @@ INDEX_HTML = r"""<!doctype html>
       if (v < 256) return "cell-bad";
       return "cell-dim";
     }
-    function colorBadStreak(v) {
+    function colorPenalty(v) {
       if (v == null) return "cell-dim";
-      if (v >= 2) return "cell-bad";
-      if (v === 0) return "cell-good";
-      return "";
+      if (v >= 0.99) return "cell-dim";
+      if (v >= 0.8)  return "";
+      if (v >= 0.5)  return "cell-bad";
+      return "cell-bad";
     }
-    function colorNullStreak(v) {
+    function colorStreak(v) {
       if (v == null) return "cell-dim";
-      if (v >= 3) return "cell-bad";
       if (v === 0) return "cell-good";
-      return "";
+      return "cell-bad";
     }
-    // Top non-excluded row is the one the tuner's target picker would
-    // select on this bucket.
+    // Top row is the picker's choice: sorted by score in the CLI, so
+    // the first non-inactive row wins.
     var picked = null;
     for (var i = 0; i < rows.length; i++) {
-      if (!rows[i].excluded && rows[i].weighted > 0) { picked = i; break; }
+      if (rows[i].active) { picked = i; break; }
     }
     var html = '<table class="tbl"><thead><tr>' +
       '<th>alg</th><th>rate_ema</th><th>swap_score</th>' +
-      '<th>weighted</th><th>metric</th>' +
+      '<th>penalty</th><th>score</th><th>metric</th>' +
       '<th>bad</th><th>null</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r, i) {
       var cls = [];
-      if (r.excluded) cls.push("excluded");
+      if (!r.active) cls.push("inactive");
       if (i === picked) cls.push("pick");
       var trClass = cls.length ? ' class="' + cls.join(" ") + '"' : "";
+      var pen = (r.penalty == null) ? "-" : r.penalty.toFixed(3);
       html += '<tr' + trClass + '>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
         '<td class="mono">' + (r.rate_ema == null ? "-" : r.rate_ema) + '</td>' +
         '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
           (r.swap_score == null ? "-" : r.swap_score) + '</td>' +
+        '<td class="mono ' + colorPenalty(r.penalty) + '">' + pen + '</td>' +
         '<td class="mono cell-good">' +
-          (r.excluded ? "excl" :
-           (r.weighted == null ? "-" : r.weighted)) + '</td>' +
+          (r.score == null ? "-" : r.score.toFixed(1)) + '</td>' +
         '<td class="mono dim">' + r.metric.toFixed(1) + '</td>' +
-        '<td class="mono ' + colorBadStreak(r.bad_streak) + '">' +
+        '<td class="mono ' + colorStreak(r.bad_streak) + '">' +
           (r.bad_streak == null ? "-" : r.bad_streak) + '</td>' +
-        '<td class="mono ' + colorNullStreak(r.null_streak) + '">' +
+        '<td class="mono ' + colorStreak(r.null_streak) + '">' +
           (r.null_streak == null ? "-" : r.null_streak) + '</td>' +
         '</tr>';
     });
