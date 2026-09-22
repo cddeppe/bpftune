@@ -330,17 +330,20 @@ static void reanchor_best(int map_fd)
 		        __u64 ss, weighted;
 		        if (r.metrics[j].metric_count < MIN_LEADER_TRUST) continue;
 		        if (rv == 0) continue;
-		        /* 0.4.58: exclude algorithms that failed the last
-		         * SWAP_BAD_STREAK_TRUST swaps.  0.4.59: also exclude
-		         * on SWAP_NULL_STREAK_TRUST consecutive nulls -- a
-		         * target that keeps producing no change isn't
-		         * rescuing this bucket.  Rising rate_ema or a good
-		         * swap clears both. */
-		        if (r.metrics[j].bad_streak >= SWAP_BAD_STREAK_TRUST) continue;
-		        if (r.metrics[j].null_streak >= SWAP_NULL_STREAK_TRUST) continue;
+		        /* 0.4.60: no hard exclusion.  A bad or null streak
+		         * demotes the target instead of banning it, so it stays
+		         * in the pile and can climb back the moment it wins or
+		         * its rate_ema rises.  Penalty: 16/(16 + bad*4 + null*2).
+		         * bad=2 -> 0.67x, null=3 -> 0.73x, both -> 0.53x. */
 		        ss = r.metrics[j].swap_score;
 		        if (ss == 0) ss = SWAP_SCORE_NEUTRAL;
 		        weighted = rv * ss / SWAP_SCORE_NEUTRAL;
+		        {
+		            __u64 pen = 16
+		                + (__u64)r.metrics[j].bad_streak * 4
+		                + (__u64)r.metrics[j].null_streak * 2;
+		            weighted = weighted * 16 / pen;
+		        }
 		        if (rate_bv == 0 || weighted > best_weighted) {
 		            rate_bi = (__u64)j;
 		            rate_bv = rv;

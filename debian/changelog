@@ -1,3 +1,14 @@
+bpftune (0.4.61) UNRELEASED; urgency=medium
+
+  * swap target: replace hard exclusions with a soft penalty.  A target
+    with bad_streak=2 or null_streak=3 is no longer removed from the
+    candidate pool; it is down-weighted by 16/(16 + bad*4 + null*2).
+    bad=2 -> 0.67x, null=3 -> 0.73x, both -> 0.53x.  A winning swap or a
+    rising rate_ema still clears the streaks, and the target can climb
+    back automatically.  No state change; STATE_VERSION unchanged at 17.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Tue, 22 Sep 2026 21:30:00 +0000
+
 bpftune (0.4.60) UNRELEASED; urgency=medium
 
   * swap_score: asymmetric update.  A win moves the score by 1/16
