@@ -226,6 +226,12 @@ struct remote_host {
  * loses the race automatically. */
 #define SWAP_SCORE_NEUTRAL       256
 #define SWAP_SCORE_STEP_DIV      16
+/* 0.4.60: asymmetric divisors.  Wins keep the slow /16 EMA.  Nulls
+ * pull toward neutral at /4 so a high score can't coast through
+ * inactivity.  Losses pull toward the observed ratio at /2 so a
+ * bad miss drops the score quickly. */
+#define SWAP_SCORE_NULL_DIV      4
+#define SWAP_SCORE_LOSS_DIV      2
 /* 0.4.58: two consecutive failed swaps is a pattern; three costs too
  * much.  Rising rate_ema on a later vote clears this -- network
  * conditions changed, re-admit as a target. */

@@ -267,14 +267,37 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
         {
                 __u16 cur16 = rh->metrics[tgt].swap_score;
                 __u32 cur32 = cur16 ? cur16 : SWAP_SCORE_NEUTRAL;
-                /* BPF: no signed division.  Compute |delta| unsigned,
-                 * then add/subtract based on which side is larger. */
-                if (ratio_q >= cur32) {
-                        __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_STEP_DIV;
-                        cur32 += step;
+                /* 0.4.60: asymmetric scoring.  Wins move by 1/16
+                 * (unchanged).  Nulls pull toward neutral 256 by
+                 * 1/4 so a high score cannot coast through
+                 * inactivity.  Losses pull toward the observed
+                 * ratio by 1/2 -- bigger misses drop the score more.
+                 * No signed division; take the unsigned difference,
+                 * then add or subtract based on which is larger. */
+                if (ratio_q >= 282) {
+                        if (ratio_q >= cur32) {
+                                __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_STEP_DIV;
+                                cur32 += step;
+                        } else {
+                                __u32 drop = (__u32)(cur32 - ratio_q) / SWAP_SCORE_STEP_DIV;
+                                cur32 = (drop > cur32) ? 0 : cur32 - drop;
+                        }
+                } else if (ratio_q > 230) {
+                        if (cur32 > SWAP_SCORE_NEUTRAL) {
+                                __u32 drop = (cur32 - SWAP_SCORE_NEUTRAL) / SWAP_SCORE_NULL_DIV;
+                                cur32 = (drop > cur32) ? 0 : cur32 - drop;
+                        } else if (cur32 < SWAP_SCORE_NEUTRAL) {
+                                __u32 step = (SWAP_SCORE_NEUTRAL - cur32) / SWAP_SCORE_NULL_DIV;
+                                cur32 += step;
+                        }
                 } else {
-                        __u32 drop = (__u32)(cur32 - ratio_q) / SWAP_SCORE_STEP_DIV;
-                        cur32 = (drop > cur32) ? 0 : cur32 - drop;
+                        if (ratio_q >= cur32) {
+                                __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_LOSS_DIV;
+                                cur32 += step;
+                        } else {
+                                __u32 drop = (__u32)(cur32 - ratio_q) / SWAP_SCORE_LOSS_DIV;
+                                cur32 = (drop > cur32) ? 0 : cur32 - drop;
+                        }
                 }
                 if (cur32 > 1024) cur32 = 1024;
                 rh->metrics[tgt].swap_score = (__u16)cur32;

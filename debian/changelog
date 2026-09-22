@@ -1,3 +1,15 @@
+bpftune (0.4.60) UNRELEASED; urgency=medium
+
+  * swap_score: asymmetric update.  A win moves the score by 1/16
+    (unchanged).  A null pulls it toward neutral 256 by 1/4.  A loss
+    pulls it toward the observed ratio by 1/2.  Purpose: a target with
+    high historical score can no longer coast through consecutive
+    nulls.  Simulated descent from a score of 340: today's rule needs
+    ~20 nulls to reach 285; the new rule needs 6-8.
+    - Two new constants only; struct and STATE_VERSION unchanged.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Tue, 22 Sep 2026 20:00:00 +0000
+
 bpftune (0.4.59) UNRELEASED; urgency=medium
 
   * null_streak: three consecutive null swaps to an algorithm exclude it
