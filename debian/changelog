@@ -1,3 +1,18 @@
+bpftune (0.4.62) UNRELEASED; urgency=medium
+
+  * swap_score: initialize to SWAP_SCORE_NEUTRAL (256) the first time an
+    algorithm runs on a bucket.  Previously an untested algorithm held
+    swap_score == 0 in the map and pass-3 substituted 256 at decision
+    time.  That substitution worked for the picker but not for the state
+    file or any other reader -- the dashboard showed 0, which reads as
+    "tested and bottomed out".  Both meanings are now distinct in the
+    map: 256 = untested-or-neutral, 0 = decayed to zero (unreachable in
+    practice for the fast-decay loss branch).
+    No STATE_VERSION bump.  Existing state loads unchanged; existing
+    zero-score algorithms get initialized on their next socket.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Tue, 22 Sep 2026 22:30:00 +0000
+
 bpftune (0.4.61) UNRELEASED; urgency=medium
 
   * swap target: replace hard exclusions with a soft penalty.  A target

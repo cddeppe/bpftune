@@ -100,6 +100,13 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops,
 		if (remote_host && !(statep->touched_bitmap & bit)) {
 			statep->touched_bitmap |= bit;
 			remote_host->metrics[idx].sockets_alive++;
+			/* 0.4.62: initialize swap_score to neutral the first time
+			 * this algorithm runs on this bucket.  Makes the map
+			 * self-describing -- 0 never appears for an untested alg,
+			 * so picker and dashboard both trust the raw field. */
+			if (remote_host->metrics[idx].swap_score == 0)
+				remote_host->metrics[idx].swap_score =
+					SWAP_SCORE_NEUTRAL;
 		}
 		statep->state = (__u64)i;
 		statep->bad_checkpoints = 0;
