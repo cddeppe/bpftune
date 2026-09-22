@@ -488,14 +488,20 @@ def _vote_sum(v):
 
 
 def data_metric(hosts):
-    """Metric leaderboard, sourced from the busiest bucket by votes.
+    """Swap target leaderboard.
 
-    read_map sorts by lifetime `instances`, which never decays: it can
-    point at a bucket that has been idle for hours, whose metrics array
-    has one live alg and fifteen all-zero slots. We instead pick the
-    bucket with the highest total vote count so the leaderboard reflects
-    a busiest set of algorithms, and we show all 16 algs including
-    zeros so the field is visible."""
+    Sourced from the busiest bucket by total metric_count (read_map
+    sorts by lifetime `instances`, which never decays, so a quiet
+    bucket would otherwise dominate).
+
+    The target picker weights rate_ema by swap_score / 256:
+
+        weighted = rate_ema * swap_score / 256
+
+    'delivers fast now' * 'has a rescue history'. It also excludes any
+    algorithm with bad_streak >= 2 or null_streak >= 3. Rows are sorted
+    by weighted with excluded algs pushed to the bottom, so the top
+    row is what the picker would choose right now."""
     if not hosts:
         return []
     picked = max(hosts, key=lambda x: _vote_sum(x[2]))
@@ -510,22 +516,26 @@ def data_metric(hosts):
             ss  = int(m.get("swap_score", 0) or 0)
             bs  = int(m.get("bad_streak", 0) or 0)
             ns  = int(m.get("null_streak", 0) or 0)
+            re_ = int(m.get("rate_ema", 0) or 0)
         except Exception:
-            val, mc, a, ss, bs, ns = 0, 0, 0, 0, 0, 0
+            val, mc, a, ss, bs, ns, re_ = 0, 0, 0, 0, 0, 0, 0
         if val in (0, (1<<64)-1):
             val = 0
+        excluded = (bs >= 2) or (ns >= 3)
+        weighted = 0 if excluded else (re_ * ss) // 256
         rows.append({
             "alg":    CONGS[i],
             "metric": round(val / 1e6, 1) if val else 0,
             "votes":  mc,
             "alive":  a,
-            "swap_score":   ss,
-            "bad_streak":   bs,
-            "null_streak":  ns,
+            "rate_ema":    re_,
+            "swap_score":  ss,
+            "weighted":    weighted,
+            "bad_streak":  bs,
+            "null_streak": ns,
+            "excluded":    excluded,
         })
-    # Order by metric if the alg has been tried, else push to the end
-    # (so untried algs sort last instead of jumbling the top).
-    rows.sort(key=lambda r: r["metric"] if r["metric"] else 1<<62)
+    rows.sort(key=lambda r: (r["excluded"], -r["weighted"]))
     return rows
 
 
@@ -1011,14 +1021,18 @@ def render_text(d):
     for row in _full("TOP DESTINATION BUCKETS", bk):
         print(row)
     print()
-    mt = [f"  {'alg':<10}{'metric':>9}{'votes':>7}{'alive':>7}"
-          f"{'score':>7}{'bad':>5}{'null':>6}"]
+    # Swap target picker: weighted = rate_ema * swap_score / 256.
+    mt = [f"  {'alg':<10}{'metric':>9}{'re':>6}{'score':>7}"
+          f"{'weighted':>10}{'bad':>5}{'null':>6}{'x':>3}"]
     for r in d["metric"]:
+        x = "x" if r.get("excluded") else ""
         mt.append(f"  {r['alg']:<10}{r['metric']:>9.1f}"
-                  f"{r['votes']:>7}{r['alive']:>7}"
+                  f"{r.get('rate_ema',0):>6}"
                   f"{r.get('swap_score',0):>7}"
+                  f"{r.get('weighted',0):>10}"
                   f"{r.get('bad_streak',0):>5}"
-                  f"{r.get('null_streak',0):>6}")
+                  f"{r.get('null_streak',0):>6}"
+                  f"{x:>3}")
     pr = [f"  {'alg':<9}{'good':>5}{'prvd':>5}{'p_max':>8}"
           f"{'s_avg':>8}{'s_max':>8}{'n':>5}"]
     for r in d["proof"]:
@@ -1028,7 +1042,7 @@ def render_text(d):
         n  = f"{r['samples']}" if r["samples"] is not None else "-"
         pr.append(f"  {r['alg']:<9}{r['good']:>5}{r['proved']:>5}"
                   f"{pm:>8}{sa:>8}{sm:>8}{n:>5}")
-    for row in _twocol("ALGORITHM LEADERBOARD (metric, score, streaks)",
+    for row in _twocol("SWAP TARGET LEADERBOARD (weighted = re*ss/256)",
                        mt, "PROOF LEADERBOARD (speed)", pr):
         print(row)
     print()
@@ -1576,8 +1590,7 @@ if __name__ == "__main__":
 # Bounded-memory load_csv: deque on the DictReader keeps only the last
 # N rows in memory regardless of file size.
 #
-# Per-alg series include re_<alg> (rate_ema), ss_<alg> (swap_score),
-# bs_<alg> (bad_streak), ns_<alg> (null_streak).
+# Per-alg series include re_<alg>, ss_<alg>, bs_<alg>, ns_<alg>.
 #
 # Frontend refreshes:
 #   * `now` card + currently selected chart: every 30 s.
@@ -2096,6 +2109,7 @@ INDEX_HTML = r"""<!doctype html>
     letter-spacing: .09em; text-transform: uppercase;
     color: var(--muted);
     display: flex; align-items: center; gap: 6px;
+    flex-wrap: wrap;
   }
   .lv-grid h3 .cnt {
     margin-left: auto; color: var(--muted-2);
@@ -2109,6 +2123,9 @@ INDEX_HTML = r"""<!doctype html>
     line-height: 1.4;
   }
   .lv-grid .note b { color: var(--muted); }
+  .lv-grid .note code {
+    font-family: var(--mono); font-size: 10.5px;
+  }
 
   .kv { display: flex; flex-direction: column; gap: 5px; }
   .kv .row {
@@ -2138,11 +2155,21 @@ INDEX_HTML = r"""<!doctype html>
     font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border-strong);
+    white-space: nowrap;
   }
   table.tbl tbody tr:last-child td { border-bottom: none; }
   table.tbl td.mono { font-family: var(--mono); font-size: 12px; }
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
+  table.tbl tr.excluded td { opacity: .45; }
+  table.tbl tr.excluded td.name { text-decoration: line-through; }
+  table.tbl tr.pick td { background: var(--accent-dim); }
+  table.tbl tr.pick td.name::after {
+    content: " \25b8 pick";
+    color: var(--accent); font-size: 9.5px;
+    text-transform: uppercase; letter-spacing: .05em;
+    margin-left: 6px; font-weight: 600;
+  }
 
   .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
   .proof-tbl td:nth-child(4),
@@ -2398,12 +2425,20 @@ INDEX_HTML = r"""<!doctype html>
       <div id="lv-buckets"></div>
     </section>
 
-    <section class="c6">
-      <h3>metric leaderboard <span class="cnt">busiest bucket &middot; score 256=neutral &middot; bad&ge;2 / null&ge;3 exclude</span></h3>
+    <section class="c12">
+      <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
+      <div class="note">
+        <b>weighted</b> = <code>rate_ema &times; swap_score / 256</code>
+        &mdash; the multiplier the target picker applies. Sorted by
+        weighted, so the top row is what the picker would choose right
+        now. <b>bad_streak &ge; 2</b> or <b>null_streak &ge; 3</b> takes
+        an alg out of the running entirely; those rows are struck
+        through and pushed to the bottom.
+      </div>
     </section>
 
-    <section class="c6">
+    <section class="c12">
       <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
@@ -2730,19 +2765,31 @@ INDEX_HTML = r"""<!doctype html>
       if (v === 0) return "cell-good";
       return "";
     }
+    // Top non-excluded row is the one the tuner's target picker would
+    // select on this bucket.
+    var picked = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i].excluded && rows[i].weighted > 0) { picked = i; break; }
+    }
     var html = '<table class="tbl"><thead><tr>' +
-      '<th>alg</th><th>metric</th><th>votes</th><th>alive</th>' +
-      '<th>swap_score</th><th>bad_streak</th><th>null_streak</th>' +
+      '<th>alg</th><th>rate_ema</th><th>swap_score</th>' +
+      '<th>weighted</th><th>metric</th>' +
+      '<th>bad</th><th>null</th>' +
       '</tr></thead><tbody>';
-    rows.forEach(function (r) {
-      var dim = (r.votes === 0 && r.alive === 0) ? " dim" : "";
-      html += '<tr>' +
-        '<td class="name' + dim + '">' + esc(r.alg) + '</td>' +
-        '<td class="mono' + dim + '">' + r.metric.toFixed(1) + '</td>' +
-        '<td class="mono dim">' + fmtN(r.votes) + '</td>' +
-        '<td class="mono dim">' + fmtN(r.alive) + '</td>' +
+    rows.forEach(function (r, i) {
+      var cls = [];
+      if (r.excluded) cls.push("excluded");
+      if (i === picked) cls.push("pick");
+      var trClass = cls.length ? ' class="' + cls.join(" ") + '"' : "";
+      html += '<tr' + trClass + '>' +
+        '<td class="name">' + esc(r.alg) + '</td>' +
+        '<td class="mono">' + (r.rate_ema == null ? "-" : r.rate_ema) + '</td>' +
         '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
           (r.swap_score == null ? "-" : r.swap_score) + '</td>' +
+        '<td class="mono cell-good">' +
+          (r.excluded ? "excl" :
+           (r.weighted == null ? "-" : r.weighted)) + '</td>' +
+        '<td class="mono dim">' + r.metric.toFixed(1) + '</td>' +
         '<td class="mono ' + colorBadStreak(r.bad_streak) + '">' +
           (r.bad_streak == null ? "-" : r.bad_streak) + '</td>' +
         '<td class="mono ' + colorNullStreak(r.null_streak) + '">' +
