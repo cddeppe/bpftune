@@ -1,3 +1,16 @@
+bpftune (0.4.63) UNRELEASED; urgency=medium
+
+  * reanchor: initialize stale swap_score=0 entries that have votes.
+    0.4.62 set the score in set_cong(), but an algorithm already in the
+    state file with score=0 (pre-0.4.62) only inits when set_cong runs
+    for it -- on a bucket past coverage that means the next
+    epsilon-greedy draw, not the next reanchor cycle.  The reanchor now
+    does the same init during its walk so it clears within 30s.
+    - userspace-only; BPF program unchanged
+    - STATE_VERSION unchanged at 17
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Tue, 22 Sep 2026 23:00:00 +0000
+
 bpftune (0.4.62) UNRELEASED; urgency=medium
 
   * swap_score: initialize to SWAP_SCORE_NEUTRAL (256) the first time an

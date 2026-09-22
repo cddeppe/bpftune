@@ -375,6 +375,37 @@ static void reanchor_best(int map_fd)
 		{
 			__u64 ref_before = r.max_rate_delivered;
 
+			__u64 scores_init = 0;
+
+			int jj;
+
+
+			/* 0.4.63: initialize stale swap_score=0 entries that have
+
+			 * votes.  0.4.62 set the score in set_cong(), but an algo
+
+			 * already in the state file with score=0 only inits when
+
+			 * set_cong runs for it -- on a bucket past coverage that's
+
+			 * the next epsilon-greedy draw, not the next reanchor.
+
+			 * Do it here so it clears within 30s. */
+
+			for (jj = 0; jj < NUM_TCP_CONN_METRICS; jj++) {
+
+			    if (r.metrics[jj].swap_score == 0 &&
+
+			        r.metrics[jj].metric_count > 0) {
+
+			        r.metrics[jj].swap_score = SWAP_SCORE_NEUTRAL;
+
+			        scores_init++;
+
+			    }
+
+			}
+
 			/* 0.4.43: refresh max_rate_delivered from histogram.
 			 * Runs before the 'unchanged' early-continue so that a
 			 * stable bucket still refreshes its reference, and so
@@ -387,7 +418,8 @@ static void reanchor_best(int map_fd)
 					r.max_rate_delivered = p99;
 			}
 
-			if (ref_before == r.max_rate_delivered &&
+			if (scores_init == 0 &&
+                                ref_before == r.max_rate_delivered &&
 				r.best_i == new_bi && r.best_v == new_bv &&
 				r.second_i == new_si && r.second_v == new_sv &&
                                 r.rate_best_i == new_rbi &&
