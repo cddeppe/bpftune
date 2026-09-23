@@ -208,6 +208,8 @@ def stream_buckets(path, per_bucket_max=500, max_buckets=60):
         for row in rd:
             a = row[ai] if ai < len(row) else ""
             a = a or "unknown"
+            if a.count(".") == 3 and not a.endswith(".0.0"):
+                continue
             counts[a] = counts.get(a, 0) + 1
 
     # ----- pick the top N busiest, so pass 2 keeps only those -----
@@ -420,7 +422,7 @@ def emit_bucket_cols(bid, rows, cols, algs, now):
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
     _write_bucket_json(doc, os.path.join(DATA, "bucket_%s.json" % safe))
 
-def emit_meta(buckets, algs, now):
+def emit_meta(buckets, algs, now, primary=None):
     rows_24h = [r for r in buckets if (ts_of(r) or 0) > now - 86400]
     if not rows_24h:
         rows_24h = list(buckets)
@@ -445,7 +447,10 @@ def emit_meta(buckets, algs, now):
         "ranges":        list(RANGES),
         "algs":          algs,
         "buckets":       entries,
-        "default_bucket": entries[0]["id"] if entries else "all",
+        "default_bucket": (
+            primary if (primary and any(e["id"] == primary for e in entries))
+            else (entries[0]["id"] if entries else "all")
+        ),
         "has_tcp_rmem":  "tcp_rmem_max" in (
             load_csv(buckets_source(), max_rows=1)[0] or []),
     })
@@ -2302,7 +2307,7 @@ def main():
         for r in rows[-200:]:
             meta_rows.append({c: r[i] for i, c in enumerate(header)
                               if i < len(r)})
-    emit_meta(meta_rows, algs, now)
+    emit_meta(meta_rows, algs, now, primary=(to_emit[0][0] if to_emit else None))
 
     total_rows = 0
     for bid, rs in to_emit:
