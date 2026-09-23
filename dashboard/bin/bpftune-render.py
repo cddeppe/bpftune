@@ -181,7 +181,7 @@ def write_json(name, obj):
 
 
 
-def stream_buckets(path, per_bucket_max=30000):
+def stream_buckets(path, per_bucket_max=500, max_buckets=60):
     """Single-pass CSV read. Returns (header, cols, by_addr) where
     by_addr maps addr -> list of raw CSV row-lists (capped to
     per_bucket_max per bucket). Rows stay as lists of strings; we do
@@ -189,7 +189,11 @@ def stream_buckets(path, per_bucket_max=30000):
     if not path or not os.path.exists(path):
         return [], {}, {}
     from collections import deque
-    by = {}
+
+    # ----- pass 1: count rows per addr, retain nothing -----
+    counts = {}
+    header = []
+    cols = {}
     with open(path, "r", newline="", encoding="utf-8") as f:
         rd = csv.reader(f)
         try:
@@ -201,14 +205,36 @@ def stream_buckets(path, per_bucket_max=30000):
         ti = cols.get("collected_ts")
         if ai is None or ti is None:
             return header, cols, {}
+        for row in rd:
+            a = row[ai] if ai < len(row) else ""
+            a = a or "unknown"
+            counts[a] = counts.get(a, 0) + 1
+
+    # ----- pick the top N busiest, so pass 2 keeps only those -----
+    # 60 buckets * 500 rows * ~8 KB/row = ~240 MB peak, which is safe
+    # even on a 2 GB box. Without this cap, a host with 400+ distinct
+    # addresses would retain 400+ * 500 rows and OOM.
+    top_addrs = set(sorted(counts, key=lambda a: -counts[a])[:max_buckets])
+
+    # ----- pass 2: read again, retain only the chosen buckets -----
+    by = {}
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        rd = csv.reader(f)
+        try:
+            next(rd)   # skip header
+        except StopIteration:
+            return header, cols, {}
         hlen = len(header)
         for row in rd:
+            a = row[ai] if ai < len(row) else ""
+            a = a or "unknown"
+            if a not in top_addrs:
+                continue
             if len(row) < hlen:
                 row.extend([""] * (hlen - len(row)))
-            addr = row[ai] or "unknown"
-            dq = by.get(addr)
+            dq = by.get(a)
             if dq is None:
-                dq = by[addr] = deque(maxlen=per_bucket_max)
+                dq = by[a] = deque(maxlen=per_bucket_max)
             dq.append(row)
     return header, cols, {a: list(dq) for a, dq in by.items()}
 
@@ -2246,7 +2272,7 @@ def main():
         print("renderer: no buckets CSV found yet")
         return 1
 
-    header, cols, by = stream_buckets(bfile, per_bucket_max=MAX_ROWS_PER_BUCKET)
+    header, cols, by = stream_buckets(bfile, per_bucket_max=MAX_ROWS_PER_BUCKET, max_buckets=MAX_BUCKETS)
     _, swaps = load_csv(os.path.join(HIST, "swaps.csv"), max_rows=MAX_ROWS_SWAPS)
     _, srate = load_csv(os.path.join(HIST, "srate.csv"), max_rows=MAX_ROWS_SRATE)
 
