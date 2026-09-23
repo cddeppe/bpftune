@@ -1,0 +1,19 @@
+[Unit]
+Description=bpftune trace_pipe capture -> @TRACE_LOG@
+After=network.target bpftune.service
+Wants=bpftune.service
+ConditionPathExists=@TRACE_PIPE@
+
+[Service]
+Type=simple
+ExecStart=/bin/cat @TRACE_PIPE@
+StandardOutput=append:@TRACE_LOG@
+StandardError=append:@TRACE_LOG@
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=bpftune-dashboard HTTP server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@HIST@
+ExecStart=/usr/bin/env python3 -m http.server @PORT@ --bind 0.0.0.0 --directory @HIST@
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=@HIST@
+User=root
+
+[Install]
+WantedBy=multi-user.target

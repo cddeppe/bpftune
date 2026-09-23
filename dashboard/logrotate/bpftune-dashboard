@@ -1,0 +1,12 @@
+@TRACE_LOG@
+@COLLECTOR_LOG@ {
+    daily
+    rotate 14
+    size 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0644 root root
+}
