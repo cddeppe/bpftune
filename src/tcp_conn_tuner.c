@@ -331,6 +331,7 @@ static void reanchor_best(int map_fd)
 		__u64 second_i = ~((__u64)0), second_v = 0;
 		__u64 new_bi, new_bv, new_si, new_sv;
 		__u64 new_rbi = 0, new_rbv = 0;
+		__u64 new_r2i = 0, new_r2v = 0;
 		int i;
 
 		prev_key = &key;
@@ -380,6 +381,8 @@ static void reanchor_best(int map_fd)
 		    __u64 rate_bi = ~((__u64)0), rate_bv = 0;
 		    __u64 best_weighted = 0;
 		    int j;
+		    __u64 rate_2i = ~((__u64)0), rate_2v = 0;
+		    __u64 second_weighted = 0;
 		    /* 0.4.56: pick by rate_ema * swap_score so a target with a
 		     * bad swap track record gets demoted automatically.  Store
 		     * raw rate_ema in rate_bv -- BPF's trigger math needs a rate. */
@@ -403,9 +406,19 @@ static void reanchor_best(int map_fd)
 		            weighted = weighted * 16 / pen;
 		        }
 		        if (rate_bv == 0 || weighted > best_weighted) {
+		            if (rate_bi != ~((__u64)0)) {
+		                rate_2i = rate_bi;
+		                rate_2v = rate_bv;
+		                second_weighted = best_weighted;
+		            }
 		            rate_bi = (__u64)j;
 		            rate_bv = rv;
 		            best_weighted = weighted;
+		        } else if (weighted > second_weighted &&
+		                   (__u64)j != rate_bi) {
+		            rate_2i = (__u64)j;
+		            rate_2v = rv;
+		            second_weighted = weighted;
 		        }
 		    }
 
@@ -481,7 +494,9 @@ static void reanchor_best(int map_fd)
 				r.best_i == new_bi && r.best_v == new_bv &&
 				r.second_i == new_si && r.second_v == new_sv &&
                                 r.rate_best_i == new_rbi &&
-                                r.rate_best_v == new_rbv)
+                                r.rate_best_v == new_rbv &&
+                                r.rate_second_i == new_r2i &&
+                                r.rate_second_v == new_r2v)
 					continue;
 		}
 		bpftune_log(BPFTUNE_LOG_LEVEL,
@@ -501,6 +516,8 @@ static void reanchor_best(int map_fd)
 		r.second_v = new_sv;
 		r.rate_best_i = new_rbi;
 		r.rate_best_v = new_rbv;
+		r.rate_second_i = new_r2i;
+		r.rate_second_v = new_r2v;
 
 		if (bpf_map_update_elem(map_fd, &key, &r, BPF_ANY)) {
 			bpftune_log(LOG_ERR, "reanchor: update failed: %s\n",
@@ -587,7 +604,7 @@ static void stop_reanchor(void)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 17
+#define STATE_VERSION 18
 struct state_header {
         __u32 magic;
         __u32 version;

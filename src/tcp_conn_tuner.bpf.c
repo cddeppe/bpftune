@@ -863,8 +863,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
          * div blows the 1M insn verifier limit. */
         if (remote_host->rate_best_v != 0) {
             __u8 rt = (__u8)(remote_host->rate_best_i & (NUM_TCP_CONN_METRICS - 1));
-            if (rt != s && remote_host->metrics[rt].rate_ema > 0)
+            if (rt != s && remote_host->metrics[rt].rate_ema > 0) {
                 swap_tgt = rt;
+            } else if (rt == s && remote_host->rate_second_v != 0) {
+                __u8 r2 = (__u8)(remote_host->rate_second_i &
+                                 (NUM_TCP_CONN_METRICS - 1));
+                if (r2 != s && remote_host->metrics[r2].rate_ema > 0)
+                    swap_tgt = r2;
+            }
         }
 
         if (statep && !is_close) {

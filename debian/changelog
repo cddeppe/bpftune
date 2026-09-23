@@ -1,3 +1,25 @@
+bpftune (0.4.70) UNRELEASED; urgency=medium
+
+  * restore the second-best fallback on the rate target.
+
+    0.4.45 changed the swap target source from the composite metric
+    (which had a second-best fallback predating the fork) to rate_ema
+    (no fallback).  When a socket is already on the rate leader and
+    that leader is failing for the socket, the chain reaches
+    swap_tgt == s and does nothing.  Cookie 68810 (0.4.69): socket
+    on vegas at 1.35 Mbps while vegas rate_ema was 81 (8.1 MB/s);
+    no swap could fire on a socket 60x below its own algorithm's EMA.
+
+    Fix: pass 3 tracks a second-best rate target by the same weighted
+    score; the vote path falls back to it when the socket is already
+    on the leader.  Mirrors the metric-side second_i fallback that
+    has always existed.  All subsequent gates (bad_checkpoints,
+    util_ok, rate_ok, settle, freeze, explore protection) still apply.
+
+    STATE_VERSION 17 -> 18; state file auto-rejected on mismatch.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 19:00:00 +0000
+
 bpftune (0.4.69) UNRELEASED; urgency=medium
 
   * rate: byte-accurate.  0.4.68 computed sustained rate from

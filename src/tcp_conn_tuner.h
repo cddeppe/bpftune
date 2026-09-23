@@ -199,6 +199,11 @@ struct remote_host {
     __u64 rate_best_i;
 
     __u64 rate_best_v;
+    /* 0.4.70: second-best rate target.  Used as a fallback when
+     * the socket is already on the rate leader and the leader is
+     * failing for this socket.  Same units as rate_best_v. */
+    __u64 rate_second_i;
+    __u64 rate_second_v;
     /* Reference-refresh streak state.  A single far-better-than-
      * reference reading is treated as an outlier; REF_HIGH_STREAK_N
      * in a row promote the reference to the best of the streak.
