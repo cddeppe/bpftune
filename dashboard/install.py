@@ -275,6 +275,23 @@ BIN_FILES = ["bpftune-cli.py", "bpftune-collector.py", "bpftune-render.py"]
 ASSET_FILES = ["index.html"]
 
 
+def _port_in_use(port):
+    """True if something already listens on the port. Used to detect
+    nginx (or any other server) owning :8080 so we skip the bundled
+    HTTP unit automatically."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        try: s.close()
+        except OSError: pass
+
+
 def install_bin():
     INSTALL_BIN.mkdir(parents=True, exist_ok=True)
     for name in BIN_FILES:
@@ -374,6 +391,11 @@ def main():
     if not a.force and not bpftune_loaded():
         die("remote_host_map not present - bpftune not loaded on this host "
             "(use --force to override)")
+    if not a.no_http and _port_in_use(a.port):
+        say("  port %d already in use - skipping bundled HTTP unit "
+            "(nginx / other server owns it)" % a.port)
+        a.no_http = True
+
     if a.dry_run:
         dry_run_report(a.port)
         return 0
