@@ -1,3 +1,27 @@
+bpftune (0.4.66) UNRELEASED; urgency=medium
+
+  * explore protection scales with the explore rate.
+
+    EXPLORE_PROTECT_VOTES=3 protects a fresh socket from being
+    swapped for its first three votes so a rare exploration pick can
+    prove itself before the swap engine second-guesses it.  That
+    assumption inverts when exploration is most of the traffic: at
+    --exp=100 every socket is an exploration pick, so the fixed
+    3-vote window protects the entire population and the swap engine
+    never fires on the traffic it is meant to serve.
+
+    Measured on the heavy host, 2026-09-23 window: 181 home-bucket
+    votes, 5 swaps.  75% of votes are cookie-index 0 or 1, i.e.
+    inside the protection window; only 2 of 133 structurally
+    eligible votes converted.
+
+    Fix: explore_protect_votes() reads tuner_config_map[0] and
+    returns 3 at pct<=5 (original behaviour) ramping linearly to 0
+    at pct>=100.  The swap-trigger site reads the helper instead of
+    the constant.  No struct, map, or STATE_VERSION change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 15:00:00 +0000
+
 bpftune (0.4.65) UNRELEASED; urgency=medium
 
   * swap_score attribution fixes.  Two bugs in the way the score

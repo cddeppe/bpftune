@@ -93,6 +93,32 @@ epsilon_greedy_pct(__u32 greedy_state, __u32 num_states, __u32 pct)
 	return r % num_states;
 }
 
+/* 0.4.66: number of votes a freshly-assigned socket is protected
+ * from being swapped, as a function of the current explore rate.
+ *
+ * The protection exists so a rare exploration pick gets a chance
+ * to prove itself before the swap engine second-guesses it.  That
+ * logic inverts when exploration is most of the traffic: at
+ * --exp=100 every socket is a pick, so a fixed 3-vote window
+ * protects the entire population and the swap engine never fires.
+ *
+ * Linear ramp: full 3 votes at the original pct<=5, zero votes at
+ * pct>=100.  Read live from tuner_config_map so a --exp change
+ * applies consistently to all sockets immediately. */
+static __always_inline __u32 explore_protect_votes(void)
+{
+	__u32 zero = 0;
+	__u32 pct = EXPLORE_PCT_DEFAULT;
+	__u32 *p = bpf_map_lookup_elem(&tuner_config_map, &zero);
+	if (p)
+		pct = *p;
+	if (pct > EXPLORE_PCT_MAX)
+		pct = EXPLORE_PCT_MAX;
+	if (pct >= 100)
+		return 0;
+	return (EXPLORE_PROTECT_VOTES * (100 - pct)) / 95;
+}
+
 static __always_inline int set_cong(struct bpf_sock_ops *ops,
                                     struct remote_host *remote_host,
                                     __u8 i)
@@ -989,8 +1015,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             /* 0.4.54: exploration protection. */
 
             bool protected_exploring = (statep->exploring &&
-
-                                        statep->votes_on_alg < EXPLORE_PROTECT_VOTES);
+                                        statep->votes_on_alg <
+                                        explore_protect_votes());
 
 
             if (!settle_expired) {
