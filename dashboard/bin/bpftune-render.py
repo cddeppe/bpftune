@@ -21,6 +21,9 @@ RANGES = {
 }
 
 MAX_ROWS_BUCKETS = 150000
+MIN_BUCKET_ROWS  = 20
+MAX_BUCKETS      = 60
+MAX_ROWS_PER_BUCKET = 500
 MIN_BUCKET_ROWS  = 5        # skip buckets too small to plot
 MAX_ROWS_PER_BUCKET = 4000   # cap work per bucket
 MAX_ROWS_SWAPS   =  50000
@@ -184,6 +187,7 @@ def stream_buckets(path, per_bucket_max=30000):
     not build a dict per row."""
     if not path or not os.path.exists(path):
         return [], {}, {}
+    from collections import deque
     by = {}
     with open(path, "r", newline="", encoding="utf-8") as f:
         rd = csv.reader(f)
@@ -201,15 +205,11 @@ def stream_buckets(path, per_bucket_max=30000):
             if len(row) < hlen:
                 row.extend([""] * (hlen - len(row)))
             addr = row[ai] or "unknown"
-            bucket = by.get(addr)
-            if bucket is None:
-                bucket = by[addr] = []
-            bucket.append(row)
-    # cap per bucket to the tail
-    for addr, rows in by.items():
-        if len(rows) > per_bucket_max:
-            del rows[:len(rows) - per_bucket_max]
-    return header, cols, by
+            dq = by.get(addr)
+            if dq is None:
+                dq = by[addr] = deque(maxlen=per_bucket_max)
+            dq.append(row)
+    return header, cols, {a: list(dq) for a, dq in by.items()}
 
 
 _NUM_FMT = "%.4g"
@@ -2259,9 +2259,13 @@ def main():
                               if i < len(r)})
     emit_meta(meta_rows, algs, now)
 
+    ranked = sorted(by.items(), key=lambda kv: -len(kv[1]))
     emitted = skipped = 0
     total_rows = 0
-    for bid, rs in by.items():
+    for bid, rs in ranked:
+        if emitted >= MAX_BUCKETS:
+            skipped += len(ranked) - emitted
+            break
         if len(rs) < MIN_BUCKET_ROWS:
             skipped += 1
             continue
