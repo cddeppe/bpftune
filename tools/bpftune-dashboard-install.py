@@ -1146,6 +1146,7 @@ if __name__ == "__main__":
 # =================== collector ===================
 
 COLLECTOR_SRC = r'''#!/usr/bin/env python3
+#!/usr/bin/env python3
 """bpftune collector. Run once per minute from cron.
 
 Buckets from `bpftool --json map dump name remote_host_map`. Each
@@ -1163,6 +1164,27 @@ Raw srate events from the same logs -> /var/lib/bpftune/history/srate.csv.
 Snapshot: `bpftune-cli.py --json` -> /var/lib/bpftune/history/current.json
 
 `collected_ts` is wall clock. `boot_ts` is monotonic (log seconds).
+
+Outcome / direction
+-------------------
+A swap's outcome needs a post-swap met line, which almost never lands
+in the same 60-second cron run as the swap.  Rows are held in
+`state["pending_swaps"]` and resolved on a later run once the post
+line arrives.  Rows whose [boot_ts+3, boot_ts+300] window has closed
+with no post are written with outcome="no_post".  The collector never
+writes an unresolved row to swaps.csv.
+
+`direction` is "origin" when the socket's rport == 443, else "client".
+Sourced from the met line's rport: the last pre-swap vote, or the post
+at resolve time.  Matches tools/swap-outcomes-bydir.py.
+
+`met_cache` is a per-cookie list of recent met events, pruned to
+MET_CACHE_TTL_S.  It must hold more than the latest event so a swap
+followed by two votes can still find the first in-window post.
+
+STATE_VERSION 2: pending_swaps / rport / met-list added.  On version
+mismatch the state is reset; only caches and in-flight pendings are
+lost (at most 300 seconds of unresolved swaps).
 """
 import csv, json, os, re, socket, struct, subprocess, sys, time
 from pathlib import Path
@@ -1175,6 +1197,8 @@ SRATE_CSV    = HIST / "srate.csv"
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
+STATE_VERSION = 2
+
 SELF_DIR = Path(__file__).resolve().parent
 CLI      = SELF_DIR / "bpftune-cli.py"
 
@@ -1184,6 +1208,14 @@ CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
 MIN_INST = 2
 
 MET_CACHE_TTL_S = 600.0
+
+SWAP_FIELDS = [
+    "collected_ts", "boot_ts", "cookie", "from_alg", "to_alg", "d",
+    "mt_alg", "rb_alg", "diverges", "outcome", "socket_rate_before",
+    "dest", "dest_raw", "f_ema", "t_ema", "srate_before",
+    "direction", "rport",
+]
+SRATE_FIELDS = ["collected_ts", "boot_ts", "cookie", "alg", "srate"]
 
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
@@ -1216,18 +1248,19 @@ def tcp_rmem():
         return "", "", ""
 
 
-def append_csv(path, row):
+def append_csv(path, row, fields=None):
     if path.exists() and path.stat().st_size > 0:
         with open(path, newline="") as f:
             try:
                 header = next(csv.reader(f))
             except StopIteration:
-                header = list(row.keys())
+                header = fields or list(row.keys())
         with open(path, "a", newline="") as f:
             csv.writer(f).writerow([row.get(c, "") for c in header])
     else:
+        cols = fields or list(row.keys())
         with open(path, "a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(row.keys()))
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
             w.writerow(row)
 
@@ -1317,15 +1350,19 @@ def _read_state():
         return None
     if not isinstance(d, dict):
         return None
-    if "file_offsets" in d and "met_cache" in d:
-        d.setdefault("srate_cache", {})
-        return d
-    return {
-        "file_offsets": {k: v for k, v in d.items()
-                         if isinstance(v, (int, float))},
-        "met_cache":    {},
-        "srate_cache":  {},
-    }
+    if d.get("state_version") != STATE_VERSION:
+        return None
+    if "file_offsets" not in d or "met_cache" not in d:
+        return None
+    d.setdefault("srate_cache", {})
+    d.setdefault("pending_swaps", [])
+    return d
+
+
+def _new_state():
+    return {"state_version": STATE_VERSION,
+            "file_offsets": {}, "met_cache": {},
+            "srate_cache": {}, "pending_swaps": []}
 
 
 def _write_state(state):
@@ -1378,7 +1415,50 @@ def _decode_dest(n):
         return ""
 
 
-def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
+def _direction_from_rport(rport):
+    if rport in ("", None):
+        return ""
+    return "origin" if str(rport) == "443" else "client"
+
+
+def _resolve_pending(pending, met_cache, newest_met_ts, now_epoch):
+    keep = []
+    for row in pending:
+        cookie = row["cookie"]
+        boot_ts = row["boot_ts"]
+        pre = row.get("socket_rate_before")
+        try:
+            pre_v = float(pre) if pre not in ("", None) else None
+        except (TypeError, ValueError):
+            pre_v = None
+
+        post_v = None
+        post_rport = None
+        for entry in met_cache.get(cookie, ()):
+            ts = entry[0]
+            if boot_ts + 3.0 <= ts <= boot_ts + 300.0:
+                post_v = entry[1]
+                post_rport = entry[2]
+                break
+
+        if pre_v and post_v:
+            ratio = post_v / pre_v
+            row["outcome"] = ("win" if ratio <= 0.9 else
+                              "loss" if ratio >= 1.1 else "null")
+            if not row.get("direction") and post_rport not in ("", None):
+                row["direction"] = _direction_from_rport(str(post_rport))
+                row["rport"] = str(post_rport)
+            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+        elif boot_ts + 300.0 < newest_met_ts:
+            row["outcome"] = "no_post"
+            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+        else:
+            keep.append(row)
+    return keep
+
+
+def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
+                      state):
     lines = text.splitlines()
 
     chunk_met = {}
@@ -1388,7 +1468,7 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
         if m:
             c = int(m.group(2))
             chunk_met.setdefault(c, []).append(
-                (float(m.group(1)), int(m.group(6))))
+                (float(m.group(1)), int(m.group(6)), int(m.group(3))))
             continue
         s = SRATE_RX.search(line)
         if s:
@@ -1397,6 +1477,14 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
             sr  = int(s.group(4))
             chunk_srate.setdefault(c, []).append(
                 (float(s.group(1)), alg, sr))
+
+    newest_met_ts = 0.0
+    for entries in chunk_met.values():
+        for e in entries:
+            if e[0] > newest_met_ts:
+                newest_met_ts = e[0]
+
+    pending = state.setdefault("pending_swaps", [])
 
     n = 0
     for line in lines:
@@ -1414,25 +1502,28 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
 
         pre = None
         pre_ts = -1.0
-        cached = met_cache.get(c)
-        if cached and len(cached) >= 2 and cached[0] < boot_ts + 0.001:
-            pre = cached[1]
-            pre_ts = cached[0]
-        for (mts, mval) in chunk_met.get(c, ()):
-            if mts < boot_ts + 0.001 and mts > pre_ts:
-                pre = mval
-                pre_ts = mts
+        pre_rport = ""
+        for entry in met_cache.get(c, ()):
+            ts = entry[0]
+            if ts < boot_ts + 0.001 and ts > pre_ts:
+                pre = entry[1]
+                pre_ts = ts
+                pre_rport = entry[2]
+        for entry in chunk_met.get(c, ()):
+            ts = entry[0]
+            if ts < boot_ts + 0.001 and ts > pre_ts:
+                pre = entry[1]
+                pre_ts = ts
+                pre_rport = entry[2]
 
         post = None
-        for (mts, mval) in chunk_met.get(c, ()):
-            if boot_ts + 3.0 <= mts <= boot_ts + 300.0:
-                post = mval
+        post_rport = ""
+        for entry in chunk_met.get(c, ()):
+            ts = entry[0]
+            if boot_ts + 3.0 <= ts <= boot_ts + 300.0:
+                post = entry[1]
+                post_rport = entry[2]
                 break
-
-        outcome = ""
-        if pre and post:
-            r = post / pre
-            outcome = "win" if r <= 0.9 else ("loss" if r >= 1.1 else "null")
 
         srate_pre = None
         srate_pre_ts = -1.0
@@ -1460,7 +1551,8 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
         f_ema = _lookup_ema(map_data, dest_ip, fa)
         t_ema = _lookup_ema(map_data, dest_ip, ta)
 
-        append_csv(SWAPS_CSV, {
+        rp = pre_rport or post_rport or ""
+        row = {
             "collected_ts": now_epoch,
             "boot_ts": boot_ts,
             "cookie": c,
@@ -1470,21 +1562,42 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
             "mt_alg": mt_alg,
             "rb_alg": rb_alg,
             "diverges": "1" if (mt_alg and rb_alg and mt_alg != rb_alg) else "0",
-            "outcome": outcome,
+            "outcome": "",
             "socket_rate_before": pre if pre is not None else "",
             "dest": dest_ip,
             "dest_raw": dest_raw,
             "f_ema": f_ema,
             "t_ema": t_ema,
             "srate_before": srate_pre if srate_pre is not None else "",
-        })
+            "direction": _direction_from_rport(str(rp)) if rp else "",
+            "rport": str(rp) if rp else "",
+        }
+
+        if pre is not None and post is not None:
+            ratio = post / pre
+            row["outcome"] = ("win" if ratio <= 0.9 else
+                              "loss" if ratio >= 1.1 else "null")
+            if not row["direction"] and post_rport:
+                row["direction"] = _direction_from_rport(str(post_rport))
+                row["rport"] = str(post_rport)
+            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+        elif pre is not None:
+            pending.append(row)
+        else:
+            row["outcome"] = "no_pre"
+            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+
         n += 1
 
     for c, entries in chunk_met.items():
-        latest = max(entries, key=lambda x: x[0])
-        cached = met_cache.get(c)
-        if cached is None or len(cached) < 2 or cached[0] < latest[0]:
-            met_cache[c] = [latest[0], latest[1]]
+        bucket = met_cache.setdefault(c, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            met_cache[c] = bucket
+        seen = {e[0] for e in bucket if isinstance(e, list) and len(e) >= 3}
+        for entry in entries:
+            if entry[0] not in seen:
+                bucket.append([entry[0], entry[1], entry[2]])
 
     for c, entries in chunk_srate.items():
         latest = max(entries, key=lambda x: x[0])
@@ -1498,7 +1611,25 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
                 "cookie": c,
                 "alg": CONGS[alg] if 0 <= alg < 16 else str(alg),
                 "srate": sr,
-            })
+            }, SRATE_FIELDS)
+
+    # Prune met_cache to MET_CACHE_TTL_S. If we saw nothing this run,
+    # skip the prune so a quiet interval does not wipe live entries.
+    if newest_met_ts > 0:
+        cutoff = newest_met_ts - MET_CACHE_TTL_S
+        for c in list(met_cache.keys()):
+            bucket = met_cache[c]
+            if not isinstance(bucket, list):
+                del met_cache[c]
+                continue
+            bucket[:] = [e for e in bucket
+                         if isinstance(e, list) and len(e) >= 3
+                         and e[0] >= cutoff]
+            if not bucket:
+                del met_cache[c]
+
+    state["pending_swaps"] = _resolve_pending(
+        pending, met_cache, newest_met_ts, now_epoch)
 
     return n
 
@@ -1506,10 +1637,10 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data):
 def collect_swaps(map_data):
     state = _read_state()
     if state is None:
-        state = {"file_offsets": {}, "met_cache": {}, "srate_cache": {}}
+        state = _new_state()
     file_offsets = state["file_offsets"]
     met_cache    = state["met_cache"]
-    srate_cache  = state.setdefault("srate_cache", {})
+    srate_cache  = state["srate_cache"]
 
     first_run = not file_offsets
     now_epoch = int(time.time())
@@ -1541,20 +1672,19 @@ def collect_swaps(map_data):
             continue
 
         n += _parse_swaps_from(chunk, now_epoch, met_cache,
-                               srate_cache, map_data)
+                               srate_cache, map_data, state)
 
-    for cache in (met_cache, srate_cache):
-        if not cache:
-            continue
-        valid_ts = [v[0] for v in cache.values()
+    # srate_cache still prunes as a latest-only map.
+    if srate_cache:
+        valid_ts = [v[0] for v in srate_cache.values()
                     if isinstance(v, list) and len(v) >= 2]
         if valid_ts:
             cutoff = max(valid_ts) - MET_CACHE_TTL_S
-            for c in list(cache.keys()):
-                v = cache[c]
+            for c in list(srate_cache.keys()):
+                v = srate_cache[c]
                 if (not isinstance(v, list) or len(v) < 2
                         or v[0] < cutoff):
-                    del cache[c]
+                    del srate_cache[c]
 
     _write_state(state)
     return n
