@@ -1,3 +1,24 @@
+bpftune (0.4.69) UNRELEASED; urgency=medium
+
+  * rate: byte-accurate.  0.4.68 computed sustained rate from
+    (segs_out + segs_in) * mss_cache / elapsed.  tcp_sock.segs_out
+    counts a GSO super-segment as one segment, so the byte total was
+    undercounted by the GSO factor.  Measured on heavy 2026-09-23
+    against the raw kernel estimate on the same socket at the same
+    instant: 64 Mbps from the byte-based computation vs 354 Mbps
+    from tp->rate_delivered, a ~5.5x undercount.
+
+    bpf_tcp_sock exposes bytes_acked and bytes_received -- real byte
+    counters, retransmit-excluded.  Switch the rolling window to
+    bytes_acked + bytes_received.  GSO-agnostic, TLS-agnostic, and
+    measures goodput rather than sent-rate.
+
+    conn_state.rate_win_segs is renamed to rate_win_bytes; no
+    STATE_VERSION change (sk_storage is ephemeral and the value is
+    only read on the initial window seed where 0 is the sentinel).
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 18:30:00 +0000
+
 bpftune (0.4.68) UNRELEASED; urgency=medium
 
   * sustained-rate correction.  rate_delivered is now computed from

@@ -682,7 +682,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     avg_rtt = (__u64)(tp->srtt_us >> 3);
     rate_interval_us = (__u64)tp->rate_interval_us; /* printk only */
     mss = (__u64)tp->mss_cache;
-    /* 0.4.68: sustained rate = segments moved / wall-clock time.
+    /* 0.4.69: sustained rate = bytes acked+received / wall-clock time.
      * Was: (tp->rate_delivered * mss * 1e6) / tp->rate_interval_us.
      * That kernel estimate updates on ACK arrival and can hold a
      * value from minutes ago; measured divergence on heavy against
@@ -691,21 +691,22 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
      * d=1/d=3 thresholds, rate_ema, swap_score) reads this value. */
     {
         __u64 now_ns = bpf_ktime_get_ns();
-        __u64 segs_total = (__u64)tp->segs_out + (__u64)tp->segs_in;
+        __u64 bytes_total = (__u64)tp->bytes_acked +
+                            (__u64)tp->bytes_received;
         if (statep && statep->rate_win_ts_ns) {
             __u64 elapsed = now_ns - statep->rate_win_ts_ns;
             if (elapsed >= RATE_WIN_MIN_NS) {
-                __u64 segs_delta = segs_total - statep->rate_win_segs;
-                rate_delivered = (segs_delta * mss * 1000000000ULL) / elapsed;
+                __u64 bytes_delta = bytes_total - statep->rate_win_bytes;
+                rate_delivered = (bytes_delta * 1000000000ULL) / elapsed;
                 statep->rate_win_ts_ns = now_ns;
-                statep->rate_win_segs = segs_total;
+                statep->rate_win_bytes = bytes_total;
             } else {
                 rate_delivered = statep->last_rate_bps;
             }
         } else {
             if (statep) {
                 statep->rate_win_ts_ns = now_ns;
-                statep->rate_win_segs = segs_total;
+                statep->rate_win_bytes = bytes_total;
             }
             rate_delivered = 0;
         }

@@ -128,12 +128,13 @@ struct conn_state {
 
 	__u64 swap_target;
 
-	/* 0.4.68: rolling window for sustained-rate computation.
+	/* 0.4.68/0.4.69: rolling window for sustained-rate computation.
 	 * rate_win_ts_ns == 0 means the window has not been seeded
-	 * (socket's first vote).  rate_win_segs is segs_out+segs_in
-	 * at that boundary. */
+	 * (socket's first vote).  rate_win_bytes is
+	 * bytes_acked + bytes_received at that boundary.  (0.4.68 used
+	 * segs_out+segs_in, which undercounted GSO super-segments.) */
 	__u64 rate_win_ts_ns;
-	__u64 rate_win_segs;
+	__u64 rate_win_bytes;
 };
 
 struct tcp_conn_metric {
