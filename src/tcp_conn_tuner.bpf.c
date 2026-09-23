@@ -650,30 +650,23 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
      * origin socket segs_out=2709/segs_in=9564 but
      * data_segs_out=126/data_segs_in=9492; client socket the mirror.
      * Client-facing sockets have data_segs_out >= data_segs_in. */
-    /* 0.4.64: definitive origin gate.
+    /* 0.4.67: port gate reverted.
      *
-     * If the remote endpoint is a well-known server port, the
-     * remote is the sender.  Our local CC state does not control
-     * the flow being tuned; a swap there resets cwnd on a stream
-     * whose rate is set by the CDN's send-side algorithm.
+     * 0.4.64 filtered remote_port==443 || 80 to skip origin-facing
+     * sockets, assuming VPS initiates to the CDN.  On this topology
+     * the CLIENT-FACING socket is VPS->home:443, so the port test
+     * dropped every socket we wanted to tune; the swap rate was
+     * unchanged from 5% to 100% explore because the client side
+     * never reached the vote path.
      *
-     * Measured 0.4.63 window (heavy host, 1014 swaps, direction
-     * classification from met rport):
-     *   client-facing  n=482  win 26%  null 70%  loss  5%
-     *   origin-facing  n= 93  win 21%  null 53%  loss 26%
-     * Origin swaps don't just fail to help; a cwnd reset perturbs
-     * the ACK pacing the CDN is already adapting to.  No local
-     * knob buys anything back.
-     *
-     * The 0.4.41/0.4.42 data_segs heuristic below leaked ~9% of
-     * swaps to origin on that window; a port test does not.  The
-     * heuristic is kept as a backstop for origins on non-standard
-     * ports, since we have not measured whether such a leak exists. */
-    {
-        __u32 rp = bpf_ntohl(ops->remote_port);
-        if (rp == 443 || rp == 80)
-            return 1;
-    }
+     * Falls back to the 0.4.42 data_segs direction heuristic: VPS
+     * sends video down (data_segs_out high) on the socket to home,
+     * receives video on the socket from the CDN (data_segs_in high).
+     * That leaked ~9% when measured in the 0.4.63 window -- real,
+     * but two orders of magnitude better than dropping the client
+     * side.  Any future direction test MUST be validated against
+     * this topology: remote_port is not a reliable discriminator
+     * when the VPS is the server on 443. */
     if ((__u64)tp->data_segs_out * 4 < (__u64)tp->data_segs_in)
         return 1;
     if (is_close)

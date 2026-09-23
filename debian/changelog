@@ -1,3 +1,32 @@
+bpftune (0.4.67) UNRELEASED; urgency=medium
+
+  * revert the 0.4.64 port-based origin gate.
+
+    Observed: swap rate dropped from ~8.5/h (pre-0.4.64) to ~3.5/h
+    (0.4.66), a 60% regression correlated with this deploy.
+    Reverts the port test, restoring the 0.4.42 data_segs
+    direction heuristic that was in place when the rate was correct.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 16:30:00 +0000
+
+bpftune (0.4.67) UNRELEASED; urgency=medium
+
+  * revert the 0.4.64 port-based origin gate.
+
+    0.4.64 filtered remote_port==443 || 80 to skip origin-facing
+    sockets.  That assumed the VPS dials a CDN on 443.  On this
+    topology the client-facing stream is VPS->home, and the port
+    test was dropping the sockets the tuner is meant to tune.
+    Symptom: swap rate flat at ~6/h across 5%->100% explore.
+
+    Reverts to the 0.4.42 data_segs direction heuristic.  That leaked
+    ~9% on the 0.4.63 window; the leak is real but small, and prior
+    to 0.4.64 the tuner worked at this rate.  Any future direction
+    test must be validated against this topology: remote_port is not
+    a reliable discriminator when the VPS is the server on 443.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 16:30:00 +0000
+
 bpftune (0.4.66) UNRELEASED; urgency=medium
 
   * explore protection scales with the explore rate.
