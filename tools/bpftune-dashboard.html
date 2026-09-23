@@ -207,7 +207,7 @@
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl tr.pick td { background: var(--accent-dim); }
   table.tbl tr.pick td.name::after {
-    content: " \25b8 pick"; color: var(--accent); font-size: 9.5px;
+    content: " \\25b8 pick"; color: var(--accent); font-size: 9.5px;
     text-transform: uppercase; letter-spacing: .05em; margin-left: 6px; font-weight: 600;
   }
   table.tbl tr.inactive td { opacity: .45; }
@@ -230,8 +230,8 @@
   .proof-tbl td:nth-child(4), .proof-tbl td:nth-child(5), .proof-tbl td:nth-child(6) { width: 30%; min-width: 90px; }
   .bar-cell { position: relative; display: block; height: 20px; background: var(--subtle); border-radius: 3px; overflow: hidden; }
   .bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
-  .bar-cell.v-proven .bar-fill { background: #59a14f; }
-  .bar-cell.v-avg .bar-fill { background: #4e79a7; }
+  .bar-cell.v-proven  .bar-fill { background: #59a14f; }
+  .bar-cell.v-avg     .bar-fill { background: #4e79a7; }
   .bar-cell.v-sampled .bar-fill { background: #e15759; }
   .bar-num {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-end;
@@ -246,15 +246,15 @@
     display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600;
     padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .05em;
   }
-  .sp.win { color: var(--good); background: var(--good-dim); }
-  .sp.loss { color: var(--bad); background: var(--bad-dim); }
+  .sp.win  { color: var(--good); background: var(--good-dim); }
+  .sp.loss { color: var(--bad);  background: var(--bad-dim); }
   .sp.null { color: var(--muted); background: var(--subtle); }
   .sp.good { color: var(--warn); background: var(--warn-dim); }
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
   .cell-good { color: var(--good); font-weight: 600; }
-  .cell-bad { color: var(--bad); font-weight: 600; }
-  .cell-dim { color: var(--muted-2); }
+  .cell-bad  { color: var(--bad);  font-weight: 600; }
+  .cell-dim  { color: var(--muted-2); }
 
   /* ===== LISTS ===== */
   .list { display: flex; flex-direction: column; }
@@ -278,7 +278,7 @@
   .bigstats .big .k { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
   .bigstats .big .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 3px; }
   .bigstats .big .p { color: var(--muted); font-family: var(--mono); font-size: 11px; margin-top: 2px; }
-  .bigstats .big.win { border-color: var(--good); }
+  .bigstats .big.win  { border-color: var(--good); }
   .bigstats .big.win .v { color: var(--good); }
   .bigstats .big.loss { border-color: var(--bad); }
   .bigstats .big.loss .v { color: var(--bad); }
@@ -650,7 +650,7 @@
     Chart.defaults.plugins.tooltip.borderColor = dark ? "#2a2f39" : "#e5e7eb";
     Chart.defaults.plugins.tooltip.borderWidth = 1;
     Chart.defaults.plugins.tooltip.titleColor = dark ? "#e6e8eb" : "#131720";
-    Chart.defaults.plugins.tooltip.bodyColor = dark ? "#e6e8eb" : "#131720";
+    Chart.defaults.plugins.tooltip.bodyColor  = dark ? "#e6e8eb" : "#131720";
     Chart.defaults.plugins.tooltip.padding = 8;
     Chart.defaults.plugins.tooltip.cornerRadius = 6;
   }
@@ -738,7 +738,7 @@
     if (s.mem_total_bytes != null && s.mem_total_bytes > 0) {
       var used = (s.mem_used_bytes != null) ? s.mem_used_bytes : (s.mem_total_bytes - (s.mem_avail_bytes || 0));
       var pct = (s.mem_used_pct != null) ? s.mem_used_pct.toFixed(0) + "%" : "";
-      rows.push(["memory", fmtBytes(used) + " / " + fmtBytes(s.mem_total_bytes) + (pct ? " " + pct : "")]);
+      rows.push(["memory", fmtBytes(used) + " / " + fmtBytes(s.mem_total_bytes) + (pct ? "  " + pct : "")]);
     }
     setHTML("lv-system", rows.map(function (r) {
       return '<div class="row"><span class="k">' + esc(r[0]) + '</span><span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
@@ -1015,8 +1015,8 @@
     }
     rates.sort(function (x, y) { return y.v - x.v; });
     if (rates.length) {
-      setT("n_rbest", rates[0].a + " " + fmtRe(rates[0].v) + " Mb/s");
-      setT("n_rates", rates.slice(0, 8).map(function (x) { return x.a + " " + fmtRe(x.v); }).join(" · "));
+      setT("n_rbest", rates[0].a + "  " + fmtRe(rates[0].v) + " Mb/s");
+      setT("n_rates", rates.slice(0, 8).map(function (x) { return x.a + " " + fmtRe(x.v); }).join("  ·  "));
     } else {
       setT("n_rbest", "-");
       setT("n_rates", "(no live rates for this bucket)");
@@ -1058,4 +1058,252 @@
     });
   }
 
-  function timeOpts(extra)
+  function timeOpts(extra) {
+    var base = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {mode: "nearest", intersect: false},
+      layout: {padding: {top: 4, right: 8, bottom: 0, left: 0}},
+      scales: {
+        x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"}, grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
+        y: {beginAtZero: false, grid: {drawTicks: false}, ticks: {maxTicksLimit: 5, padding: 6}},
+      },
+      plugins: {legend: {display: false}, tooltip: {displayColors: true, boxPadding: 4}},
+    };
+    return Object.assign(base, extra || {});
+  }
+
+  function renderBucket() {
+    var doc = state.bucketDoc, algs = state.meta.algs;
+    var rng = $("range").value;
+    var s = doc.series[rng];
+    var ts = s.ts;
+    function makeSeries(prefix) {
+      return algs.map(function (a) { return prefix + a; }).filter(function (c) { return c in s; });
+    }
+    function algColorFor(col) {
+      var alg = col.replace(/^(re_|ss_|bs_|ns_)/, "");
+      return algColor(alg);
+    }
+    var rateColors = makeSeries("re_").map(algColorFor);
+    var ssColors = makeSeries("ss_").map(algColorFor);
+
+    mk("rate", {
+      type: "line",
+      data: {datasets: lineData(makeSeries("re_"), s, ts, rateColors, scaleRe, 0)},
+      options: timeOpts({plugins: {legend: {display: true, position: "bottom", align: "start", labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}}}}}),
+    });
+    mk("sscore", {
+      type: "line",
+      data: {datasets: lineData(makeSeries("ss_"), s, ts, ssColors, null, 0)},
+      options: timeOpts({plugins: {legend: {display: true, position: "bottom", align: "start", labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}}}}}),
+    });
+    var streakSets = lineData(makeSeries("bs_"), s, ts, PALETTE, null, 0).map(function (ds) {
+      ds.borderDash = [4, 3];
+      ds.label = ds.label.replace(/^bs_/, "") + " bad";
+      return ds;
+    }).concat(lineData(makeSeries("ns_"), s, ts, PALETTE, null, 0).map(function (ds) {
+      ds.label = ds.label.replace(/^ns_/, "") + " null";
+      return ds;
+    }));
+    mk("streaks", {
+      type: "line",
+      data: {datasets: streakSets},
+      options: timeOpts({
+        scales: {
+          x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"}, grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
+          y: {beginAtZero: true, grid: {drawTicks: false}, ticks: {maxTicksLimit: 6, padding: 6, precision: 0}},
+        },
+        plugins: {legend: {display: true, position: "bottom", align: "start", labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}}}},
+      }),
+    });
+  }
+
+  function renderDivChart(canvasId, suffix) {
+    var doc = state.swaps, rng = $("range").value;
+    var d = doc[rng];
+    if (!d) return;
+    var ts = d.ts;
+    var sfx = suffix || "";
+    function mkLine(key, label, color, dash) {
+      return {
+        label: label,
+        data: (d[key] || []).map(function (y, k) { return {x: ts[k] * 1000, y: y}; }),
+        borderColor: color,
+        backgroundColor: color,
+        borderDash: dash || [],
+        pointRadius: 2,
+        pointHoverRadius: 4,
+        borderWidth: 1.5,
+        spanGaps: true,
+      };
+    }
+    mk(canvasId, {
+      type: "line",
+      data: {datasets: [
+        mkLine("d1_rate" + sfx, "diverges=1", "#59a14f"),
+        mkLine("d1_lo"   + sfx, "d1 95% lo", "#59a14f", [4, 3]),
+        mkLine("d1_hi"   + sfx, "d1 95% hi", "#59a14f", [4, 3]),
+        mkLine("d0_rate" + sfx, "diverges=0", "#e15759"),
+        mkLine("d0_lo"   + sfx, "d0 95% lo", "#e15759", [4, 3]),
+        mkLine("d0_hi"   + sfx, "d0 95% hi", "#e15759", [4, 3]),
+      ]},
+      options: timeOpts({
+        scales: {
+          x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24}},
+          y: {min: 0, max: 1, grid: {drawTicks: false}, ticks: {maxTicksLimit: 5, padding: 6, callback: function (v) { return Math.round(v * 100) + "%"; }}},
+        },
+        plugins: {legend: {display: true, position: "bottom", align: "start", labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}, filter: function (item) { return !/_lo|_hi/.test(item.text); }}}}},
+      }),
+    });
+  }
+
+  function sustainedHasData() {
+    var doc = state.swaps;
+    if (!doc) return false;
+    var d = doc["24h"] || doc["7d"] || doc["all"];
+    if (!d) return false;
+    var arr = d.d1_n_sustained || [];
+    for (var i = 0; i < arr.length; i++) if ((arr[i] || 0) > 0) return true;
+    return false;
+  }
+
+  function renderSwaps() {
+    var doc = state.swaps, rng = $("range").value;
+    var d = doc[rng];
+    if (!d) return;
+    mk("swaps", {
+      type: "bar",
+      data: {
+        labels: d.ts.map(function (t) { return new Date(t * 1000); }),
+        datasets: [{label: "swaps", data: d.swaps, backgroundColor: "#4e79a7", borderColor: "#4e79a7", borderRadius: 2, maxBarThickness: 14}],
+      },
+      options: timeOpts({
+        scales: {x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0}}, y: {beginAtZero: true, grid: {drawTicks: false}, ticks: {maxTicksLimit: 4, padding: 6}}},
+      }),
+    });
+  }
+
+  function renderDivergenceCharts() {
+    renderDivChart("div", "");
+    renderDivChart("div_sustained", "_sustained");
+    var note = document.getElementById("div_sustained_note");
+    if (note) {
+      if (sustainedHasData()) {
+        note.textContent = "sustained = median srate in [t+60, t+300]. Excludes the cwnd-reset dip. This is the accurate throughput measure.";
+        note.style.color = "";
+      } else {
+        note.textContent = "no sustained data yet. Requires 0.4.53+ emitting `srate` lines AND the collector writing srate.csv.";
+        note.style.color = "#9aa0a6";
+      }
+    }
+  }
+
+  function renderFleet() {
+    var f = state.fleet;
+    var n = (f && f.buckets) ? f.buckets.length : 0;
+    var box = document.getElementById("fleetbox");
+    if (box) box.style.height = Math.max(200, Math.min(800, n * 22 + 40)) + "px";
+    mk("fleet", {
+      type: "bar",
+      data: {labels: f.buckets, datasets: [{label: "% bins with leader", data: f.coverage_24h, backgroundColor: "#59a14f", borderColor: "#59a14f", borderRadius: 2, maxBarThickness: 12}]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: false, indexAxis: "y",
+        layout: {padding: {top: 4, right: 16, bottom: 0, left: 0}},
+        scales: {
+          x: {min: 0, max: 100, grid: {drawTicks: false}, ticks: {maxTicksLimit: 6, padding: 6, callback: function (v) { return v + "%"; }}},
+          y: {grid: {display: false}, ticks: {font: {size: 10.5}, autoSkip: false, padding: 4}},
+        },
+        plugins: {legend: {display: false}},
+      },
+    });
+  }
+
+  function loadBucket(id) {
+    return j("data/bucket_" + id + ".json").then(function (doc) {
+      state.bucketDoc = doc;
+      renderBucket();
+      renderNow();
+    });
+  }
+
+  function refreshNowCardAndChart() {
+    var id = $("bucket").value;
+    if (id) loadBucket(id);
+  }
+
+  function refreshAll() {
+    var keep = $("bucket").value;
+    Promise.all([j("data/meta.json"), j("data/swaps.json"), j("data/fleet.json")]).then(function (r) {
+      state.meta = r[0]; state.swaps = r[1]; state.fleet = r[2];
+      var bs = $("bucket"), html = "", stillThere = false;
+      for (var k = 0; k < state.meta.buckets.length; k++) {
+        var b = state.meta.buckets[k];
+        html += '<option value="' + b.id + '">' + b.id + ' (' + b.points + ')</option>';
+        if (b.id === keep) stillThere = true;
+      }
+      bs.innerHTML = html;
+      bs.value = stillThere ? keep : state.meta.default_bucket;
+      var stamp = new Date(state.meta.generated_ts * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z";
+      if (footgen) footgen.textContent = "rendered " + stamp;
+      status("updated " + relTime(state.meta.generated_ts));
+      return loadBucket(bs.value);
+    }).then(function () {
+      renderDivergenceCharts(); renderSwaps(); renderFleet();
+    }).catch(function (e) {
+      err("refresh: " + (e && e.message ? e.message : e), e);
+    });
+  }
+
+  function boot() {
+    liveRefresh();
+    setInterval(function () { liveRefresh(); refreshNowCardAndChart(); }, 30000);
+    setInterval(refreshAll, 300000);
+
+    status("loading charts\\u2026");
+    loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
+      .then(function () {
+        return loadScript("https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js");
+      })
+      .then(function () {
+        applyChartDefaults();
+        status("loading data\\u2026");
+        return Promise.all([j("data/meta.json"), j("data/swaps.json"), j("data/fleet.json")]);
+      })
+      .then(function (r) {
+        state.meta = r[0]; state.swaps = r[1]; state.fleet = r[2];
+        var bs = $("bucket"), html = "";
+        for (var k = 0; k < state.meta.buckets.length; k++) {
+          var b = state.meta.buckets[k];
+          html += '<option value="' + b.id + '">' + b.id + ' (' + b.points + ')</option>';
+        }
+        bs.innerHTML = html;
+        bs.value = state.meta.default_bucket;
+        var rs = $("range"), rhtml = "";
+        for (var m = 0; m < state.meta.ranges.length; m++) {
+          rhtml += '<option value="' + state.meta.ranges[m] + '">' + state.meta.ranges[m] + '</option>';
+        }
+        rs.innerHTML = rhtml;
+        rs.value = "24h";
+        var stamp = new Date(state.meta.generated_ts * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z";
+        status("updated " + relTime(state.meta.generated_ts));
+        if (footgen) footgen.textContent = "rendered " + stamp;
+        bs.onchange = function () { loadBucket(bs.value); };
+        rs.onchange = function () { renderBucket(); renderDivergenceCharts(); renderSwaps(); };
+        return loadBucket(state.meta.default_bucket);
+      })
+      .then(function () {
+        renderDivergenceCharts(); renderSwaps(); renderFleet();
+      })
+      .catch(function (e) {
+        err("FAIL: " + (e && e.message ? e.message : e), e);
+      });
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
