@@ -422,6 +422,8 @@ def emit_bucket_cols(bid, rows, cols, algs, now):
 
 def emit_meta(buckets, algs, now):
     rows_24h = [r for r in buckets if (ts_of(r) or 0) > now - 86400]
+    if not rows_24h:
+        rows_24h = list(buckets)
     by = defaultdict(list)
     for r in rows_24h:
         by[r.get("addr") or "unknown"].append(r)
