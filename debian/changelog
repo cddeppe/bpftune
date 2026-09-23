@@ -1,3 +1,35 @@
+bpftune (0.4.68) UNRELEASED; urgency=medium
+
+  * sustained-rate correction.  rate_delivered is now computed from
+    actual segment movement over a >=500ms wall-clock window, not
+    from tp->rate_delivered / tp->rate_interval_us.
+
+    tp->rate_delivered is a burst estimate that updates on ACK
+    arrival and can hold a value from minutes ago.  Measured on
+    heavy 2026-09-23, comparing the reported rate to actual segment
+    movement over the same interval:
+
+      cookie 67545  actual  168 Kbps   reported  9.6-42.8 Mbps   (57-250x high)
+      cookie 67483  actual  1.8 Mbps   reported  38 Mbps         (21x high)
+      cookie 67463  actual  2.9 KB/s   reported  7.2 Mbps        (2500x high)
+      cookie 67437  actual  200 Kbps   reported  7.3 Mbps        (37x high)
+
+    Every downstream consumer reads this value: last_rate_bps, the
+    d=1 and d=3 thresholds, rate_ema, swap_score's ratio, and the
+    metric's rate term.  The tuner has been acting on numbers
+    decoupled from actual throughput -- including on the sockets
+    that most need rescuing.
+
+    New: conn_state gains rate_win_ts_ns / rate_win_segs.  The vote
+    path seeds the window on the first call, updates every >=500ms.
+    Below 500ms it carries last_rate_bps unchanged.  First vote
+    reports 0 so no tier acts on a one-shot reading.
+
+    tp->rate_delivered remains in the srate printk for cross-check
+    against the log until the new value has been validated.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 17:00:00 +0000
+
 bpftune (0.4.67) UNRELEASED; urgency=medium
 
   * revert the 0.4.64 port-based origin gate.

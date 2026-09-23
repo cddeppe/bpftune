@@ -127,6 +127,13 @@ struct conn_state {
 	__u64 pre_swap_rate;
 
 	__u64 swap_target;
+
+	/* 0.4.68: rolling window for sustained-rate computation.
+	 * rate_win_ts_ns == 0 means the window has not been seeded
+	 * (socket's first vote).  rate_win_segs is segs_out+segs_in
+	 * at that boundary. */
+	__u64 rate_win_ts_ns;
+	__u64 rate_win_segs;
 };
 
 struct tcp_conn_metric {
@@ -156,6 +163,12 @@ struct tcp_conn_metric {
  * tuner_config_map at key 0.  BPF reads it at ESTABLISHED;
  * 'bpftune --exp=N' writes it via the pinned fd. */
 #define EXPLORE_PCT_DEFAULT       5
+
+/* 0.4.68: rolling window for the sustained-rate computation.
+ * The tuner used to read tp->rate_delivered, a burst estimate
+ * that can be stale by minutes.  last_rate_bps is now derived
+ * from actual segment movement over >= this window. */
+#define RATE_WIN_MIN_NS  (500ULL * 1000000ULL)
 #define EXPLORE_PCT_MAX           100
 #define EXPLORE_BOOST_PCT         25
 
