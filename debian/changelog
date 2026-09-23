@@ -1,3 +1,38 @@
+bpftune (0.4.64) UNRELEASED; urgency=medium
+
+  * origin gate: replace the data_segs_out * 4 < data_segs_in heuristic
+    with a port test (remote_port == 443 || 80 -> skip).  The heuristic
+    was supposed to catch origin-facing sockets whose rate is set by
+    the CDN, not us, but it leaked ~9% of swaps (93 of 1014 on the
+    0.4.63 window, heavy host).  Measured same window, direction
+    classified from the met rport:
+      client-facing  n=482  win 26%  null 70%  loss  5%
+      origin-facing  n= 93  win 21%  null 53%  loss 26%
+    Origin swaps don't just fail to help; they lose 5x as often.
+    A cwnd reset perturbs the ACK pacing the CDN is already adapting
+    to.  A port test does not leak.  Heuristic kept below the port
+    test as a backstop for origins on non-standard ports.
+
+  * exploration: runtime-tunable percentage for fresh sockets.  New
+    BPF_MAP_DEF tuner_config_map (ARRAY, 1 entry, __u32), read at
+    ESTABLISHED; the 0.4.22 tight-bucket boost is preserved (at
+    pct=100 the boost is a no-op by construction).  The map is
+    pinned by the daemon at /sys/fs/bpf/bpftune/tcp_conn/explore.
+      bpftune --exp        prints the current value
+      bpftune --exp=N      sets it (N = 0..100), live
+    --exp=0 holds the picker at the leader (deterministic);
+    --exp=100 explores every fresh socket.  No STATE_VERSION bump
+    (the explore value is not part of tcp_conn_tuner.state).  The
+    CLI records the value to /var/lib/bpftune/explore_pct; the
+    daemon restores it on restart.
+
+  * Verifier: ESTABLISHED 45346 insns / 3205 states; vote 19302 /
+    1426.  The growth is the map lookup + modulo in the ESTABLISHED
+    selection point.  Well under the 1M limit, but the ESTABLISHED
+    path is the one the 0.4.40 lesson flagged as verifier-fragile.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 12:00:00 +0000
+
 bpftune (0.4.63) UNRELEASED; urgency=medium
 
   * reanchor: initialize stale swap_score=0 entries that have votes.

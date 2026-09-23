@@ -152,6 +152,13 @@ struct tcp_conn_metric {
 
 #define NUM_TCP_CONN_METRICS NUM_TCP_CONG_ALGS
 
+/* 0.4.64: runtime-tunable exploration percentage.  Stored in
+ * tuner_config_map at key 0.  BPF reads it at ESTABLISHED;
+ * 'bpftune --exp=N' writes it via the pinned fd. */
+#define EXPLORE_PCT_DEFAULT       5
+#define EXPLORE_PCT_MAX           100
+#define EXPLORE_BOOST_PCT         25
+
 struct tcp_conn_event_data {
     struct in6_addr raddr;
     __u64 state_flags;

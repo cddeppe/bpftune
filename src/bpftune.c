@@ -46,6 +46,8 @@
 #include <ftw.h>
 
 #include <bpftune/libbpftune.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 
 #ifndef BPFTUNE_VERSION
 #define BPFTUNE_VERSION  "0.1"
@@ -303,6 +305,77 @@ void print_support_level(enum bpftune_support_level support_level)
 	}
 }
 
+#define EXPLORE_PIN_PATH "/sys/fs/bpf/bpftune/tcp_conn/explore"
+#define EXPLORE_STATE    "/var/lib/bpftune/explore_pct"
+#define EXPLORE_PCT_MAX  100
+
+/* 0.4.64: 'bpftune --exp[=N]'.  Reads or updates the pinned
+ * tuner_config_map in the running tcp_conn_tuner.  N is 0-100
+ * (percent).  --exp with no value prints the current setting.
+ * Does not start a second daemon; exits immediately. */
+static int do_explore(const char *arg)
+{
+	__u32 key = 0, pct;
+	int fd;
+
+	fd = bpf_obj_get(EXPLORE_PIN_PATH);
+	if (fd < 0) {
+		fprintf(stderr,
+			"bpftune: no pinned explore map at %s "
+			"(is bpftune running?)\n", EXPLORE_PIN_PATH);
+		return 1;
+	}
+	if (bpf_map_lookup_elem(fd, &key, &pct)) {
+		fprintf(stderr, "bpftune: could not read explore map: %s\n",
+			strerror(errno));
+		close(fd);
+		return 1;
+	}
+
+	if (!arg) {
+		printf("exploration: %u%%\n", pct);
+		close(fd);
+		return 0;
+	}
+
+	{
+		char *end = NULL;
+		long v = strtol(arg, &end, 10);
+		__u32 old = pct, nv;
+
+		if (end == arg || *end != '\0' || v < 0 || v > EXPLORE_PCT_MAX) {
+			fprintf(stderr,
+				"bpftune: exploration must be 0-%d; got '%s'\n",
+				EXPLORE_PCT_MAX, arg);
+			close(fd);
+			return 1;
+		}
+		nv = (__u32)v;
+		if (bpf_map_update_elem(fd, &key, &nv, BPF_ANY)) {
+			fprintf(stderr, "bpftune: could not update explore map: %s\n",
+				strerror(errno));
+			close(fd);
+			return 1;
+		}
+		/* Persist for daemon restart.  Only the CLI writes this
+		 * file; the daemon only reads it at init. */
+		{
+			FILE *f = fopen(EXPLORE_STATE ".tmp", "w");
+			if (f) {
+				fprintf(f, "%u\n", nv);
+				fclose(f);
+				rename(EXPLORE_STATE ".tmp", EXPLORE_STATE);
+			}
+		}
+		if (old == nv)
+			printf("exploration: %u%%\n", nv);
+		else
+			printf("exploration: %u%% -> %u%%\n", old, nv);
+	}
+	close(fd);
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	static const struct option options[] = {
@@ -322,6 +395,7 @@ int main(int argc, char *argv[])
 		{ "support",	no_argument,		NULL,	'S' },
 		{ "version",	no_argument,		NULL,	'V' },
             { "reset-state", no_argument,        NULL,   'x' },
+            { "explore",    optional_argument,   NULL,   'e' },
 		{ 0 }
 	};
 	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
@@ -334,13 +408,15 @@ int main(int argc, char *argv[])
 	bool support_only = false;
 	bool client = false;
 	char *query = NULL;
+	const char *explore_arg = NULL;
+	bool explore_seen = false;
 	int interval = 100;
 	unsigned short port = 0;
 	int err, opt;
 
 	bin_name = argv[0];
 
-	while ((opt = getopt_long(argc, argv, "a:c:dDhl:Lr:p:Pq:RsSVx", options, NULL))
+	while ((opt = getopt_long(argc, argv, "a:c:dDhl:Lr:p:Pq:RsSVxe::", options, NULL))
 		>= 0) {
 		switch (opt) {
 		case 'a':
@@ -401,6 +477,10 @@ int main(int argc, char *argv[])
                         unlink("/var/lib/bpftune/tcp_conn_tuner.state");
                         fprintf(stderr, "reset tcp_conn_tuner state\n");
                         return 0;
+                case 'e':
+                        explore_seen = true;
+                        explore_arg = optarg;
+                        break;
 		case 'V':
 			do_version();
 			return 0;
@@ -414,6 +494,9 @@ int main(int argc, char *argv[])
 	bpftune_set_log(log_level,
 			use_stderr ? bpftune_log_stderr : bpftune_log_syslog,
 			NULL);
+
+	if (explore_seen)
+		return do_explore(explore_arg);
 
 	if (client) {
 		char buf[BPFTUNE_SERVER_MSG_MAX];

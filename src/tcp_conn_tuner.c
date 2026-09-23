@@ -118,6 +118,58 @@ static unsigned long long rate_hist_p99(const struct rate_hist *h)
 static void start_reanchor(struct bpftuner *tuner);
 static void stop_reanchor(void);
 
+#define EXPLORE_PIN_DIR  "/sys/fs/bpf/bpftune/tcp_conn"
+#define EXPLORE_PIN_PATH EXPLORE_PIN_DIR "/explore"
+#define EXPLORE_STATE    "/var/lib/bpftune/explore_pct"
+
+/* 0.4.64: pin tuner_config_map under BPFTUNE_PIN so a separate
+ * process ('bpftune --exp') can read and update it without
+ * restarting the daemon.  Value persists across restarts via
+ * EXPLORE_STATE, which only the CLI writes. */
+static int pin_explore_map(struct bpftuner *tuner)
+{
+	struct bpf_map *map;
+	__u32 key = 0;
+	__u32 pct = EXPLORE_PCT_DEFAULT;
+	int fd, err;
+	FILE *f;
+
+	map = bpftuner_bpf_map_get(tcp_conn, tuner, tuner_config_map);
+	if (!map) {
+		bpftune_log(LOG_ERR, "explore: map not found\n");
+		return -ENOENT;
+	}
+	fd = bpf_map__fd(map);
+	if (fd < 0)
+		return -EINVAL;
+
+	f = fopen(EXPLORE_STATE, "r");
+	if (f) {
+		unsigned int v;
+		if (fscanf(f, "%u", &v) == 1 && v <= EXPLORE_PCT_MAX)
+			pct = v;
+		fclose(f);
+	}
+
+	mkdir(BPFTUNE_PIN, 0755);
+	mkdir(EXPLORE_PIN_DIR, 0755);
+	unlink(EXPLORE_PIN_PATH);
+
+	err = bpf_obj_pin(fd, EXPLORE_PIN_PATH);
+	if (err) {
+		bpftune_log(LOG_ERR, "explore: pin failed: %s\n", strerror(-err));
+		return err;
+	}
+	err = bpf_map_update_elem(fd, &key, &pct, BPF_ANY);
+	if (err) {
+		bpftune_log(LOG_ERR, "explore: init failed: %s\n", strerror(-err));
+		return err;
+	}
+	bpftune_log(BPFTUNE_LOG_LEVEL,
+		    "explore: pinned at %s, pct=%u\n", EXPLORE_PIN_PATH, pct);
+	return 0;
+}
+
 int init(struct bpftuner *tuner)
 {
 	struct bpftunable *t;
@@ -153,6 +205,12 @@ int init(struct bpftuner *tuner)
 		bpftune_log(LOG_ERR, "cannot add caps: %s\n", strerror(-err));
 		return 1;
 	}
+	/* 0.4.64: pin the explore map so 'bpftune --exp=N' can find
+	 * it.  Non-fatal: a missing pin disables --exp but leaves the
+	 * tuner otherwise unaffected. */
+	if (pin_explore_map(tuner))
+		bpftune_log(LOG_ERR,
+			    "explore: pin failed; --exp will be unavailable\n");
 
 	/* attach to root cgroup */
 	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);

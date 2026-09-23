@@ -1838,3 +1838,15 @@ healthy but the map counts stop moving.
   a stale .skel.h embeds the previous bytecode into the .so and
   the new change never reaches the running daemon.  Hit on 0.4.38
   and 0.4.39.  Non-negotiable.
+
+- **Bump `debian/changelog` BEFORE the build, not after.**
+  `dpkg-buildpackage` does not verify that the changelog version
+  matches the source tree.  Build 0.4.64 source with the 0.4.63
+  changelog and you get `bpftune_0.4.63_amd64.deb` containing
+  0.4.64 code -- no error, no warning, silent version mismatch.
+  This has cost a wasted rebuild on every agent session so far.
+  Sequence: (1) edit `debian/changelog`, (2) `make clean` + the
+  `rm -f` just above, (3) `dpkg-buildpackage`, (4) `ls ../bpftune_*.deb`
+  and confirm the filename carries the new version.  Root fix when
+  someone has time: a `debian/rules` guard that fails the build when
+  the changelog version and the source disagree.  Non-negotiable.

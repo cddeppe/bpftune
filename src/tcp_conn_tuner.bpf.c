@@ -34,6 +34,11 @@ BPF_MAP_DEF(sk_storage_map, BPF_MAP_TYPE_SK_STORAGE, int, struct conn_state, 0, 
 
 BPF_MAP_DEF(midsamp_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALLOC);
 
+/* 0.4.64: runtime config map.  Currently a single __u32 at key 0:
+ * exploration percent for fresh sockets.  Pinned by the userspace
+ * daemon so 'bpftune --exp=N' can update it live. */
+BPF_MAP_DEF(tuner_config_map, BPF_MAP_TYPE_ARRAY, __u32, __u32, 1, 0);
+
 /* per-CPU scratch buffer used to initialize new remote_host entries without
  * placing a >512B struct temporary on the BPF stack (NUM_TCP_CONG_ALGS=16
  * makes struct remote_host 792 bytes, exceeding the 512-byte stack limit).
@@ -72,6 +77,20 @@ static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
 	if (remote_host->instances < REMOTE_HOST_MIN_INSTANCES)
 		return NULL;
 	return remote_host;
+}
+
+/* 0.4.64: explore with probability pct% (0=never, 100=always).
+ * Percent-native so both endpoints are exact; that matters when
+ * --exp=0 or --exp=100 is used for a controlled trial. */
+static __always_inline int
+epsilon_greedy_pct(__u32 greedy_state, __u32 num_states, __u32 pct)
+{
+	__u32 r = bpf_get_prandom_u32();
+
+	if (pct < 100 && (r % 100) >= pct)
+		return greedy_state;
+	r = bpf_get_prandom_u32();
+	return r % num_states;
 }
 
 static __always_inline int set_cong(struct bpf_sock_ops *ops,
@@ -232,10 +251,21 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
                 remote_host->best_i = minindex;
                 remote_host->best_v = metric_min;
             }
-            if (min2 == ~((__u64)0) || metric_min * 5 > min2 * 4)
-                s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 4);
-            else
-                s = epsilon_greedy(minindex, NUM_TCP_CONN_METRICS, 20);
+            {
+                __u32 zero = 0;
+                __u32 pct = EXPLORE_PCT_DEFAULT;
+                __u32 *pctp = bpf_map_lookup_elem(&tuner_config_map, &zero);
+                if (pctp)
+                    pct = *pctp;
+                if (pct > EXPLORE_PCT_MAX)
+                    pct = EXPLORE_PCT_MAX;
+                /* 0.4.22 tight-bucket boost: at --exp=100 the boost
+                 * is a no-op because pct is already 100. */
+                if ((min2 == ~((__u64)0) || metric_min * 5 > min2 * 4) &&
+                    pct < EXPLORE_BOOST_PCT)
+                    pct = EXPLORE_BOOST_PCT;
+                s = epsilon_greedy_pct(minindex, NUM_TCP_CONN_METRICS, pct);
+            }
 
             s &= (NUM_TCP_CONG_ALGS - 1);
             if (set_cong(ops, remote_host, s)) {
@@ -532,6 +562,30 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
      * origin socket segs_out=2709/segs_in=9564 but
      * data_segs_out=126/data_segs_in=9492; client socket the mirror.
      * Client-facing sockets have data_segs_out >= data_segs_in. */
+    /* 0.4.64: definitive origin gate.
+     *
+     * If the remote endpoint is a well-known server port, the
+     * remote is the sender.  Our local CC state does not control
+     * the flow being tuned; a swap there resets cwnd on a stream
+     * whose rate is set by the CDN's send-side algorithm.
+     *
+     * Measured 0.4.63 window (heavy host, 1014 swaps, direction
+     * classification from met rport):
+     *   client-facing  n=482  win 26%  null 70%  loss  5%
+     *   origin-facing  n= 93  win 21%  null 53%  loss 26%
+     * Origin swaps don't just fail to help; a cwnd reset perturbs
+     * the ACK pacing the CDN is already adapting to.  No local
+     * knob buys anything back.
+     *
+     * The 0.4.41/0.4.42 data_segs heuristic below leaked ~9% of
+     * swaps to origin on that window; a port test does not.  The
+     * heuristic is kept as a backstop for origins on non-standard
+     * ports, since we have not measured whether such a leak exists. */
+    {
+        __u32 rp = bpf_ntohl(ops->remote_port);
+        if (rp == 443 || rp == 80)
+            return 1;
+    }
     if ((__u64)tp->data_segs_out * 4 < (__u64)tp->data_segs_in)
         return 1;
     if (is_close)
