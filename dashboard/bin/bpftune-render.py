@@ -8,6 +8,7 @@ current.json (every 30s).
 load_csv is bounded-memory: keeps the last N rows only.
 """
 import bisect, csv, io, json, math, os, time
+from pathlib import Path
 from collections import defaultdict, deque
 
 HIST = "/var/lib/bpftune/history"
@@ -2251,29 +2252,55 @@ def main():
 
     algs = sorted({c[3:] for c in header if c.startswith("re_")})
 
-    # meta + fleet need dict-shaped buckets; derive from header once.
+    # Decide the emit set FIRST, so meta.json, the bucket JSONs, and
+    # the stale-cleanup stage all agree on exactly which buckets are
+    # live. Capping the emit set without this leaves orphan JSONs on
+    # disk that the dropdown still offers and the browser keeps fetching.
+    ranked = sorted(by.items(), key=lambda kv: -len(kv[1]))
+    to_emit = []
+    skipped_small = 0
+    for bid, rs in ranked:
+        if len(to_emit) >= MAX_BUCKETS:
+            break
+        if len(rs) < MIN_BUCKET_ROWS:
+            skipped_small += 1
+            continue
+        to_emit.append((bid, rs))
+    skipped_cap = len(ranked) - len(to_emit) - skipped_small
+    skipped = skipped_small + skipped_cap
+
     meta_rows = []
-    for addr, rows in by.items():
-        for r in rows[-200:]:   # small slice is plenty for meta/fleet
+    for bid, rows in to_emit:
+        for r in rows[-200:]:
             meta_rows.append({c: r[i] for i, c in enumerate(header)
                               if i < len(r)})
     emit_meta(meta_rows, algs, now)
 
-    ranked = sorted(by.items(), key=lambda kv: -len(kv[1]))
-    emitted = skipped = 0
     total_rows = 0
-    for bid, rs in ranked:
-        if emitted >= MAX_BUCKETS:
-            skipped += len(ranked) - emitted
-            break
-        if len(rs) < MIN_BUCKET_ROWS:
-            skipped += 1
-            continue
+    for bid, rs in to_emit:
         total_rows += len(rs)
         emit_bucket_cols(bid, rs, cols, algs, now)
-        emitted += 1
+    emitted = len(to_emit)
+
+    def _safe(b):
+        return "".join(c if c.isalnum() or c in "-_." else "_" for c in b)
+    emitted_safes = {_safe(b) for b, _ in to_emit}
+    cleaned = 0
+    data_dir = Path(DATA)
+    if data_dir.exists():
+        for stale in data_dir.glob("bucket_*.json"):
+            stem = stale.stem[len("bucket_"):]
+            if stem not in emitted_safes:
+                try:
+                    stale.unlink()
+                    cleaned += 1
+                except OSError:
+                    pass
+
     emit_swaps(swaps, srate, now)
     emit_fleet(meta_rows, now)
+
+    globals()["_CLEANED"] = cleaned
 
     html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "index.html")
@@ -2285,9 +2312,10 @@ def main():
     with open(os.path.join(HIST, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("renderer: %d buckets (%d emitted, %d skipped), "
+    cleaned = globals().get("_CLEANED", 0)
+    print("renderer: %d buckets (%d emitted, %d skipped, %d cleaned), "
           "%d rows plotted, %d algs, %d swaps, %d srate rows"
-          % (len(by), emitted, skipped, total_rows,
+          % (len(by), emitted, skipped, cleaned, total_rows,
              len(algs), len(swaps), len(srate)))
     return 0
 
