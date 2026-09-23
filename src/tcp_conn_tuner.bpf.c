@@ -285,7 +285,8 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
  * neutral.  Called from the vote path. */
 static __always_inline void
 score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
-                   struct conn_state *statep, __u64 now, __u64 cur_rate)
+                   struct conn_state *statep, __u64 now, __u64 cur_rate,
+                   __u8 cur_alg)
 {
         __u8 tgt;
         __u64 pre, elapsed, ratio_q;
@@ -297,8 +298,18 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
 
         pre = statep->pre_swap_rate;
         tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
-        ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
-        if (ratio_q > 1024) ratio_q = 1024;
+        /* 0.4.65: if the socket is no longer on the pending target,
+         * the swap was rejected before the 60s window opened.  Force
+         * the ratio to loss-class regardless of the current rate.
+         * This closes the case where a socket swapped A->B at T=0 and
+         * B->C at T=30: without this check, the T+60 sample would read
+         * C's rate and attribute it to B. */
+        if (cur_alg != tgt) {
+                ratio_q = 0;
+        } else {
+                ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
+                if (ratio_q > 1024) ratio_q = 1024;
+        }
 
         /* read-modify-write u16 field via pointer cast */
         {
@@ -364,6 +375,57 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
                    (__u32)rh->metrics[tgt].null_streak);
         statep->swap_target = 0xff;
         statep->pre_swap_rate = 0;
+}
+
+/* 0.4.65: called from a swap site when we are about to replace an
+ * earlier pending swap that had not yet been scored.  Fewer than 60s
+ * elapsed since the previous swap, so the rate-ratio gate in
+ * score_pending_swap would refuse to fire.  The fact that the socket
+ * is being swapped away is itself the outcome: the previous target
+ * was rejected.  Attribute an immediate loss-class update to it.
+ *
+ * The caller always overwrites statep->swap_target and pre_swap_rate
+ * with the new pending values right after this call, so no clearing
+ * is done here. */
+static __always_inline void
+score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
+                       struct conn_state *statep, __u64 now, __u64 cur_rate)
+{
+        __u8 tgt;
+        __u64 pre, ratio_q;
+        __u16 cur16;
+        __u32 cur32;
+
+        if (statep->swap_target == 0xff) return;
+        if (statep->pre_swap_rate == 0)  return;
+
+        pre = statep->pre_swap_rate;
+        tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
+
+        /* Force loss-class.  Cap at 230 (ratio <= 0.9) even if the
+         * current rate happens to look high; the socket leaving the
+         * target is the signal, not the momentary rate. */
+        ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
+        if (ratio_q > 230) ratio_q = 230;
+
+        cur16 = rh->metrics[tgt].swap_score;
+        cur32 = cur16 ? cur16 : SWAP_SCORE_NEUTRAL;
+        if (ratio_q >= cur32) {
+                __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_LOSS_DIV;
+                cur32 += step;
+        } else {
+                __u32 drop = (__u32)(cur32 - ratio_q) / SWAP_SCORE_LOSS_DIV;
+                cur32 = (drop > cur32) ? 0 : cur32 - drop;
+        }
+        if (cur32 > 1024) cur32 = 1024;
+        rh->metrics[tgt].swap_score = (__u16)cur32;
+
+        if (rh->metrics[tgt].bad_streak < 255)
+                rh->metrics[tgt].bad_streak++;
+
+        bpf_printk("swapscore-reject cookie=%llu tgt=%u ratio=%llu bad=%u",
+                   bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
+                   (__u32)rh->metrics[tgt].bad_streak);
 }
 
 SEC("sockops")
@@ -702,7 +764,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
         statep->last_metric = metric;
         statep->last_rate_bps = rate_delivered;
-        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), rate_delivered);
+        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), rate_delivered,
+                           (__u8)s);
         statep->votes_on_alg++;
         /* Track the best reading this socket has ever produced, and
          * which algorithm it was on at the time.  Used by the freeze
@@ -949,6 +1012,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->swap_count++;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                     statep->pre_swap_rate = statep->last_rate_bps;
                     statep->swap_target = swap_tgt;
                     statep->last_rate_bps = 0;
@@ -979,6 +1043,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                     statep->pre_swap_rate = statep->last_rate_bps;
                     statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
@@ -995,6 +1060,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                         statep->last_metric = 0;
 
                         /* 0.4.56: stage pre-swap rate and target for scoring. */
+                        score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                         statep->pre_swap_rate = statep->last_rate_bps;
                         statep->swap_target = swap_tgt;
                         statep->last_rate_bps = 0;
@@ -1025,6 +1091,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                     statep->pre_swap_rate = statep->last_rate_bps;
                     statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
@@ -1041,6 +1108,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                         statep->last_metric = 0;
 
                         /* 0.4.56: stage pre-swap rate and target for scoring. */
+                        score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                         statep->pre_swap_rate = statep->last_rate_bps;
                         statep->swap_target = swap_tgt;
                         statep->last_rate_bps = 0;
@@ -1081,6 +1149,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
+                    score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                     statep->pre_swap_rate = statep->last_rate_bps;
                     statep->swap_target = tgt8;
                     statep->last_rate_bps = 0;
@@ -1120,6 +1189,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                 statep->last_metric = 0;
 
                                 /* 0.4.56: stage pre-swap rate and target for scoring. */
+                                score_pending_rejected(ops, remote_host, statep, now, statep->last_rate_bps);
                                 statep->pre_swap_rate = statep->last_rate_bps;
                                 statep->swap_target = swap_tgt;
                                 statep->last_rate_bps = 0;

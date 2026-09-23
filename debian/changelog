@@ -1,3 +1,27 @@
+bpftune (0.4.65) UNRELEASED; urgency=medium
+
+  * swap_score attribution fixes.  Two bugs in the way the score
+    learned from swap outcomes:
+
+    1. score_pending_swap fires at the first vote >= T+60 and reads
+       the current rate.  If the socket had already rejected the swap
+       and moved to another algorithm, that rate belonged to the
+       replacement, not the target.  The target was scored on another
+       algorithm's performance.
+    2. When a new swap replaced an earlier pending one, the earlier
+       target's outcome was silently dropped.  That is exactly the
+       "socket rejected the target" case, which is the strongest
+       negative signal a swap can produce.
+
+    Fix: verify current alg == pending target before applying the
+    rate update (otherwise loss-class), and score a pending target as
+    a loss the moment a new swap replaces it.  A new helper
+    score_pending_rejected() runs from all seven swap sites before
+    the state is overwritten.  No struct, map, or STATE_VERSION
+    change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Wed, 23 Sep 2026 14:00:00 +0000
+
 bpftune (0.4.64) UNRELEASED; urgency=medium
 
   * origin gate: replace the data_segs_out * 4 < data_segs_in heuristic
