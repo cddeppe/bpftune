@@ -11,6 +11,8 @@ per gateway), not just single-path datacenters.
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
 - Latest commit: see `git log -1` (0.4.75 tip)
 - Latest release: 0.4.75
+- Collector (on `dashboard` branch): sustained-ruler classification,
+  single-sample acceptance.  See 2026-09-24 (late) session below.
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
   Do not commit dashboard files to main or vice versa.
 
@@ -26,6 +28,91 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-24 (late) -- collector sustained-ruler + single-sample coverage
+
+Two collector changes after the tuner work settled.  Both userspace-only,
+both on the `dashboard` branch, no tuner rebuild.
+
+### What was wrong
+
+The dashboard has three classification paths on the same swap:
+
+  1. `swaps.csv` `outcome` column -- written by the collector
+  2. `current.json` `recent_swaps[].outcome_sustained` -- written by
+     `bpftune-cli.py` from the log tail
+  3. `swaps.json` from the renderer -- also derived by
+     `_attach_sustained_outcomes`
+
+Historically all three were on the composite metric (`val=` ratio).
+Two changes today:
+
+  - 779d55b: collector moves to the sustained ruler (median srate
+    in [T+60, T+300] vs srate_before).  Was still on composite.
+  - 3d13ac4: collector accepts a single sample, matching the renderer's
+    rule.  Was `>= 2 samples`, which classified only ~51% of swaps.
+    The other 49% went out as `no_post` and never reached any
+    downstream analysis.
+
+### Measured before the change
+
+On 345 swaps with >=3 post-swap samples:
+
+    single-first-sample agrees with all-median:  78.8%
+    single-LAST-sample agrees with all-median:   82.0%
+
+Coverage on the archive (852 swaps):
+
+    rule                                    cover   win   null  loss
+    old (>=2 samples)                        51%   200   171    65
+    new (>=1 sample)                         77%   295   272    88
+
+The 26-point coverage gain splits 43/46/10 -- same proportion as the
+existing population.  The strict rule was giving up 20% accuracy to
+keep the population half the size.
+
+### Verified against current.json
+
+Before the change, on ten recent swaps the CSV showed 8 `no_post`
+while `current.json` (renderer-fed) showed the same swaps as
+win/null/loss.  After the change the two feeds classify identically
+on identical inputs -- same window, same bands, same sample count
+floor.
+
+### What this fixes
+
+Every downstream analysis -- score-balance, per-target outcomes,
+agreement matrices, churn -- was blocked on the CSVs being 51%
+complete.  Now the CSV and the CLI agree, and the coverage is 77%+.
+Tomorrow's run of `full-picture.py` on the accumulated data will have
+real numbers for the first time since the sustained-ruler change.
+
+### Not addressed
+
+- Rule A's wider bands for single-sample cases (1.15/0.85) were
+  considered and dropped: single-sample agreement with the median is
+  80% either way, and the tighter bands (1.1/0.9) match the renderer
+  exactly, eliminating one more surface where CSV and CLI could
+  drift.  If single-sample noise turns out to bias the classification
+  in production, that's a follow-up.
+- `swaps-live.json` (also in 3d13ac4's commits) writes the last 100
+  resolved swaps to `data/swaps-live.json`.  The `current.json` path
+  already delivers the same data at 30s cadence -- `swaps-live` is
+  redundancy, kept because it's already written and costs nothing.
+
+### Working-style additions
+
+- **A classifier's coverage is a first-class property, not a detail.**
+  The collector had a stricter rule than the renderer for weeks.
+  Nothing surfaced it until the CSV and CLI were printed side by
+  side on the same ten rows.  When two paths classify the same
+  event, diff them on the same input before trusting either.
+- **Wider bands are not free accuracy.**  The tempting move with
+  noisy single samples is to widen the win/loss thresholds.  On this
+  data the wider bands move 8 swaps from win/loss into null -- real
+  loss of signal.  Tighter bands that match the renderer keep the
+  two feeds coherent.  Prefer the rule that has less surface area for
+  drift.
 
 ## SESSION 2026-09-24 (late night) -- 0.4.75: score sample at 180s
 
