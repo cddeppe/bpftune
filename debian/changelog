@@ -1,3 +1,13 @@
+bpftune (0.4.76) UNRELEASED; urgency=medium
+
+  * swap_score reconciliation from sustained truth.
+
+    In-kernel single-sample score write disabled.  Reanchor worker
+    reads swapscore_truth.jsonl and nudges swap_score 1/8 toward
+    600 per win, 100 per loss.  Streaks unchanged.  No wipe.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 22:30:00 +0000
+
 bpftune (0.4.75) UNRELEASED; urgency=medium
 
   * swap_score: sample outcome at 180s instead of 60s.

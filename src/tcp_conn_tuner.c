@@ -320,6 +320,127 @@ void summarize(struct bpftuner *tuner)
  * (rate_high_streak/rate_high_max/rtt_low_streak/rtt_low_min) are
  * carried through unchanged via read-modify-write of the struct.
  */
+/* 0.4.76: sustained-ruler swap_score reconciliation. */
+#define TRUTH_PATH        "/var/lib/bpftune/history/swapscore_truth.jsonl"
+#define TRUTH_STASH       "/var/lib/bpftune/history/swapscore_truth.processing"
+#define TRUTH_MAX_BUCKETS 256
+#define TRUTH_WIN_TARGET  600
+#define TRUTH_LOSS_TARGET 100
+
+struct truth_bucket {
+        struct in6_addr key;
+        unsigned int win[NUM_TCP_CONN_METRICS];
+        unsigned int loss[NUM_TCP_CONN_METRICS];
+};
+
+static int truth_bucket_key(const char *s, struct in6_addr *out)
+{
+        struct in_addr a4;
+        if (inet_pton(AF_INET, s, &a4) != 1) return -1;
+        memset(out, 0, sizeof(*out));
+        out->s6_addr[10] = 0xff;
+        out->s6_addr[11] = 0xff;
+        memcpy(&out->s6_addr[12], &a4.s_addr, 4);
+        return 0;
+}
+
+static int truth_alg_idx(const char *name)
+{
+        int i;
+        for (i = 0; i < NUM_TCP_CONG_ALGS; i++)
+                if (strcmp(congs[i], name) == 0) return i;
+        return -1;
+}
+
+static int truth_extract(const char *line, const char *key,
+                         char *out, size_t outsz)
+{
+        char pat[32];
+        const char *p, *q;
+        size_t n;
+        snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+        p = strstr(line, pat);
+        if (!p) return -1;
+        p += strlen(pat);
+        q = strchr(p, '"');
+        if (!q) return -1;
+        n = (size_t)(q - p);
+        if (n >= outsz) n = outsz - 1;
+        memcpy(out, p, n);
+        out[n] = '\0';
+        return 0;
+}
+
+static void apply_truth_corrections(int map_fd)
+{
+        struct truth_bucket tb[TRUTH_MAX_BUCKETS];
+        int ntb = 0;
+        char buf[512];
+        FILE *f;
+        int i, j, k;
+
+        unlink(TRUTH_STASH);
+        if (rename(TRUTH_PATH, TRUTH_STASH) != 0) return;
+        f = fopen(TRUTH_STASH, "r");
+        if (!f) { unlink(TRUTH_STASH); return; }
+
+        while (fgets(buf, sizeof(buf), f)) {
+                char bucket[64], tgt[32], cls[16];
+                int tgt_idx, found = -1;
+                struct in6_addr key;
+
+                if (truth_extract(buf, "bucket", bucket, sizeof(bucket))) continue;
+                if (truth_extract(buf, "tgt", tgt, sizeof(tgt))) continue;
+                if (truth_extract(buf, "cls", cls, sizeof(cls))) continue;
+                tgt_idx = truth_alg_idx(tgt);
+                if (tgt_idx < 0) continue;
+                if (truth_bucket_key(bucket, &key)) continue;
+                for (i = 0; i < ntb; i++)
+                        if (memcmp(&tb[i].key, &key, sizeof(key)) == 0) {
+                                found = i; break;
+                        }
+                if (found < 0) {
+                        if (ntb >= TRUTH_MAX_BUCKETS) continue;
+                        found = ntb++;
+                        memset(&tb[found], 0, sizeof(tb[found]));
+                        tb[found].key = key;
+                }
+                if (strcmp(cls, "win") == 0) tb[found].win[tgt_idx]++;
+                else if (strcmp(cls, "loss") == 0) tb[found].loss[tgt_idx]++;
+        }
+        fclose(f);
+        unlink(TRUTH_STASH);
+
+        for (i = 0; i < ntb; i++) {
+                struct remote_host r;
+                int dirty = 0;
+                if (bpf_map_lookup_elem(map_fd, &tb[i].key, &r)) continue;
+                for (j = 0; j < NUM_TCP_CONN_METRICS; j++) {
+                        unsigned int cur;
+                        for (k = 0; k < tb[i].win[j]; k++) {
+                                cur = r.metrics[j].swap_score;
+                                if (cur < TRUTH_WIN_TARGET)
+                                        cur += (TRUTH_WIN_TARGET - cur) / SWAP_SCORE_STEP_DIV;
+                                else if (cur > TRUTH_WIN_TARGET)
+                                        cur -= (cur - TRUTH_WIN_TARGET) / SWAP_SCORE_STEP_DIV;
+                                r.metrics[j].swap_score = (__u16)cur;
+                                dirty = 1;
+                        }
+                        for (k = 0; k < tb[i].loss[j]; k++) {
+                                cur = r.metrics[j].swap_score;
+                                if (cur > TRUTH_LOSS_TARGET)
+                                        cur -= (cur - TRUTH_LOSS_TARGET) / SWAP_SCORE_STEP_DIV;
+                                else if (cur < TRUTH_LOSS_TARGET)
+                                        cur += (TRUTH_LOSS_TARGET - cur) / SWAP_SCORE_STEP_DIV;
+                                r.metrics[j].swap_score = (__u16)cur;
+                                dirty = 1;
+                        }
+                }
+                if (dirty)
+                        bpf_map_update_elem(map_fd, &tb[i].key, &r, BPF_ANY);
+        }
+}
+
 static void reanchor_best(int map_fd)
 {
 	struct in6_addr key, *prev_key = NULL;
@@ -548,6 +669,7 @@ static void *reanchor_worker(void *arg)
 
 	while (!reanchor_stop) {
 		reanchor_best(fd);
+		apply_truth_corrections(fd);   /* 0.4.76 */
 		/* Sleep in short slices so fini() does not stall more
 		 * than ~1s waiting on pthread_join. */
 		for (i = 0; i < REANCHOR_INTERVAL; i++) {

@@ -375,7 +375,9 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
                         }
                 }
                 if (cur32 > 1024) cur32 = 1024;
-                rh->metrics[tgt].swap_score = (__u16)cur32;
+                /* 0.4.76: score write DISABLED -- collector owns
+                 * swap_score via swapscore_truth.jsonl. */
+                (void)cur32;
         }
         /* 0.4.58: consecutive failed swaps to this alg.  Two in a
          * row is a pattern; a later rising rate_ema clears it in the
@@ -445,7 +447,8 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
                 cur32 = (drop > cur32) ? 0 : cur32 - drop;
         }
         if (cur32 > 1024) cur32 = 1024;
-        rh->metrics[tgt].swap_score = (__u16)cur32;
+        /* 0.4.76: score write DISABLED. */
+        (void)cur32;
 
         if (rh->metrics[tgt].bad_streak < 255)
                 rh->metrics[tgt].bad_streak++;
