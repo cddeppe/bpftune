@@ -1722,7 +1722,11 @@ INDEX_HTML = r"""<!doctype html>
     renderTunables(doc.tunables || []);
     renderBuckets(doc.buckets || []);
     state.metricByBucket = doc.metric_by_bucket || {};
+    state.bucketLive = doc.bucket_live || {};
     renderMetricForBucket();
+    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
+      renderBucket();   // refresh 1h chart from live data
+    }
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null);
@@ -1781,7 +1785,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null, bucketLive: {} };
   var charts = {};
 
   function mk(id, cfg) {
@@ -1851,6 +1855,16 @@ INDEX_HTML = r"""<!doctype html>
     var rng = $("range").value;
     var s = doc.series[rng];
     var ts = s.ts;
+    // 0.4.76: for the 1h range, prefer the CLI-provided live
+    // series (30s freshness) over the 15-minute renderer output.
+    var bid = $("bucket") ? $("bucket").value : null;
+    if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
+      var lb = state.bucketLive[bid];
+      var liveS = {};
+      for (var k in (lb.cols || {})) liveS[k] = lb.cols[k];
+      s = liveS;
+      ts = lb.ts || [];
+    }
 
     function makeSeries(prefix) {
       return algs.map(function (a) {

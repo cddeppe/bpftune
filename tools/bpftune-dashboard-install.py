@@ -219,7 +219,7 @@ Three outcome scales are reported:
                immediate cwnd-reset dip after a swap; this is the
                accurate throughput measure. Higher is better.
 """
-import argparse, json, os, re, socket, struct, subprocess, sys, time
+import argparse, csv, io, json, os, re, socket, struct, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -611,6 +611,86 @@ def data_metric_by_bucket(hosts):
         rows.sort(key=lambda r: (0 if r["active"] else 1, -r["score"]))
         out[addr] = rows
     return out
+
+
+BUCKET_HISTORY_CSV = "/var/lib/bpftune/history/buckets.v2.csv"
+LIVE_CHART_MIN      = 180
+LIVE_CHART_WIDTH_S  = 60
+
+
+def data_bucket_live():
+    """Live per-bucket 1h chart data, built from the tail of
+    buckets.v2.csv.  Only the re_* columns, only the last
+    LIVE_CHART_MIN minutes.
+
+    The frontend prefers this for the 1h range so the chart refreshes
+    with the browser's 30s tick instead of the renderer's 15-minute
+    cron.  Longer ranges still come from data/bucket_*.json."""
+    p = Path(BUCKET_HISTORY_CSV)
+    if not p.exists():
+        return {}
+
+    with open(p, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        take = min(size, 800 * 1024)
+        f.seek(size - take)
+        if f.tell() > 0:
+            f.readline()
+        text = f.read().decode("utf-8", errors="replace")
+
+    rd = csv.DictReader(io.StringIO(text))
+    now = int(time.time())
+    lo  = now - LIVE_CHART_MIN * 60
+    per = {}
+
+    for row in rd:
+        addr = row.get("addr") or ""
+        if not addr or addr in ("0.0.0.1",):
+            continue
+        if addr.startswith(("127.", "169.254.", "0.")):
+            continue
+        try:
+            t = int(row.get("collected_ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if t < lo:
+            continue
+        try:
+            inst = int(row.get("instances") or 0)
+        except (TypeError, ValueError):
+            inst = 0
+        if inst < 2:
+            continue
+        bucket = per.setdefault(addr, {"ts": [], "cols": {}})
+        bucket["ts"].append(t)
+        for alg in CONGS:
+            c = row.get("re_" + alg)
+            try:
+                v = int(c) if c not in (None, "") else None
+            except (TypeError, ValueError):
+                v = None
+            bucket["cols"].setdefault("re_" + alg, []).append(v)
+
+    # bin to LIVE_CHART_WIDTH_S
+    for addr, d in per.items():
+        pd = {}
+        for c, vals in d["cols"].items():
+            bins = {}
+            for ts_v, v in zip(d["ts"], vals):
+                if v is None:
+                    continue
+                key = ts_v // LIVE_CHART_WIDTH_S
+                bins.setdefault(key, []).append(v)
+            keys = sorted(bins)
+            pd[c] = [[k * LIVE_CHART_WIDTH_S, sum(bins[k]) / len(bins[k])]
+                     for k in keys]
+        cs = {c: [v for _, v in arr] for c, arr in pd.items()}
+        ts = [k * LIVE_CHART_WIDTH_S for k in
+              sorted({k for arr in pd.values() for k, _ in arr})]
+        per[addr] = {"ts": ts, "cols": cs}
+
+    return per
 
 
 def _proof_events(text):
@@ -1092,6 +1172,7 @@ def collect_all():
         "buckets":        data_buckets(hosts),
         "metric":         data_metric(hosts),
         "metric_by_bucket": data_metric_by_bucket(hosts),
+        "bucket_live":      data_bucket_live(),
         "live_leaders":   data_live_leaders(hosts),
         "proof":          data_proof(text),
         "rate":           data_rate(text),
@@ -3809,7 +3890,11 @@ INDEX_HTML = r"""<!doctype html>
     renderTunables(doc.tunables || []);
     renderBuckets(doc.buckets || []);
     state.metricByBucket = doc.metric_by_bucket || {};
+    state.bucketLive = doc.bucket_live || {};
     renderMetricForBucket();
+    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
+      renderBucket();   // refresh 1h chart from live data
+    }
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null);
@@ -3868,7 +3953,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null, bucketLive: {} };
   var charts = {};
 
   function mk(id, cfg) {
@@ -3938,6 +4023,16 @@ INDEX_HTML = r"""<!doctype html>
     var rng = $("range").value;
     var s = doc.series[rng];
     var ts = s.ts;
+    // 0.4.76: for the 1h range, prefer the CLI-provided live
+    // series (30s freshness) over the 15-minute renderer output.
+    var bid = $("bucket") ? $("bucket").value : null;
+    if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
+      var lb = state.bucketLive[bid];
+      var liveS = {};
+      for (var k in (lb.cols || {})) liveS[k] = lb.cols[k];
+      s = liveS;
+      ts = lb.ts || [];
+    }
 
     function makeSeries(prefix) {
       return algs.map(function (a) {
