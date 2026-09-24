@@ -357,13 +357,14 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
                                 cur32 = (drop > cur32) ? 0 : cur32 - drop;
                         }
                 } else if (ratio_q > 230) {
-                        if (cur32 > SWAP_SCORE_NEUTRAL) {
-                                __u32 drop = (cur32 - SWAP_SCORE_NEUTRAL) / SWAP_SCORE_NULL_DIV;
-                                cur32 = (drop > cur32) ? 0 : cur32 - drop;
-                        } else if (cur32 < SWAP_SCORE_NEUTRAL) {
-                                __u32 step = (SWAP_SCORE_NEUTRAL - cur32) / SWAP_SCORE_NULL_DIV;
-                                cur32 += step;
-                        }
+                        /* 0.4.74: null is a no-op.  The streak
+                         * counters (bad_streak / null_streak,
+                         * incremented below) are the fast recency
+                         * demotion in pass 3.  Having the score ALSO
+                         * decay toward neutral on nulls double-counted
+                         * the punishment, and the /2 loss weight was
+                         * already pulling every population-average
+                         * target to ~188. */
                 } else {
                         if (ratio_q >= cur32) {
                                 __u32 step = (__u32)(ratio_q - cur32) / SWAP_SCORE_LOSS_DIV;

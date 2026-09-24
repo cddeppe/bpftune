@@ -1,3 +1,28 @@
+bpftune (0.4.74) UNRELEASED; urgency=medium
+
+  * swap_score: balanced weights; nulls are a no-op.
+
+    Current constants: win /16, loss /2, null /4.  Losses move the
+    score 8x harder than wins.  Under this workload's mix (32% win,
+    45% loss; median win ratio 495, median loss ratio 143) a
+    population-average target settles at S~188 -- so from any start
+    every score sank, and the map showed nearly every algorithm
+    below neutral 256.
+
+    The bad_streak / null_streak multiplier in pass 3 already
+    performs the fast recency demotion (16/(16 + bad*4 + null*2));
+    a target in a losing streak is downweighted within two events
+    and clears the moment it wins.  Having swap_score duplicate that
+    punishment, with a much heavier loss weight, was double-counting.
+
+    New: win /8, loss /8 (same magnitude both ways), null branch
+    deleted -- a null is "no evidence," not "erase."  Streak
+    mechanics and pass 3 unchanged.  score_pending_rejected keeps
+    using SWAP_SCORE_LOSS_DIV, so rejections drop the score by ~30
+    per event instead of ~128.  No schema change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 18:00:00 +0000
+
 bpftune (0.4.73) UNRELEASED; urgency=medium
 
   * fix 0.4.72's epoch migration.  The epoch-0 -> epoch-1 branch

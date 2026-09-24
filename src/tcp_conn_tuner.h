@@ -251,13 +251,20 @@ struct remote_host {
  * picker computes rate_ema * score / 256 so a repeatedly-failing alg
  * loses the race automatically. */
 #define SWAP_SCORE_NEUTRAL       256
-#define SWAP_SCORE_STEP_DIV      16
-/* 0.4.60: asymmetric divisors.  Wins keep the slow /16 EMA.  Nulls
- * pull toward neutral at /4 so a high score can't coast through
- * inactivity.  Losses pull toward the observed ratio at /2 so a
- * bad miss drops the score quickly. */
-#define SWAP_SCORE_NULL_DIV      4
-#define SWAP_SCORE_LOSS_DIV      2
+/* 0.4.74: balanced score.  Wins and losses move the same magnitude
+ * (/8); nulls are a no-op in score_pending_swap.  Fast recency
+ * demotion lives in the bad_streak / null_streak multiplier in
+ * pass 3 (16/(16 + bad*4 + null*2)).
+ *
+ * Before this: win /16, loss /2, null /4.  Under the observed
+ * workload mix (32% win / 45% loss, median win ratio 495, median
+ * loss ratio 143) that landed a population-average target at
+ * S~188, dragging every score toward the floor.  A loss cost 8x a
+ * win, and the streak penalty already charged for the loss -- the
+ * two together never let a recovering target climb back. */
+#define SWAP_SCORE_STEP_DIV      8
+#define SWAP_SCORE_NULL_DIV      4   /* unused after 0.4.74; kept for compat */
+#define SWAP_SCORE_LOSS_DIV      8
 /* 0.4.58: two consecutive failed swaps is a pattern; three costs too
  * much.  Rising rate_ema on a later vote clears this -- network
  * conditions changed, re-admit as a target. */
