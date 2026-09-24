@@ -1178,11 +1178,6 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c12">
-      <h3>live leaderboard <span class="cnt">picker ranking from the map &middot; 30s</span></h3>
-      <div id="lv-live"></div>
-    </section>
-
-    <section class="c12">
       <h3>recent swaps <span class="cnt">composite vs sustained</span></h3>
       <div id="lv-swaps"></div>
     </section>
@@ -1443,6 +1438,16 @@ INDEX_HTML = r"""<!doctype html>
     setHTML("lv-buckets", html + '</tbody></table>');
   }
 
+  function renderMetricForBucket() {
+    var bs = $("bucket");
+    var addr = (bs && bs.value) ? bs.value : null;
+    var byB = state.metricByBucket || {};
+    var keys = Object.keys(byB);
+    var rows = (addr && byB[addr]) ? byB[addr]
+                                   : (keys.length ? byB[keys[0]] : []);
+    renderMetric(rows);
+  }
+
   function renderMetric(rows) {
     if (!rows.length) {
       setHTML("lv-metric", '<div class="placeholder">(no metrics yet)</div>');
@@ -1685,36 +1690,6 @@ INDEX_HTML = r"""<!doctype html>
     setHTML("lv-proofs", html + '</div>');
   }
 
-  function renderLiveLeaders(rows) {
-    if (!rows.length) {
-      setHTML("lv-live",
-        '<div class="placeholder">no bucket with enough votes yet</div>');
-      return;
-    }
-    var html = '';
-    rows.forEach(function (b) {
-      html += '<div class="meta" style="padding:6px 0 2px;font-weight:600">' +
-              esc(b.dest) +
-              ' <span style="color:var(--muted-2);font-weight:400">inst=' +
-              b.inst + '</span></div>';
-      html += '<div class="list">';
-      (b.top || []).forEach(function (r, idx) {
-        var tag = (idx === 0) ? 'sp win' : 'sp dash';
-        html += '<div class="item">' +
-          '<span class="flow"><span class="' + tag + '">' +
-            esc(r.alg) + '</span></span>' +
-          '<span class="meta">w=' + r.weighted +
-            ' &middot; re=' + r.rate_ema +
-            ' &middot; ss=' + r.swap_score +
-            ' &middot; bad=' + r.bad + ' null=' + r.null +
-            ' &middot; cnt=' + r.count + '</span>' +
-          '</div>';
-      });
-      html += '</div>';
-    });
-    setHTML("lv-live", html);
-  }
-
   function renderRecentSwaps(rows) {
     if (!rows.length) {
       setHTML("lv-swaps", '<div class="placeholder">(none in tail)</div>');
@@ -1746,7 +1721,8 @@ INDEX_HTML = r"""<!doctype html>
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);
     renderBuckets(doc.buckets || []);
-    renderMetric(doc.metric || []);
+    state.metricByBucket = doc.metric_by_bucket || {};
+    renderMetricForBucket();
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null);
@@ -1754,7 +1730,6 @@ INDEX_HTML = r"""<!doctype html>
     renderChurn(doc.churn || {});
     renderRecentProofs(doc.recent_proofs || []);
     renderRecentSwaps(doc.recent_swaps || []);
-    renderLiveLeaders(doc.live_leaders || []);
   }
 
   function liveRefresh() {
@@ -1806,7 +1781,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null };
   var charts = {};
 
   function mk(id, cfg) {
@@ -2223,6 +2198,7 @@ INDEX_HTML = r"""<!doctype html>
         bs.onchange = function () {
           try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
           loadBucket(bs.value);
+          renderMetricForBucket();
         };
         try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {

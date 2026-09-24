@@ -351,6 +351,61 @@ def data_metric(hosts):
     return rows
 
 
+def data_metric_by_bucket(hosts):
+    """Per-bucket picker leaderboard, keyed by bucket id.
+
+    Same row shape as data_metric, but for every bucket (sorted by
+    total vote count descending).  The frontend picks the entry for
+    the bucket currently shown in the dropdown, so the leaderboard
+    follows the selection instead of always showing the busiest."""
+    if not hosts:
+        return {}
+    ordered = sorted(hosts, key=lambda x: -_vote_sum(x[2]))
+    out = {}
+    for inst, addr, v in ordered:
+        if addr in ("0.0.0.1", "?"):
+            continue
+        if addr.startswith(("127.", "169.254.", "0.")):
+            continue
+        if inst < 2:
+            continue
+        metrics = v.get("metrics") or []
+        rows = []
+        for i in range(16):
+            m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
+            try:
+                val = int(m.get("metric_value", 0) or 0)
+                mc  = int(m.get("metric_count", 0) or 0)
+                a   = int(m.get("sockets_alive", 0) or 0)
+                ss  = int(m.get("swap_score", 0) or 0)
+                bs  = int(m.get("bad_streak", 0) or 0)
+                ns  = int(m.get("null_streak", 0) or 0)
+                re_ = int(m.get("rate_ema", 0) or 0)
+            except Exception:
+                val, mc, a, ss, bs, ns, re_ = 0, 0, 0, 0, 0, 0, 0
+            if val in (0, (1<<64)-1):
+                val = 0
+            penalty = 16.0 / (16.0 + bs * 4.0 + ns * 2.0)
+            score   = (re_ * (ss / 256.0)) * penalty
+            active  = (mc > 0) or (a > 0) or (re_ > 0) or (ss > 0)
+            rows.append({
+                "alg":         CONGS[i],
+                "metric":      round(val / 1e6, 1) if val else 0,
+                "votes":       mc,
+                "alive":       a,
+                "rate_ema":    re_,
+                "swap_score":  ss,
+                "penalty":     round(penalty, 3),
+                "score":       round(score, 2),
+                "bad_streak":  bs,
+                "null_streak": ns,
+                "active":      active,
+            })
+        rows.sort(key=lambda r: (0 if r["active"] else 1, -r["score"]))
+        out[addr] = rows
+    return out
+
+
 def _proof_events(text):
     MET_WINDOW_S = 60.0
     lines = text.splitlines()
@@ -829,6 +884,7 @@ def collect_all():
         "tunables":       data_tunables(),
         "buckets":        data_buckets(hosts),
         "metric":         data_metric(hosts),
+        "metric_by_bucket": data_metric_by_bucket(hosts),
         "live_leaders":   data_live_leaders(hosts),
         "proof":          data_proof(text),
         "rate":           data_rate(text),

@@ -558,6 +558,61 @@ def data_metric(hosts):
     return rows
 
 
+def data_metric_by_bucket(hosts):
+    """Per-bucket picker leaderboard, keyed by bucket id.
+
+    Same row shape as data_metric, but for every bucket (sorted by
+    total vote count descending).  The frontend picks the entry for
+    the bucket currently shown in the dropdown, so the leaderboard
+    follows the selection instead of always showing the busiest."""
+    if not hosts:
+        return {}
+    ordered = sorted(hosts, key=lambda x: -_vote_sum(x[2]))
+    out = {}
+    for inst, addr, v in ordered:
+        if addr in ("0.0.0.1", "?"):
+            continue
+        if addr.startswith(("127.", "169.254.", "0.")):
+            continue
+        if inst < 2:
+            continue
+        metrics = v.get("metrics") or []
+        rows = []
+        for i in range(16):
+            m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
+            try:
+                val = int(m.get("metric_value", 0) or 0)
+                mc  = int(m.get("metric_count", 0) or 0)
+                a   = int(m.get("sockets_alive", 0) or 0)
+                ss  = int(m.get("swap_score", 0) or 0)
+                bs  = int(m.get("bad_streak", 0) or 0)
+                ns  = int(m.get("null_streak", 0) or 0)
+                re_ = int(m.get("rate_ema", 0) or 0)
+            except Exception:
+                val, mc, a, ss, bs, ns, re_ = 0, 0, 0, 0, 0, 0, 0
+            if val in (0, (1<<64)-1):
+                val = 0
+            penalty = 16.0 / (16.0 + bs * 4.0 + ns * 2.0)
+            score   = (re_ * (ss / 256.0)) * penalty
+            active  = (mc > 0) or (a > 0) or (re_ > 0) or (ss > 0)
+            rows.append({
+                "alg":         CONGS[i],
+                "metric":      round(val / 1e6, 1) if val else 0,
+                "votes":       mc,
+                "alive":       a,
+                "rate_ema":    re_,
+                "swap_score":  ss,
+                "penalty":     round(penalty, 3),
+                "score":       round(score, 2),
+                "bad_streak":  bs,
+                "null_streak": ns,
+                "active":      active,
+            })
+        rows.sort(key=lambda r: (0 if r["active"] else 1, -r["score"]))
+        out[addr] = rows
+    return out
+
+
 def _proof_events(text):
     MET_WINDOW_S = 60.0
     lines = text.splitlines()
@@ -1036,6 +1091,7 @@ def collect_all():
         "tunables":       data_tunables(),
         "buckets":        data_buckets(hosts),
         "metric":         data_metric(hosts),
+        "metric_by_bucket": data_metric_by_bucket(hosts),
         "live_leaders":   data_live_leaders(hosts),
         "proof":          data_proof(text),
         "rate":           data_rate(text),
@@ -3209,11 +3265,6 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c12">
-      <h3>live leaderboard <span class="cnt">picker ranking from the map &middot; 30s</span></h3>
-      <div id="lv-live"></div>
-    </section>
-
-    <section class="c12">
       <h3>recent swaps <span class="cnt">composite vs sustained</span></h3>
       <div id="lv-swaps"></div>
     </section>
@@ -3474,6 +3525,16 @@ INDEX_HTML = r"""<!doctype html>
     setHTML("lv-buckets", html + '</tbody></table>');
   }
 
+  function renderMetricForBucket() {
+    var bs = $("bucket");
+    var addr = (bs && bs.value) ? bs.value : null;
+    var byB = state.metricByBucket || {};
+    var keys = Object.keys(byB);
+    var rows = (addr && byB[addr]) ? byB[addr]
+                                   : (keys.length ? byB[keys[0]] : []);
+    renderMetric(rows);
+  }
+
   function renderMetric(rows) {
     if (!rows.length) {
       setHTML("lv-metric", '<div class="placeholder">(no metrics yet)</div>');
@@ -3716,36 +3777,6 @@ INDEX_HTML = r"""<!doctype html>
     setHTML("lv-proofs", html + '</div>');
   }
 
-  function renderLiveLeaders(rows) {
-    if (!rows.length) {
-      setHTML("lv-live",
-        '<div class="placeholder">no bucket with enough votes yet</div>');
-      return;
-    }
-    var html = '';
-    rows.forEach(function (b) {
-      html += '<div class="meta" style="padding:6px 0 2px;font-weight:600">' +
-              esc(b.dest) +
-              ' <span style="color:var(--muted-2);font-weight:400">inst=' +
-              b.inst + '</span></div>';
-      html += '<div class="list">';
-      (b.top || []).forEach(function (r, idx) {
-        var tag = (idx === 0) ? 'sp win' : 'sp dash';
-        html += '<div class="item">' +
-          '<span class="flow"><span class="' + tag + '">' +
-            esc(r.alg) + '</span></span>' +
-          '<span class="meta">w=' + r.weighted +
-            ' &middot; re=' + r.rate_ema +
-            ' &middot; ss=' + r.swap_score +
-            ' &middot; bad=' + r.bad + ' null=' + r.null +
-            ' &middot; cnt=' + r.count + '</span>' +
-          '</div>';
-      });
-      html += '</div>';
-    });
-    setHTML("lv-live", html);
-  }
-
   function renderRecentSwaps(rows) {
     if (!rows.length) {
       setHTML("lv-swaps", '<div class="placeholder">(none in tail)</div>');
@@ -3777,7 +3808,8 @@ INDEX_HTML = r"""<!doctype html>
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);
     renderBuckets(doc.buckets || []);
-    renderMetric(doc.metric || []);
+    state.metricByBucket = doc.metric_by_bucket || {};
+    renderMetricForBucket();
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null);
@@ -3785,7 +3817,6 @@ INDEX_HTML = r"""<!doctype html>
     renderChurn(doc.churn || {});
     renderRecentProofs(doc.recent_proofs || []);
     renderRecentSwaps(doc.recent_swaps || []);
-    renderLiveLeaders(doc.live_leaders || []);
   }
 
   function liveRefresh() {
@@ -3837,7 +3868,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null };
   var charts = {};
 
   function mk(id, cfg) {
@@ -4254,6 +4285,7 @@ INDEX_HTML = r"""<!doctype html>
         bs.onchange = function () {
           try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
           loadBucket(bs.value);
+          renderMetricForBucket();
         };
         try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {
