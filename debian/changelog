@@ -1,3 +1,21 @@
+bpftune (0.4.77) UNRELEASED; urgency=medium
+
+  * streak counters now driven by the sustained truth file.
+
+    0.4.76 moved swap_score to the sustained ruler but left
+    bad_streak / null_streak (the pass-3 penalty inputs) on the
+    in-kernel single-sample classifier, which is loss-biased.
+
+    Fix: the reanchor worker updates streaks alongside swap_score:
+        win  -> clear both streaks
+        loss -> bad_streak++ (capped at 255)
+        null -> null_streak++ (capped at 255)
+    In-kernel streak writes disabled.  Penalty formula unchanged.
+
+    No schema change.  No STATE_VERSION bump.  No map wipe.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Fri, 25 Sep 2026 00:30:00 +0000
+
 bpftune (0.4.76) UNRELEASED; urgency=medium
 
   * swap_score reconciliation from sustained truth.

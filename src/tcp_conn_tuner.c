@@ -331,6 +331,7 @@ struct truth_bucket {
         struct in6_addr key;
         unsigned int win[NUM_TCP_CONN_METRICS];
         unsigned int loss[NUM_TCP_CONN_METRICS];
+        unsigned int nnull[NUM_TCP_CONN_METRICS];
 };
 
 static int truth_bucket_key(const char *s, struct in6_addr *out)
@@ -407,6 +408,7 @@ static void apply_truth_corrections(int map_fd)
                 }
                 if (strcmp(cls, "win") == 0) tb[found].win[tgt_idx]++;
                 else if (strcmp(cls, "loss") == 0) tb[found].loss[tgt_idx]++;
+                else if (strcmp(cls, "null") == 0) tb[found].nnull[tgt_idx]++;
         }
         fclose(f);
         unlink(TRUTH_STASH);
@@ -424,6 +426,10 @@ static void apply_truth_corrections(int map_fd)
                                 else if (cur > TRUTH_WIN_TARGET)
                                         cur -= (cur - TRUTH_WIN_TARGET) / SWAP_SCORE_STEP_DIV;
                                 r.metrics[j].swap_score = (__u16)cur;
+                        }
+                        if (tb[i].win[j]) {
+                                r.metrics[j].bad_streak = 0;
+                                r.metrics[j].null_streak = 0;
                                 dirty = 1;
                         }
                         for (k = 0; k < tb[i].loss[j]; k++) {
@@ -433,6 +439,16 @@ static void apply_truth_corrections(int map_fd)
                                 else if (cur < TRUTH_LOSS_TARGET)
                                         cur += (TRUTH_LOSS_TARGET - cur) / SWAP_SCORE_STEP_DIV;
                                 r.metrics[j].swap_score = (__u16)cur;
+                                dirty = 1;
+                        }
+                        if (tb[i].loss[j]) {
+                                if (r.metrics[j].bad_streak < 255)
+                                        r.metrics[j].bad_streak++;
+                                dirty = 1;
+                        }
+                        if (tb[i].nnull[j]) {
+                                if (r.metrics[j].null_streak < 255)
+                                        r.metrics[j].null_streak++;
                                 dirty = 1;
                         }
                 }
