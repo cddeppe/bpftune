@@ -423,16 +423,25 @@ def data_bucket_live():
     if not p.exists():
         return {}
 
+    # Read the real header from the top of the file.  A DictReader
+    # over a mid-file chunk would treat the first data row as the
+    # header and thus lose every column name.
+    with open(p, newline="") as f:
+        try:
+            header = next(csv.reader(f))
+        except StopIteration:
+            return {}
+
     with open(p, "rb") as f:
         f.seek(0, 2)
         size = f.tell()
         take = min(size, 800 * 1024)
         f.seek(size - take)
         if f.tell() > 0:
-            f.readline()
+            f.readline()   # skip partial line
         text = f.read().decode("utf-8", errors="replace")
 
-    rd = csv.DictReader(io.StringIO(text))
+    rd = csv.DictReader(io.StringIO(text), fieldnames=header)
     now = int(time.time())
     lo  = now - LIVE_CHART_MIN * 60
     per = {}
