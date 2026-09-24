@@ -181,30 +181,31 @@ def write_json(name, obj):
 
 
 
-def stream_buckets(path, per_bucket_max=500, max_buckets=60):
-    """Single-pass CSV read. Returns (header, cols, by_addr) where
-    by_addr maps addr -> list of raw CSV row-lists (capped to
-    per_bucket_max per bucket). Rows stay as lists of strings; we do
-    not build a dict per row."""
-    if not path or not os.path.exists(path):
-        return [], {}, {}
-    from collections import deque
+def aggregate_all(bfile, algs, now):
+    """Single streaming pass over buckets.v2.csv.
 
-    # ----- pass 1: count rows per addr, retain nothing -----
-    counts = {}
-    header = []
-    cols = {}
-    with open(path, "r", newline="", encoding="utf-8") as f:
+    Pass 1 counts rows per addr (retains nothing). Pass 2 aggregates
+    values into per-range bins as it reads. No row retention at all,
+    so peak memory is a few MB regardless of file size, and every row
+    in the file contributes to the 7d/all ranges.
+
+    Returns (header, cols, docs, meta_stats).
+    """
+    MAX_BUCKETS = 60
+    MIN_BUCKET_ROWS = 20
+
+    with open(bfile, "r", newline="") as f:
         rd = csv.reader(f)
         try:
             header = next(rd)
         except StopIteration:
-            return [], {}, {}
+            return [], {}, [], {}
         cols = {c: i for i, c in enumerate(header)}
         ai = cols.get("addr")
         ti = cols.get("collected_ts")
         if ai is None or ti is None:
-            return header, cols, {}
+            return header, cols, [], {}
+        counts = {}
         for row in rd:
             a = row[ai] if ai < len(row) else ""
             a = a or "unknown"
@@ -212,215 +213,147 @@ def stream_buckets(path, per_bucket_max=500, max_buckets=60):
                 continue
             counts[a] = counts.get(a, 0) + 1
 
-    # ----- pick the top N busiest, so pass 2 keeps only those -----
-    # 60 buckets * 500 rows * ~8 KB/row = ~240 MB peak, which is safe
-    # even on a 2 GB box. Without this cap, a host with 400+ distinct
-    # addresses would retain 400+ * 500 rows and OOM.
-    top_addrs = set(sorted(counts, key=lambda a: -counts[a])[:max_buckets])
-
-    # ----- pass 2: read again, retain only the chosen buckets -----
-    by = {}
-    with open(path, "r", newline="", encoding="utf-8") as f:
-        rd = csv.reader(f)
-        try:
-            next(rd)   # skip header
-        except StopIteration:
-            return header, cols, {}
-        hlen = len(header)
-        for row in rd:
-            a = row[ai] if ai < len(row) else ""
-            a = a or "unknown"
-            if a not in top_addrs:
-                continue
-            if len(row) < hlen:
-                row.extend([""] * (hlen - len(row)))
-            dq = by.get(a)
-            if dq is None:
-                dq = by[a] = deque(maxlen=per_bucket_max)
-            dq.append(row)
-    return header, cols, {a: list(dq) for a, dq in by.items()}
-
-
-_NUM_FMT = "%.4g"
-
-def _jnum(v):
-    if v is None:
-        return "null"
-    if isinstance(v, float):
-        return _NUM_FMT % v
-    return str(v)
-
-
-def _write_bucket_json(doc, path):
-    """Hand-rolled serializer. Only emits the shape emit_bucket_cols
-    produces, but 3-5x faster than json.dump on lists of floats."""
-    parts = ['{"id":', _jstr(doc.get("id", ""))]
-    parts.append(',"series":{')
-    first_rng = True
-    for rng, series in doc["series"].items():
-        if not first_rng:
-            parts.append(",")
-        first_rng = False
-        parts.append(_jstr(rng))
-        parts.append(':{"ts":[')
-        parts.append(",".join(map(str, series["ts"])))
-        parts.append("]")
-        for c in series:
-            if c == "ts":
-                continue
-            parts.append(",")
-            parts.append(_jstr(c))
-            parts.append(":[")
-            parts.append(",".join(_jnum(v) for v in series[c]))
-            parts.append("]")
-        parts.append("}")
-    parts.append("}")
-    if "last" in doc:
-        parts.append(',"last":')
-        parts.append(json.dumps(doc["last"], separators=(",", ":")))
-    parts.append("}")
-    out = "".join(parts)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(out)
-    os.replace(tmp, path)
-
-
-def _jstr(s):
-    return json.dumps(s)
-
-
-def emit_bucket_cols(bid, rows, cols, algs, now):
-    """Sparse column extraction. Build (row_i, value_float) pairs only
-    for cells that hold data; aggregate from those lists. Quiet buckets
-    see a >10x drop in loop iterations.
-    """
-    if not rows:
-        return
-    t_i = cols.get("collected_ts")
-    if t_i is None:
-        return
-
-    needed = list(EXTRA_COLS)
-    for a in algs:
-        needed += ["re_" + a, "ss_" + a, "bs_" + a, "ns_" + a, "mv_" + a]
+    ranked = sorted(counts, key=lambda a: -counts[a])
+    top = [a for a in ranked if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
+    topset = set(top)
 
     wanted = []
-    for c in needed:
-        ci = cols.get(c)
-        if ci is not None:
-            wanted.append((c, ci))
-    if not wanted:
-        return
+    for c in EXTRA_COLS:
+        if c in cols:
+            wanted.append((c, cols[c]))
+    for a in algs:
+        for pre in ("re_", "ss_", "bs_", "ns_", "mv_"):
+            c = pre + a
+            if c in cols:
+                wanted.append((c, cols[c]))
+    wn = len(wanted)
 
-    n = len(rows)
+    rkeys = list(RANGES.keys())
+    rspecs = [RANGES[k] for k in rkeys]
 
-    # Parse timestamps once.
-    ts_list = [0.0] * n
-    for i in range(n):
-        v = rows[i][t_i]
-        if v:
+    acc  = {}
+    last_row = {}
+    meta_stats = {}
+    inst_i = cols.get("instances")
+
+    with open(bfile, "r", newline="") as f:
+        rd = csv.reader(f)
+        next(rd)
+        hlen = len(header)
+        for row in rd:
+            if len(row) < hlen:
+                continue
+            a = row[ai]
+            if a not in topset:
+                continue
+            t_raw = row[ti]
+            if not t_raw:
+                continue
             try:
-                ts_list[i] = float(v)
+                t = float(t_raw)
             except ValueError:
-                ts_list[i] = 0.0
-
-    # Per-range bin map.
-    rmeta = []
-    for rng, (span, width) in RANGES.items():
-        lo = None if span is None else now - span
-        raw = [-1] * n
-        bset = set()
-        for i in range(n):
-            t = ts_list[i]
-            if t <= 0:
                 continue
-            if lo is not None and t < lo:
-                continue
-            b = int((t - (lo or 0)) // width)
-            raw[i] = b
-            bset.add(b)
-        uniq = sorted(bset)
-        idx = {b: k for k, b in enumerate(uniq)}
-        dense = [idx[b] if b >= 0 else -1 for b in raw]
-        base = lo if lo is not None else 0
-        ts_out = [int(base + b * width + width / 2) for b in uniq]
-        rmeta.append({"rng": rng, "row_bin": dense, "ts": ts_out,
-                      "nb": len(uniq)})
+            last_row[a] = row
 
-    nranges = len(rmeta)
-    is24 = [rm["rng"] == "24h" for rm in rmeta]
-    rb_lists = [rm["row_bin"] for rm in rmeta]
+            ms = meta_stats.get(a)
+            if ms is None:
+                ms = meta_stats[a] = {"last_ts": 0.0, "inst_sum": 0.0,
+                                      "inst_n": 0, "pts24": 0}
+            if t > ms["last_ts"]:
+                ms["last_ts"] = t
+            if t > now - 86400:
+                ms["pts24"] += 1
+                if inst_i is not None and inst_i < len(row):
+                    iv = row[inst_i]
+                    if iv:
+                        try:
+                            ms["inst_sum"] += float(iv)
+                            ms["inst_n"] += 1
+                        except ValueError:
+                            pass
 
-    # Sparse extraction + aggregation.
-    doc_series = {}
-    for ri_meta in rmeta:
-        doc_series[ri_meta["rng"]] = {"ts": ri_meta["ts"]}
+            buck = acc.get(a)
+            if buck is None:
+                buck = acc[a] = {}
+            for ri, (span, width) in enumerate(rspecs):
+                lo = None if span is None else now - span
+                if lo is not None and t < lo:
+                    continue
+                b = int((t - (lo or 0)) // width)
+                key = (ri, b)
+                cell = buck.get(key)
+                if cell is None:
+                    cell = buck[key] = [[0.0, 0] for _ in range(wn)]
+                for ci, (_, cidx) in enumerate(wanted):
+                    raw = row[cidx] if cidx < len(row) else ""
+                    if not raw:
+                        continue
+                    try:
+                        v = float(raw)
+                    except ValueError:
+                        continue
+                    slot = cell[ci]
+                    slot[0] += v
+                    slot[1] += 1
 
-    for cname, ci in wanted:
-        # Sparse pairs for this column.
-        pairs = []
-        for i in range(n):
-            v = rows[i][ci]
-            if v:
+    docs = []
+    for bid in top:
+        buck = acc.get(bid, {})
+        doc = {"id": bid, "series": {}}
+        for ri, rkey in enumerate(rkeys):
+            bins = sorted({k[1] for k in buck if k[0] == ri})
+            span, width = rspecs[ri]
+            lo = None if span is None else now - span
+            base = lo if lo is not None else 0
+            ts_out = [int(base + b * width + width / 2) for b in bins]
+            series = {"ts": ts_out}
+            is24 = (rkey == "24h")
+            for ci, (cname, _) in enumerate(wanted):
+                if cname.startswith("mv_") and not is24:
+                    continue
+                vals = []
+                for b in bins:
+                    cell = buck.get((ri, b))
+                    if cell is None:
+                        vals.append(None)
+                        continue
+                    sm, ct = cell[ci]
+                    vals.append(sm / ct if ct else None)
+                series[cname] = vals
+            doc["series"][rkey] = series
+
+        last = last_row.get(bid)
+        if last is not None:
+            def _g(name, dflt=""):
+                i = cols.get(name)
+                if i is None or i >= len(last):
+                    return dflt
+                v = last[i]
+                return v if v != "" else dflt
+            def _gf(name):
+                v = _g(name)
+                if v == "":
+                    return None
                 try:
-                    fv = float(v)
+                    return float(v)
                 except ValueError:
-                    continue
-                pairs.append((i, fv))
-        if not pairs:
-            continue
-        is_mv = cname.startswith("mv_")
-        for ri in range(nranges):
-            if is_mv and not is24[ri]:
-                continue
-            nb = rmeta[ri]["nb"]
-            if nb == 0:
-                continue
-            rb = rb_lists[ri]
-            sums = [0.0] * nb
-            cnts = [0] * nb
-            for row_i, fv in pairs:
-                j = rb[row_i]
-                if j < 0:
-                    continue
-                sums[j] += fv
-                cnts[j] += 1
-            series = doc_series[rmeta[ri]["rng"]]
-            series[cname] = [sums[j] / cnts[j] if cnts[j] else None
-                             for j in range(nb)]
+                    return None
+            doc["last"] = {
+                "collected_ts": int(_gf("collected_ts") or 0),
+                "best_alg":     _g("best_alg"),
+                "best_i":       _gf("best_i"),
+                "instances":    _gf("instances"),
+                "ref_rate":     _gf("ref_rate"),
+                "min_rtt":      _gf("min_rtt"),
+                "rate_best_i":  _gf("rate_best_i"),
+                "rate_best_v":  _gf("rate_best_v"),
+                "tcp_rmem_max": _gf("tcp_rmem_max"),
+                "re":           {a: _gf("re_" + a) for a in algs},
+            }
+        docs.append(doc)
 
-    doc = {"id": bid, "series": doc_series}
+    return header, cols, docs, meta_stats
 
-    last = rows[-1]
-    def _last(name, default=""):
-        ci = cols.get(name)
-        if ci is None or ci >= len(last):
-            return default
-        v = last[ci]
-        return v if v != "" else default
-    def _lastf(name):
-        v = _last(name, "")
-        if v == "":
-            return None
-        try:
-            return float(v)
-        except ValueError:
-            return None
-    doc["last"] = {
-        "collected_ts": int(_lastf("collected_ts") or 0),
-        "best_alg":     _last("best_alg"),
-        "best_i":       _lastf("best_i"),
-        "instances":    _lastf("instances"),
-        "ref_rate":     _lastf("ref_rate"),
-        "min_rtt":      _lastf("min_rtt"),
-        "rate_best_i":  _lastf("rate_best_i"),
-        "rate_best_v":  _lastf("rate_best_v"),
-        "tcp_rmem_max": _lastf("tcp_rmem_max"),
-        "re":           {a: _lastf("re_" + a) for a in algs},
-    }
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
-    _write_bucket_json(doc, os.path.join(DATA, "bucket_%s.json" % safe))
 
 def emit_meta(buckets, algs, now, primary=None):
     rows_24h = [r for r in buckets if (ts_of(r) or 0) > now - 86400]
@@ -2279,45 +2212,41 @@ def main():
         print("renderer: no buckets CSV found yet")
         return 1
 
-    header, cols, by = stream_buckets(bfile, per_bucket_max=MAX_ROWS_PER_BUCKET, max_buckets=MAX_BUCKETS)
-    _, swaps = load_csv(os.path.join(HIST, "swaps.csv"), max_rows=MAX_ROWS_SWAPS)
-    _, srate = load_csv(os.path.join(HIST, "srate.csv"), max_rows=MAX_ROWS_SRATE)
+    # Peek at the header first — algs is derived from it, and
+    # aggregate_all needs algs.
+    with open(bfile, "r", newline="") as _f:
+        _hdr = next(csv.reader(_f))
+    algs = sorted({c[3:] for c in _hdr if c.startswith("re_")})
 
-    algs = sorted({c[3:] for c in header if c.startswith("re_")})
+    _, swaps = load_csv(os.path.join(HIST, "swaps.csv"),
+                        max_rows=MAX_ROWS_SWAPS)
+    _, srate = load_csv(os.path.join(HIST, "srate.csv"),
+                        max_rows=MAX_ROWS_SRATE)
+    header, cols, docs, meta_stats = aggregate_all(bfile, algs, now)
 
-    # Decide the emit set FIRST, so meta.json, the bucket JSONs, and
-    # the stale-cleanup stage all agree on exactly which buckets are
-    # live. Capping the emit set without this leaves orphan JSONs on
-    # disk that the dropdown still offers and the browser keeps fetching.
-    ranked = sorted(by.items(), key=lambda kv: -len(kv[1]))
-    to_emit = []
-    skipped_small = 0
-    for bid, rs in ranked:
-        if len(to_emit) >= MAX_BUCKETS:
-            break
-        if len(rs) < MIN_BUCKET_ROWS:
-            skipped_small += 1
-            continue
-        to_emit.append((bid, rs))
-    skipped_cap = len(ranked) - len(to_emit) - skipped_small
-    skipped = skipped_small + skipped_cap
-
+    # meta needs the same stats we gathered during streaming.
     meta_rows = []
-    for bid, rows in to_emit:
-        for r in rows[-200:]:
-            meta_rows.append({c: r[i] for i, c in enumerate(header)
-                              if i < len(r)})
-    emit_meta(meta_rows, algs, now, primary=(to_emit[0][0] if to_emit else None))
+    for bid in [d["id"] for d in docs]:
+        st = meta_stats.get(bid) or {}
+        meta_rows.append({
+            "addr": bid,
+            "instances": (st.get("inst_sum", 0) / st["inst_n"]
+                          if st.get("inst_n") else 0),
+            "collected_ts": st.get("last_ts", 0),
+            "pts24": st.get("pts24", 0),
+        })
 
-    total_rows = 0
-    for bid, rs in to_emit:
-        total_rows += len(rs)
-        emit_bucket_cols(bid, rs, cols, algs, now)
-    emitted = len(to_emit)
+    top_id = docs[0]["id"] if docs else None
+    emit_meta(meta_rows, algs, now, primary=top_id)
+
+    for doc in docs:
+        bid = doc["id"]
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
+        write_json("bucket_%s.json" % safe, doc)
 
     def _safe(b):
         return "".join(c if c.isalnum() or c in "-_." else "_" for c in b)
-    emitted_safes = {_safe(b) for b, _ in to_emit}
+    emitted_safes = {_safe(d["id"]) for d in docs}
     cleaned = 0
     data_dir = Path(DATA)
     if data_dir.exists():
@@ -2334,21 +2263,17 @@ def main():
     emit_fleet(meta_rows, now)
 
     globals()["_CLEANED"] = cleaned
+    globals()["_EMITTED"] = len(docs)
+    globals()["_SKIPPED"] = max(0, len(meta_stats) - len(docs))
+    globals()["_ROWS"] = sum(
+        sum(len(v) for v in d["series"]["24h"].values()
+            if isinstance(v, list)) for d in docs) or 0
 
-    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "index.html")
-    if os.path.exists(html_path):
-        with open(html_path, "r", encoding="utf-8") as f:
-            html = f.read()
-    else:
-        html = INDEX_HTML
-    with open(os.path.join(HIST, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
 
-    cleaned = globals().get("_CLEANED", 0)
     print("renderer: %d buckets (%d emitted, %d skipped, %d cleaned), "
-          "%d rows plotted, %d algs, %d swaps, %d srate rows"
-          % (len(by), emitted, skipped, cleaned, total_rows,
+          "%d algs, %d swaps, %d srate rows"
+          % (len(meta_stats), globals().get("_EMITTED", 0),
+             globals().get("_SKIPPED", 0), globals().get("_CLEANED", 0),
              len(algs), len(swaps), len(srate)))
     return 0
 
