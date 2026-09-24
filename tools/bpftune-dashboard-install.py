@@ -4237,6 +4237,12 @@ def main():
     emit_swaps(swaps, srate, now)
     emit_fleet(meta_rows, now)
 
+    # 0.4.76: the main() rewrite that added streaming aggregation
+    # dropped this write; the renderer has been updating JSON for
+    # weeks while index.html went stale.
+    with open(HIST + "/index.html", "w") as f:
+        f.write(INDEX_HTML)
+
     globals()["_CLEANED"] = cleaned
     globals()["_EMITTED"] = len(docs)
     globals()["_SKIPPED"] = max(0, len(meta_stats) - len(docs))
