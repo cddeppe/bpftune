@@ -153,7 +153,7 @@ def write_cron():
         "# managed by bpftune-dashboard-install.py\n"
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
         "* * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
-        "*/5 * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
+        "*/15 * * * * root %s >> /var/log/bpftune-collector.log 2>&1\n"
         % (COLLECTOR, RENDERER)
     )
     write_file(CRON, body, 0o644)
