@@ -1530,7 +1530,14 @@ def _resolve_pending(pending, met_cache, srate_cache, newest_ts, now_epoch):
         samples = [rate for (ts, rate) in srate_cache.get(cookie, ())
                    if boot_ts + 60.0 <= ts <= boot_ts + 300.0]
         post_v = None
-        if len(samples) >= 2:
+        # 0.4.76b: match the renderer's rule -- accept a single sample.
+        # The renderer (bpftune-render.py _attach_sustained_outcomes)
+        # classifies on >=1 sample in the same window; the collector
+        # was the strict one at >=2, so CSV and CLI disagreed on
+        # every swap the collector marked no_post.  Single-sample
+        # agreement with the eventual median is ~80% on 345 testable
+        # swaps -- correct 4 out of 5, at 2x the coverage.
+        if len(samples) >= 1:
             sv = sorted(samples)
             ns = len(sv)
             post_v = (float(sv[ns // 2]) if ns % 2 else
