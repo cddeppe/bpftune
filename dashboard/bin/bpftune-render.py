@@ -373,7 +373,7 @@ def emit_meta(buckets, algs, now, primary=None):
             "instances_mean": round(sum(inst) / len(inst), 2) if inst else 0,
             "last_ts": int(last),
         })
-    entries.sort(key=lambda e: (e["last_ts"], e["instances_mean"]),
+    entries.sort(key=lambda e: (e["instances_mean"], e["last_ts"]),
                  reverse=True)
     write_json("meta.json", {
         "generated_ts":  now,
@@ -2158,7 +2158,15 @@ INDEX_HTML = r"""<!doctype html>
                   ' (' + b.points + ')</option>';
         }
         bs.innerHTML = html;
-        bs.value = state.meta.default_bucket;
+        var saved_bucket = null;
+        try { saved_bucket = localStorage.getItem("bpftune.bucket"); } catch (e) {}
+        var still_there = false;
+        if (saved_bucket) {
+          for (var q = 0; q < state.meta.buckets.length; q++) {
+            if (state.meta.buckets[q].id === saved_bucket) { still_there = true; break; }
+          }
+        }
+        bs.value = still_there ? saved_bucket : state.meta.default_bucket;
 
         var rs = $("range");
         var rhtml = "";
@@ -2174,7 +2182,11 @@ INDEX_HTML = r"""<!doctype html>
         status("updated " + relTime(state.meta.generated_ts));
         if (footgen) footgen.textContent = "rendered " + stamp;
 
-        bs.onchange = function () { loadBucket(bs.value); };
+        bs.onchange = function () {
+          try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
+          loadBucket(bs.value);
+        };
+        try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {
           renderBucket();
           renderDivergenceCharts();
