@@ -69,6 +69,11 @@ SWAP_FIELDS = [
 ]
 SRATE_FIELDS = ["collected_ts", "boot_ts", "cookie", "alg", "srate"]
 
+# 0.4.76: sustained classification truth, consumed by the tuner's
+# reanchor worker.  One line per resolved swap; the worker reads and
+# truncates each pass (~30s), so growth is bounded.
+SWAPS_TRUTH = HIST / "swapscore_truth.jsonl"
+
 # 0.4.76-live: rolling JSON file the dashboard reads on a fast cadence.
 # Mirrors every row that lands in swaps.csv.  No effect on the CSV.
 DATA_DIR = HIST / "data"
@@ -357,6 +362,25 @@ def _direction_from_rport(rport):
     return "origin" if str(rport) == "443" else "client"
 
 
+def _truth_write(row):
+    """Append one line for the tuner: bucket, target alg, sustained cls."""
+    dest = row.get("dest") or ""
+    to_alg = row.get("to_alg") or ""
+    outcome = (row.get("outcome") or "").lower()
+    if not dest or not to_alg or outcome not in ("win", "null", "loss"):
+        return
+    parts = dest.split(".")
+    if len(parts) != 4:
+        return
+    bucket = "%s.%s.0.0" % (parts[0], parts[1])
+    rec = {"bucket": bucket, "tgt": to_alg, "cls": outcome}
+    try:
+        with open(SWAPS_TRUTH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
 def _resolve_pending(pending, met_cache, srate_cache, newest_ts, now_epoch):
     keep = []
     for row in pending:
@@ -402,6 +426,7 @@ def _resolve_pending(pending, met_cache, srate_cache, newest_ts, now_epoch):
             if not row.get("direction") and post_rport not in ("", None):
                 row["direction"] = _direction_from_rport(str(post_rport))
                 row["rport"] = str(post_rport)
+            _truth_write(row)   # 0.4.76: sustained truth for the tuner
             buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
         elif boot_ts + 300.0 < newest_ts:
             row["outcome"] = "no_post"
