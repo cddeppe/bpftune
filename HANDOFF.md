@@ -9,17 +9,17 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `85fdbd3` (0.4.73)
-- Latest release: 0.4.73
+- Latest commit: see `git log -1` (0.4.74 tip)
+- Latest release: 0.4.74
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
   Do not commit dashboard files to main or vice versa.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.73** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.73** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.73** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.73** | instance-20250225-1017; builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.74** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.74** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.74** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.74** | instance-20250225-1017; builds arm64 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -27,6 +27,90 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-24 (night) -- 0.4.74: swap_score rebalance
+
+Follow-on to the 0.4.72/0.4.73 session.  Symptom: a bouncy video,
+streaming-quality oscillation between 20 and 100 Mbps with stalls.
+The tuner's swap activity was low (24/h) but the map showed every
+algorithm's swap_score well below neutral -- htcp 106, lp 217, bic
+131, scalable 77, veno 44.  That is the shape the tuned picker
+produced under the current score rule.
+
+### Diagnosis
+
+The swap_score update constants were win /16, loss /2, null /4.
+Losses moved the score 8x harder than wins.
+
+Measured from the swapscore printk over the whole log (n=462):
+
+    win   n=147   median ratio_q = 495
+    null  n=107   median ratio_q = 256
+    loss  n=208   median ratio_q = 143
+
+Workload class mix: 32% win, 23% null, 45% loss.
+
+Per-event movement from neutral 256:
+    win  (495-256)/16 = +14.9
+    loss (256-143)/2  = -56.5
+
+Net expected per event = 0.32*14.9 - 0.45*56.5 = -20.8.  Every
+outcome dragged the score down.  Equilibrium for a target with
+average outcomes: S ~ 188.  That is why the map showed everything
+below 256.
+
+The bad_streak / null_streak multiplier in pass 3
+(16/(16 + bad*4 + null*2)) already performs the fast recency
+demotion.  swap_score duplicating that punishment, with a much
+heavier loss weight, was double-counting the same evidence.
+
+### Fix (0.4.74)
+
+  SWAP_SCORE_STEP_DIV  16 -> 8   (win moves ~30/event)
+  SWAP_SCORE_LOSS_DIV   2 -> 8   (loss moves ~30/event)
+  null branch in score_pending_swap: deleted (no-op)
+
+Streak counters, pass 3 penalty, MIN_LEADER_TRUST, rate_ok: all
+unchanged.  score_pending_rejected inherits the new LOSS_DIV
+value -- a rejected swap drops the score ~30 instead of ~128.
+
+No schema change, no STATE_VERSION bump, no map wipe.
+
+### Expected behavior after
+
+- A 50/50 win/loss target sits slightly above neutral (equilibrium
+  ~280-300 with the observed magnitudes).
+- A target in a losing streak is downweighted in pass 3 within two
+  events and clears the moment it wins.
+- The slow score recovers from a wipe in ~3-4 wins per target
+  rather than ~7-10.
+- The picker stops collapsing to a single algorithm
+  (before: every swap in a window targeted htcp because its
+  rate_ema dominated a depressed score term).
+
+### What was NOT fixed
+
+- The 0.4.72 map wipe damage is still in flight.  rate_ema values
+  are rebuilding; how fast depends on how many votes pass the util
+  gate.
+- The util gate on rate_ema remains.  It is correct for
+  steady-state (web-browsing sockets should not pollute the
+  leaderboard) but it slows post-wipe recovery.  Not addressed.
+- No diagnostic for the specific stalls observed tonight.  The met
+  printk fires on segment checkpoints, not continuously, so short
+  stalls are invisible in the log.  A userspace per-socket sampler
+  (ss -tin every 2s) was considered and set aside.
+
+### Working-style additions
+
+- **When a scoring rule misbehaves, look for the second mechanism
+  before tuning the first.**  Two things were demoting targets
+  (score decay and streak penalty); making the score gentler was
+  only correct after confirming the streak already did the job.
+- **The equilibrium math is one line.**  Median win ratio, median
+  loss ratio, class fractions, divisor -- that sums to a net
+  per-event drift, and the sign tells you whether scores rise or
+  fall.  Doing this arithmetic before writing the patch would have
+  caught the 8x asymmetry without a session of observation.
 ## SESSION 2026-09-24 (evening) -- 0.4.72 and 0.4.73: fixes + state-version split
 
 Follow-on to the morning session.  Four changes across two releases,
