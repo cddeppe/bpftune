@@ -272,7 +272,18 @@ struct remote_host {
 /* 0.4.59: three consecutive nulls (no change either way) is not
  * chance.  A null costs a cwnd reset and proves nothing. */
 #define SWAP_NULL_STREAK_TRUST   3
-#define SWAP_OUTCOME_MIN_RNAL_NS (60ULL * 1000000000ULL)
+/* 0.4.75: score sample point moved 60s -> 180s.  A swap resets
+ * cwnd and slow-start takes 30-90s to climb back on a 100-200ms
+ * path.  The old 60s sample landed mid-recovery and read the dip
+ * as a loss or null; the sustained median in [T+60, T+300] (used
+ * by the dashboard's "sustained" column) saw the same sockets
+ * settling faster.  Measured on 353 historical swaps:
+ *   point@60:           147 win / 149 null /  57 loss
+ *   median[60,180]:     166 win / 133 null /  54 loss
+ * 180s moves the point sample to the settled side of the ramp.
+ * The 0.4.65 attribution logic (cur_alg != tgt -> loss-class) is
+ * unchanged; only the clock on the sample changed. */
+#define SWAP_OUTCOME_MIN_RNAL_NS (180ULL * 1000000000ULL)
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
  * bucket reference, it is stuck regardless of what the leader scores.

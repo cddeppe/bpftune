@@ -1,3 +1,32 @@
+bpftune (0.4.75) UNRELEASED; urgency=medium
+
+  * swap_score: sample outcome at 180s instead of 60s.
+
+    A swap resets cwnd; slow-start takes 30-90s to climb back on
+    this workload's RTTs.  The 60s sample landed mid-recovery and
+    classified the dip as loss or null even when the socket settled
+    higher.  Measured on 353 historical swaps with the srate series
+    available:
+
+      point sample @60s:          147 win / 149 null /  57 loss
+      median srate [60,180]:      166 win / 133 null /  54 loss
+      median srate [60,300]:      169 win / 132 null /  52 loss
+
+    Moving the sample point to 180s captures most of that
+    reclassification without needing the userspace median.  The
+    attribution logic from 0.4.65 (cur_alg != tgt -> loss-class on
+    rejection) is unchanged; only the clock changed.
+
+    Follow-up (separate release): the collector's outcome column in
+    swaps.csv still classifies on the composite metric rather than
+    srate.  That column feeds the dashboard's aggregate counts; the
+    sustained median is computed separately by the renderer.  Fixing
+    the collector is its own change and needs testing before deploy.
+
+    No schema change.  No STATE_VERSION bump.  Map preserved.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 19:00:00 +0000
+
 bpftune (0.4.74) UNRELEASED; urgency=medium
 
   * swap_score: balanced weights; nulls are a no-op.
