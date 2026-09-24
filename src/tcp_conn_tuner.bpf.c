@@ -468,6 +468,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     struct tcp_sock *tps;
     __u64 smin, savg, srate, srate_raw, smss, sinter;
     __u64 metric, min_rtt, avg_rtt, rate_interval_us, rate_delivered, mss;
+    __u64 sustained_bps;
     struct tcp_conn_metric *m;
     bool greedy = true;
     __u8 s;
@@ -680,15 +681,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         return 1;
     min_rtt = (__u64)tp->rtt_min.s[0].v;
     avg_rtt = (__u64)(tp->srtt_us >> 3);
-    rate_interval_us = (__u64)tp->rate_interval_us; /* printk only */
+    rate_interval_us = (__u64)tp->rate_interval_us;
     mss = (__u64)tp->mss_cache;
-    /* 0.4.69: sustained rate = bytes acked+received / wall-clock time.
-     * Was: (tp->rate_delivered * mss * 1e6) / tp->rate_interval_us.
-     * That kernel estimate updates on ACK arrival and can hold a
-     * value from minutes ago; measured divergence on heavy against
-     * actual segment movement was 37x on a steady socket and 2500x
-     * on a stalled one.  Every downstream signal (last_rate_bps,
-     * d=1/d=3 thresholds, rate_ema, swap_score) reads this value. */
+    /* 0.4.71: two distinct signals.
+     *
+     *   sustained_bps  = bytes acked+received / wall clock.  Health.
+     *   Feeds last_rate_bps (util gate, swap trigger), the score
+     *   update, and the composite metric.
+     *
+     *   rate_delivered = (tp->rate_delivered * mss) / rate_interval_us.
+     *   Capability.  Feeds rate_ema (bucket leaderboard, pass-3 target
+     *   pick) and the proof counters.  May go stale on a quiet socket;
+     *   its job is what the algorithm has proven it can do, not what
+     *   the socket is doing right now. */
     {
         __u64 now_ns = bpf_ktime_get_ns();
         __u64 bytes_total = (__u64)tp->bytes_acked +
@@ -697,19 +702,24 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             __u64 elapsed = now_ns - statep->rate_win_ts_ns;
             if (elapsed >= RATE_WIN_MIN_NS) {
                 __u64 bytes_delta = bytes_total - statep->rate_win_bytes;
-                rate_delivered = (bytes_delta * 1000000000ULL) / elapsed;
+                sustained_bps = (bytes_delta * 1000000000ULL) / elapsed;
                 statep->rate_win_ts_ns = now_ns;
                 statep->rate_win_bytes = bytes_total;
             } else {
-                rate_delivered = statep->last_rate_bps;
+                sustained_bps = statep->last_rate_bps;
             }
         } else {
             if (statep) {
                 statep->rate_win_ts_ns = now_ns;
                 statep->rate_win_bytes = bytes_total;
             }
-            rate_delivered = 0;
+            sustained_bps = 0;
         }
+    }
+    {
+        __u64 rd = (__u64)tp->rate_delivered;
+        rate_delivered = rate_interval_us ?
+            (rd * mss * 1000000ULL) / rate_interval_us : 0;
     }
 
 	/* 0.4.44: proof tracking.  Non-close votes only.  If the
@@ -756,7 +766,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     {
         __u64 rtt_term = 0, rate_term = 0, loss_term = 0;
         __u64 heal_rtt = 0, heal_rate = 0;
-        metric = tcp_metric_calc(remote_host, min_rtt, avg_rtt, rate_delivered,
+        metric = tcp_metric_calc(remote_host, min_rtt, avg_rtt, sustained_bps,
                                  allow_ref,
                                  &rtt_term, &rate_term, &heal_rtt, &heal_rate);
         {
@@ -808,8 +818,8 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             }
         }
         statep->last_metric = metric;
-        statep->last_rate_bps = rate_delivered;
-        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), rate_delivered,
+        statep->last_rate_bps = sustained_bps;
+        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), sustained_bps,
                            (__u8)s);
         statep->votes_on_alg++;
         /* Track the best reading this socket has ever produced, and
@@ -874,15 +884,11 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
 
         if (statep && !is_close) {
-            /* 0.4.49: block a swap to a target whose rate_ema on this
-             * bucket is lower than the source's.  Observed cookie 16102:
-             * nv(rate_ema=13) -> reno(rate_ema=3) because reno was the
-             * only alg to pass MIN_LEADER_TRUST; socket died at 12% loss. */
-            bool rate_ok = true;
-            if (remote_host->rate_best_v > 0 &&
-                remote_host->metrics[swap_tgt].rate_ema <
-                remote_host->metrics[s].rate_ema)
-                rate_ok = false;
+            /* 0.4.71: rate_ok removed.  Pass 3 already enforces
+             * MIN_LEADER_TRUST, the bad_streak/null_streak penalty,
+             * and the score term.  Two pickers disagreeing on the
+             * basis of the metric (rate_ema vs weighted score) meant
+             * the gate blocked rescues the picker intended. */
             /* 0.4.50: skip swaps on sockets not using their window.
              * Weekend data: 60% of swaps fired at util<10%; 42% had
              * pkts_out<=1.  Those sockets were idle; no algorithm
@@ -1053,7 +1059,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                  * cubic->cubic three times then froze). */
             } else if (protected_exploring) {
                 /* exploring, not enough votes on the alg yet */
-            } else if (desperate && rate_ok && util_ok) {
+            } else if (desperate && util_ok) {
                 /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
@@ -1082,7 +1088,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                (__u32)tp->rate_app_limited,
                                (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                 }
-            } else if (slow_vs_ref && rate_ok && util_ok && !statep->frozen) {
+            } else if (slow_vs_ref && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
@@ -1130,7 +1136,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                    (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                     }
                 }
-            } else if (slow_vs_leader && rate_ok && util_ok && !statep->frozen) {
+            } else if (slow_vs_leader && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
@@ -1227,9 +1233,6 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                  * the bad-check count so the socket
                                  * must re-demonstrate rather than
                                  * firing the moment the motion stops. */
-                                statep->bad_checkpoints = 0;
-                            } else if (!rate_ok) {
-                                /* target rate below source; skip swap */
                                 statep->bad_checkpoints = 0;
                             } else if (!util_ok) {
                                 /* socket not using window; skip swap */

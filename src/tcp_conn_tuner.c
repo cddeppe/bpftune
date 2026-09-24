@@ -604,7 +604,7 @@ static void stop_reanchor(void)
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 18
+#define STATE_VERSION 19
 struct state_header {
         __u32 magic;
         __u32 version;

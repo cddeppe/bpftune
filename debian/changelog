@@ -1,3 +1,40 @@
+bpftune (0.4.71) UNRELEASED; urgency=medium
+
+  * split rate_delivered into capability and health; remove rate_ok.
+
+    Pre-0.4.68 rate_ema was sourced from the kernel burst estimate
+    (tp->rate_delivered * mss / rate_interval_us).  That was the
+    capability signal the leaderboard needs -- how fast an algorithm
+    goes when pushed -- but it was also the swap TRIGGER's input,
+    where a stale burst value made slow sockets read as fast and
+    stopped swaps from firing.
+
+    0.4.68/0.4.69 replaced everything with byte-over-wall-clock.  That
+    fixed the trigger but collapsed the leaderboard: on this workload
+    the app (YouTube) is the source, so every algorithm's rate_ema
+    landed in the same 12-30 band regardless of what the algorithm
+    could deliver.
+
+    Fix: two locals, two jobs.
+      sustained_bps  = bytes_acked+bytes_received / elapsed  (health)
+      rate_delivered = burst estimate                         (capability)
+
+    Health feeds statep->last_rate_bps (util gate, swap trigger),
+    score_pending_swap (outcome attribution), and tcp_metric_calc.
+    Capability feeds rate_ema (pass-3 target pick) and the proof
+    counters.
+
+    Also remove rate_ok.  Pass 3 already enforces MIN_LEADER_TRUST,
+    bad_streak/null_streak penalties, and the score term.  rate_ok
+    compared raw rate_ema, a different basis than pass 3's weighted
+    score, so when the score ranked a lower-raw-rate algorithm as
+    leader (veno, on this bucket) the gate vetoed the picker and
+    sockets on the higher-rate algorithm could not be rescued.
+
+    STATE_VERSION 18 -> 19 (rate_ema semantics changed).
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 10:00:00 +0000
+
 bpftune (0.4.70) UNRELEASED; urgency=medium
 
   * restore the second-best fallback on the rate target.
