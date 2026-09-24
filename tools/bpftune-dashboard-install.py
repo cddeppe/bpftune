@@ -1375,7 +1375,18 @@ def _write_state(state):
 def _lookup_ema(map_data, dest_ip, alg_index):
     if not dest_ip or not map_data or alg_index is None:
         return ""
-    v = map_data.get(dest_ip)
+    # 0.4.55 merged the bucket key to a /16 prefix; 0.4.56 uses the
+    # top 32 bits of the IPv6 address for IPv6.  map_data is keyed by
+    # that, not by the full IP.  Project the destination before lookup,
+    # otherwise the f_ema / t_ema columns are always empty (bug on this
+    # function prior to this patch).
+    key = dest_ip
+    parts = dest_ip.split(".")
+    if len(parts) == 4:
+        key = "%s.%s.0.0" % (parts[0], parts[1])
+    v = map_data.get(key)
+    if not v:
+        v = map_data.get(dest_ip)  # legacy / non-merged key fallback
     if not v:
         return ""
     try:
