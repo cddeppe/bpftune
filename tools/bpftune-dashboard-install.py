@@ -1186,7 +1186,7 @@ STATE_VERSION 2: pending_swaps / rport / met-list added.  On version
 mismatch the state is reset; only caches and in-flight pendings are
 lost (at most 300 seconds of unresolved swaps).
 """
-import csv, json, os, re, socket, struct, subprocess, sys, time
+import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HIST = Path("/var/lib/bpftune/history")
@@ -1197,7 +1197,7 @@ SRATE_CSV    = HIST / "srate.csv"
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 SELF_DIR = Path(__file__).resolve().parent
 CLI      = SELF_DIR / "bpftune-cli.py"
@@ -1248,21 +1248,46 @@ def tcp_rmem():
         return "", "", ""
 
 
-def append_csv(path, row, fields=None):
-    if path.exists() and path.stat().st_size > 0:
-        with open(path, newline="") as f:
+_CSV_HEADER_CACHE = {}
+_CSV_BUFFERS = {}
+
+
+def _csv_header(path, default_cols):
+    key = str(path)
+    h = _CSV_HEADER_CACHE.get(key)
+    if h is not None:
+        return h
+    p = Path(path)
+    if p.exists() and p.stat().st_size > 0:
+        with open(p, "r", newline="", encoding="utf-8") as f:
             try:
-                header = next(csv.reader(f))
+                h = next(csv.reader(f))
             except StopIteration:
-                header = fields or list(row.keys())
-        with open(path, "a", newline="") as f:
-            csv.writer(f).writerow([row.get(c, "") for c in header])
+                h = list(default_cols)
     else:
-        cols = fields or list(row.keys())
-        with open(path, "a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
-            w.writeheader()
-            w.writerow(row)
+        h = list(default_cols)
+    _CSV_HEADER_CACHE[key] = h
+    return h
+
+
+def buffer_csv(path, row, fields=None):
+    key = str(path)
+    cols = _csv_header(key, fields or list(row.keys()))
+    _CSV_BUFFERS.setdefault(key, []).append([row.get(c, "") for c in cols])
+
+
+def flush_csv_buffers():
+    for key, rows in _CSV_BUFFERS.items():
+        if not rows:
+            continue
+        p = Path(key)
+        needs_header = not (p.exists() and p.stat().st_size > 0)
+        with open(p, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if needs_header:
+                w.writerow(_CSV_HEADER_CACHE[key])
+            w.writerows(rows)
+    _CSV_BUFFERS.clear()
 
 
 def list_logs():
@@ -1276,9 +1301,9 @@ def read_map_data():
     try:
         data = json.loads(out)
     except Exception:
-        return None
+        return None, ""
     if not isinstance(data, list):
-        return None
+        return None, ""
     result = {}
     for e in data:
         if not isinstance(e, dict):
@@ -1293,7 +1318,7 @@ def read_map_data():
             continue
         addr = ".".join(str(x) for x in b[12:16])
         result[addr] = v
-    return result
+    return result, out
 
 
 def collect_buckets(ts_epoch, map_data):
@@ -1336,7 +1361,7 @@ def collect_buckets(ts_epoch, map_data):
         row["tcp_rmem_min"] = rm_min
         row["tcp_rmem_def"] = rm_def
         row["tcp_rmem_max"] = rm_max
-        append_csv(BUCKETS_CSV, row)
+        buffer_csv(BUCKETS_CSV, row)
         n += 1
     return n
 
@@ -1375,18 +1400,13 @@ def _write_state(state):
 def _lookup_ema(map_data, dest_ip, alg_index):
     if not dest_ip or not map_data or alg_index is None:
         return ""
-    # 0.4.55 merged the bucket key to a /16 prefix; 0.4.56 uses the
-    # top 32 bits of the IPv6 address for IPv6.  map_data is keyed by
-    # that, not by the full IP.  Project the destination before lookup,
-    # otherwise the f_ema / t_ema columns are always empty (bug on this
-    # function prior to this patch).
     key = dest_ip
     parts = dest_ip.split(".")
     if len(parts) == 4:
         key = "%s.%s.0.0" % (parts[0], parts[1])
     v = map_data.get(key)
     if not v:
-        v = map_data.get(dest_ip)  # legacy / non-merged key fallback
+        v = map_data.get(dest_ip)
     if not v:
         return ""
     try:
@@ -1432,37 +1452,48 @@ def _direction_from_rport(rport):
     return "origin" if str(rport) == "443" else "client"
 
 
-def _resolve_pending(pending, met_cache, newest_met_ts, now_epoch):
+def _resolve_pending(pending, met_cache, srate_cache, newest_ts, now_epoch):
     keep = []
     for row in pending:
         cookie = row["cookie"]
         boot_ts = row["boot_ts"]
-        pre = row.get("socket_rate_before")
+        pre = row.get("srate_before")
         try:
             pre_v = float(pre) if pre not in ("", None) else None
         except (TypeError, ValueError):
             pre_v = None
 
-        post_v = None
+        # direction still comes from the met line's rport
         post_rport = None
         for entry in met_cache.get(cookie, ()):
             ts = entry[0]
             if boot_ts + 3.0 <= ts <= boot_ts + 300.0:
-                post_v = entry[1]
                 post_rport = entry[2]
                 break
 
+        # 0.4.76: sustained-ruler classification.  Median of srate
+        # in [T+60, T+300] vs pre-swap srate.  Higher rate = win,
+        # lower = loss (opposite of the old metric ruler).
+        samples = [rate for (ts, rate) in srate_cache.get(cookie, ())
+                   if boot_ts + 60.0 <= ts <= boot_ts + 300.0]
+        post_v = None
+        if len(samples) >= 2:
+            sv = sorted(samples)
+            ns = len(sv)
+            post_v = (float(sv[ns // 2]) if ns % 2 else
+                      (sv[ns // 2 - 1] + sv[ns // 2]) / 2.0)
+
         if pre_v and post_v:
             ratio = post_v / pre_v
-            row["outcome"] = ("win" if ratio <= 0.9 else
-                              "loss" if ratio >= 1.1 else "null")
+            row["outcome"] = ("win" if ratio >= 1.1 else
+                              "loss" if ratio <= 0.9 else "null")
             if not row.get("direction") and post_rport not in ("", None):
                 row["direction"] = _direction_from_rport(str(post_rport))
                 row["rport"] = str(post_rport)
-            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
-        elif boot_ts + 300.0 < newest_met_ts:
+            buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
+        elif boot_ts + 300.0 < newest_ts:
             row["outcome"] = "no_post"
-            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+            buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
         else:
             keep.append(row)
     return keep
@@ -1494,6 +1525,12 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
         for e in entries:
             if e[0] > newest_met_ts:
                 newest_met_ts = e[0]
+    newest_srate_ts = 0.0
+    for entries in chunk_srate.values():
+        for e in entries:
+            if e[0] > newest_srate_ts:
+                newest_srate_ts = e[0]
+    newest_ts = max(newest_met_ts, newest_srate_ts)
 
     pending = state.setdefault("pending_swaps", [])
 
@@ -1538,10 +1575,11 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
 
         srate_pre = None
         srate_pre_ts = -1.0
-        cached_s = srate_cache.get(c)
-        if cached_s and len(cached_s) >= 2 and cached_s[0] < boot_ts:
-            srate_pre = cached_s[1]
-            srate_pre_ts = cached_s[0]
+        for entry_s in srate_cache.get(c, ()):
+            ts = entry_s[0]
+            if ts < boot_ts and ts > srate_pre_ts:
+                srate_pre = entry_s[1]
+                srate_pre_ts = ts
         for (sts, _a, sr) in chunk_srate.get(c, ()):
             if sts < boot_ts and sts > srate_pre_ts:
                 srate_pre = sr
@@ -1584,19 +1622,14 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
             "rport": str(rp) if rp else "",
         }
 
-        if pre is not None and post is not None:
-            ratio = post / pre
-            row["outcome"] = ("win" if ratio <= 0.9 else
-                              "loss" if ratio >= 1.1 else "null")
-            if not row["direction"] and post_rport:
-                row["direction"] = _direction_from_rport(str(post_rport))
-                row["rport"] = str(post_rport)
-            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
-        elif pre is not None:
+        # 0.4.76: entire classification deferred.  The resolve path
+        # uses the sustained median srate in [T+60, T+300] vs the
+        # pre-swap srate; the metric-ruler classification is gone.
+        if srate_pre is not None:
             pending.append(row)
         else:
-            row["outcome"] = "no_pre"
-            append_csv(SWAPS_CSV, row, SWAP_FIELDS)
+            row["outcome"] = "no_srate_pre"
+            buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
 
         n += 1
 
@@ -1611,12 +1644,16 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
                 bucket.append([entry[0], entry[1], entry[2]])
 
     for c, entries in chunk_srate.items():
-        latest = max(entries, key=lambda x: x[0])
-        cached = srate_cache.get(c)
-        if cached is None or len(cached) < 2 or cached[0] < latest[0]:
-            srate_cache[c] = [latest[0], latest[2]]
+        bucket = srate_cache.setdefault(c, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            srate_cache[c] = bucket
+        seen = {e[0] for e in bucket
+                if isinstance(e, list) and len(e) >= 2}
         for (sts, alg, sr) in entries:
-            append_csv(SRATE_CSV, {
+            if sts not in seen:
+                bucket.append([sts, sr])
+            buffer_csv(SRATE_CSV, {
                 "collected_ts": now_epoch,
                 "boot_ts": sts,
                 "cookie": c,
@@ -1640,7 +1677,7 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
                 del met_cache[c]
 
     state["pending_swaps"] = _resolve_pending(
-        pending, met_cache, newest_met_ts, now_epoch)
+        pending, met_cache, srate_cache, newest_ts, now_epoch)
 
     return n
 
@@ -1685,28 +1722,47 @@ def collect_swaps(map_data):
         n += _parse_swaps_from(chunk, now_epoch, met_cache,
                                srate_cache, map_data, state)
 
-    # srate_cache still prunes as a latest-only map.
+    # 0.4.76: srate_cache prunes per entry, same as met_cache.
     if srate_cache:
-        valid_ts = [v[0] for v in srate_cache.values()
-                    if isinstance(v, list) and len(v) >= 2]
+        valid_ts = [e[0] for bucket in srate_cache.values()
+                    if isinstance(bucket, list)
+                    for e in bucket
+                    if isinstance(e, list) and len(e) >= 2]
         if valid_ts:
             cutoff = max(valid_ts) - MET_CACHE_TTL_S
             for c in list(srate_cache.keys()):
-                v = srate_cache[c]
-                if (not isinstance(v, list) or len(v) < 2
-                        or v[0] < cutoff):
+                bucket = srate_cache[c]
+                if not isinstance(bucket, list):
+                    del srate_cache[c]
+                    continue
+                bucket[:] = [e for e in bucket
+                             if isinstance(e, list) and len(e) >= 2
+                             and e[0] >= cutoff]
+                if not bucket:
                     del srate_cache[c]
 
     _write_state(state)
     return n
 
 
-def run_cli_snapshot():
+def run_cli_snapshot(map_raw=""):
     if not CLI.exists():
         return None
+    env = os.environ.copy()
+    tmp_map = None
     try:
+        if map_raw:
+            try:
+                fd, tmp_map = tempfile.mkstemp(
+                    prefix=".map-", suffix=".json", dir=str(HIST))
+                with os.fdopen(fd, "w") as f:
+                    f.write(map_raw)
+                env["BPFTUNE_MAP_DUMP_JSON"] = tmp_map
+            except OSError:
+                tmp_map = None
         r = subprocess.run([sys.executable, str(CLI), "--json"],
-                           capture_output=True, text=True, timeout=90)
+                           capture_output=True, text=True, timeout=90,
+                           env=env)
         if r.returncode != 0:
             print("collector: CLI exited %d" % r.returncode, file=sys.stderr)
             return None
@@ -1719,14 +1775,25 @@ def run_cli_snapshot():
     except Exception as e:
         print("collector: CLI snapshot failed: %s" % e, file=sys.stderr)
         return None
+    finally:
+        if tmp_map:
+            try:
+                os.unlink(tmp_map)
+            except OSError:
+                pass
 
 
 def main():
+    try:
+        os.nice(19)
+    except (OSError, AttributeError):
+        pass
     ts_epoch = int(time.time())
-    map_data = read_map_data()
+    map_data, map_raw = read_map_data()
     nb = collect_buckets(ts_epoch, map_data)
     ns = collect_swaps(map_data)
-    doc = run_cli_snapshot()
+    flush_csv_buffers()
+    doc = run_cli_snapshot(map_raw)
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
 

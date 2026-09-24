@@ -49,7 +49,7 @@ SRATE_CSV    = HIST / "srate.csv"
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 SELF_DIR = Path(__file__).resolve().parent
 CLI      = SELF_DIR / "bpftune-cli.py"
@@ -252,7 +252,13 @@ def _write_state(state):
 def _lookup_ema(map_data, dest_ip, alg_index):
     if not dest_ip or not map_data or alg_index is None:
         return ""
-    v = map_data.get(dest_ip)
+    key = dest_ip
+    parts = dest_ip.split(".")
+    if len(parts) == 4:
+        key = "%s.%s.0.0" % (parts[0], parts[1])
+    v = map_data.get(key)
+    if not v:
+        v = map_data.get(dest_ip)
     if not v:
         return ""
     try:
@@ -298,35 +304,46 @@ def _direction_from_rport(rport):
     return "origin" if str(rport) == "443" else "client"
 
 
-def _resolve_pending(pending, met_cache, newest_met_ts, now_epoch):
+def _resolve_pending(pending, met_cache, srate_cache, newest_ts, now_epoch):
     keep = []
     for row in pending:
         cookie = row["cookie"]
         boot_ts = row["boot_ts"]
-        pre = row.get("socket_rate_before")
+        pre = row.get("srate_before")
         try:
             pre_v = float(pre) if pre not in ("", None) else None
         except (TypeError, ValueError):
             pre_v = None
 
-        post_v = None
+        # direction still comes from the met line's rport
         post_rport = None
         for entry in met_cache.get(cookie, ()):
             ts = entry[0]
             if boot_ts + 3.0 <= ts <= boot_ts + 300.0:
-                post_v = entry[1]
                 post_rport = entry[2]
                 break
 
+        # 0.4.76: sustained-ruler classification.  Median of srate
+        # in [T+60, T+300] vs pre-swap srate.  Higher rate = win,
+        # lower = loss (opposite of the old metric ruler).
+        samples = [rate for (ts, rate) in srate_cache.get(cookie, ())
+                   if boot_ts + 60.0 <= ts <= boot_ts + 300.0]
+        post_v = None
+        if len(samples) >= 2:
+            sv = sorted(samples)
+            ns = len(sv)
+            post_v = (float(sv[ns // 2]) if ns % 2 else
+                      (sv[ns // 2 - 1] + sv[ns // 2]) / 2.0)
+
         if pre_v and post_v:
             ratio = post_v / pre_v
-            row["outcome"] = ("win" if ratio <= 0.9 else
-                              "loss" if ratio >= 1.1 else "null")
+            row["outcome"] = ("win" if ratio >= 1.1 else
+                              "loss" if ratio <= 0.9 else "null")
             if not row.get("direction") and post_rport not in ("", None):
                 row["direction"] = _direction_from_rport(str(post_rport))
                 row["rport"] = str(post_rport)
             buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
-        elif boot_ts + 300.0 < newest_met_ts:
+        elif boot_ts + 300.0 < newest_ts:
             row["outcome"] = "no_post"
             buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
         else:
@@ -360,6 +377,12 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
         for e in entries:
             if e[0] > newest_met_ts:
                 newest_met_ts = e[0]
+    newest_srate_ts = 0.0
+    for entries in chunk_srate.values():
+        for e in entries:
+            if e[0] > newest_srate_ts:
+                newest_srate_ts = e[0]
+    newest_ts = max(newest_met_ts, newest_srate_ts)
 
     pending = state.setdefault("pending_swaps", [])
 
@@ -404,10 +427,11 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
 
         srate_pre = None
         srate_pre_ts = -1.0
-        cached_s = srate_cache.get(c)
-        if cached_s and len(cached_s) >= 2 and cached_s[0] < boot_ts:
-            srate_pre = cached_s[1]
-            srate_pre_ts = cached_s[0]
+        for entry_s in srate_cache.get(c, ()):
+            ts = entry_s[0]
+            if ts < boot_ts and ts > srate_pre_ts:
+                srate_pre = entry_s[1]
+                srate_pre_ts = ts
         for (sts, _a, sr) in chunk_srate.get(c, ()):
             if sts < boot_ts and sts > srate_pre_ts:
                 srate_pre = sr
@@ -450,18 +474,13 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
             "rport": str(rp) if rp else "",
         }
 
-        if pre is not None and post is not None:
-            ratio = post / pre
-            row["outcome"] = ("win" if ratio <= 0.9 else
-                              "loss" if ratio >= 1.1 else "null")
-            if not row["direction"] and post_rport:
-                row["direction"] = _direction_from_rport(str(post_rport))
-                row["rport"] = str(post_rport)
-            buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
-        elif pre is not None:
+        # 0.4.76: entire classification deferred.  The resolve path
+        # uses the sustained median srate in [T+60, T+300] vs the
+        # pre-swap srate; the metric-ruler classification is gone.
+        if srate_pre is not None:
             pending.append(row)
         else:
-            row["outcome"] = "no_pre"
+            row["outcome"] = "no_srate_pre"
             buffer_csv(SWAPS_CSV, row, SWAP_FIELDS)
 
         n += 1
@@ -477,11 +496,15 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
                 bucket.append([entry[0], entry[1], entry[2]])
 
     for c, entries in chunk_srate.items():
-        latest = max(entries, key=lambda x: x[0])
-        cached = srate_cache.get(c)
-        if cached is None or len(cached) < 2 or cached[0] < latest[0]:
-            srate_cache[c] = [latest[0], latest[2]]
+        bucket = srate_cache.setdefault(c, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            srate_cache[c] = bucket
+        seen = {e[0] for e in bucket
+                if isinstance(e, list) and len(e) >= 2}
         for (sts, alg, sr) in entries:
+            if sts not in seen:
+                bucket.append([sts, sr])
             buffer_csv(SRATE_CSV, {
                 "collected_ts": now_epoch,
                 "boot_ts": sts,
@@ -506,7 +529,7 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
                 del met_cache[c]
 
     state["pending_swaps"] = _resolve_pending(
-        pending, met_cache, newest_met_ts, now_epoch)
+        pending, met_cache, srate_cache, newest_ts, now_epoch)
 
     return n
 
@@ -551,16 +574,23 @@ def collect_swaps(map_data):
         n += _parse_swaps_from(chunk, now_epoch, met_cache,
                                srate_cache, map_data, state)
 
-    # srate_cache still prunes as a latest-only map.
+    # 0.4.76: srate_cache prunes per entry, same as met_cache.
     if srate_cache:
-        valid_ts = [v[0] for v in srate_cache.values()
-                    if isinstance(v, list) and len(v) >= 2]
+        valid_ts = [e[0] for bucket in srate_cache.values()
+                    if isinstance(bucket, list)
+                    for e in bucket
+                    if isinstance(e, list) and len(e) >= 2]
         if valid_ts:
             cutoff = max(valid_ts) - MET_CACHE_TTL_S
             for c in list(srate_cache.keys()):
-                v = srate_cache[c]
-                if (not isinstance(v, list) or len(v) < 2
-                        or v[0] < cutoff):
+                bucket = srate_cache[c]
+                if not isinstance(bucket, list):
+                    del srate_cache[c]
+                    continue
+                bucket[:] = [e for e in bucket
+                             if isinstance(e, list) and len(e) >= 2
+                             and e[0] >= cutoff]
+                if not bucket:
                     del srate_cache[c]
 
     _write_state(state)
