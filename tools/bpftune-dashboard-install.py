@@ -954,6 +954,76 @@ def data_recent_proofs(text, n=10):
     return out
 
 
+MIN_LEADER_TRUST = 10   # matches tcp_conn_tuner.h
+LIVE_TOP_N       = 6
+LIVE_MAX_BUCKETS = 8
+
+
+def data_live_leaders(hosts):
+    """Compute the picker's live ranking per bucket.
+
+    Uses the exact formula from reanchor_best (tcp_conn_tuner.c):
+        weighted = rate_ema * swap_score / 256
+        pen      = 16 + bad_streak*4 + null_streak*2
+        weighted = weighted * 16 / pen
+    Filters to metric_count >= MIN_LEADER_TRUST, matching the
+    picker's own trust floor.  Sorted descending; the first entry
+    is what the reanchor would pick right now.
+
+    Delivered via current.json, which the browser polls every 30s.
+    The historical leaderboard (bucket_*.json) still comes from the
+    renderer on its 5-minute cron."""
+    out = []
+    if not hosts:
+        return out
+    for inst, addr, v in hosts:
+        if addr in ("0.0.0.1", "?"):
+            continue
+        if addr.startswith(("127.", "169.254.", "0.")):
+            continue
+        if inst < 2:
+            continue
+        metrics = v.get("metrics") or []
+        cands = []
+        for i in range(16):
+            m = metrics[i] if i < len(metrics) and isinstance(metrics[i], dict) else {}
+            try:
+                cnt = int(m.get("metric_count", 0) or 0)
+                rv  = int(m.get("rate_ema", 0) or 0)
+                ss  = int(m.get("swap_score", 0) or 0)
+                bad = int(m.get("bad_streak", 0) or 0)
+                nul = int(m.get("null_streak", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if cnt < MIN_LEADER_TRUST:
+                continue
+            if rv == 0:
+                continue
+            ss_eff = ss if ss else 256
+            weighted = rv * ss_eff // 256
+            pen = 16 + bad * 4 + nul * 2
+            weighted = weighted * 16 // pen
+            cands.append((weighted, rv, ss, bad, nul, cnt, i))
+        if not cands:
+            continue
+        cands.sort(key=lambda x: -x[0])
+        rows = []
+        for (w, rv, ss, bad, nul, cnt, i) in cands[:LIVE_TOP_N]:
+            rows.append({
+                "alg":        CONGS[i],
+                "weighted":   int(w),
+                "rate_ema":   rv,
+                "swap_score": ss,
+                "bad":        bad,
+                "null":       nul,
+                "count":      cnt,
+            })
+        out.append({"dest": addr, "inst": inst, "top": rows})
+        if len(out) >= LIVE_MAX_BUCKETS:
+            break
+    return out
+
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
@@ -966,6 +1036,7 @@ def collect_all():
         "tunables":       data_tunables(),
         "buckets":        data_buckets(hosts),
         "metric":         data_metric(hosts),
+        "live_leaders":   data_live_leaders(hosts),
         "proof":          data_proof(text),
         "rate":           data_rate(text),
         "swap_outcomes":  data_swap_outcomes(text),
