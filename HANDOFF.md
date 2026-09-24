@@ -9,23 +9,87 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: see `git log -1` (0.4.74 tip)
-- Latest release: 0.4.74
+- Latest commit: see `git log -1` (0.4.75 tip)
+- Latest release: 0.4.75
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
   Do not commit dashboard files to main or vice versa.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.74** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.74** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.74** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.74** | instance-20250225-1017; builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.75** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.75** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.75** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.75** | instance-20250225-1017; builds arm64 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-24 (late night) -- 0.4.75: score sample at 180s
+
+Follow-on to 0.4.74.  The 0.4.74 rebalance (win /8, loss /8, null
+no-op) removed the systematic score decay.  What remained was a
+sampling problem: the kernel samples the outcome once, at the first
+vote where `elapsed >= SWAP_OUTCOME_MIN_RNAL_NS`, and classified that
+single value.
+
+60s was inside the cwnd-recovery ramp.  A swap resets cwnd; slow-
+start on this workload (100-200ms RTTs) takes 30-90s to climb back.
+The T+60 point sample frequently read a mid-ramp value below the
+pre-swap rate and called the swap a loss or null.  The dashboard's
+"sustained" column (median srate in [T+60, T+300], computed by the
+renderer) saw those same swaps as wins.
+
+### Measured, 353 historical swaps with full srate series
+
+    point sample @60s:          147 win / 149 null /  57 loss
+    median srate [60,180]:      166 win / 133 null /  54 loss
+    median srate [60,300]:      169 win / 132 null /  52 loss
+
+The point sample systematically under-counted wins by ~13% versus
+either median window, and the disagreement direction is almost
+entirely "point says null/loss, median says win" (26 events) rather
+than the reverse (5 events).
+
+### Fix
+
+    SWAP_OUTCOME_MIN_RNAL_NS  60s -> 180s
+
+One constant.  Attribution logic from 0.4.65 (cur_alg != tgt ->
+loss-class) unchanged; only the clock moved.  Covers most of the
+median-window improvement without needing the userspace median.
+
+### Not fixed in this release
+
+The collector's `outcome` column in `swaps.csv` still classifies on
+the composite metric (`val=` ratio), not on srate.  That column
+feeds the dashboard's aggregate counts and charts, and it is
+consistent with itself but not with the sustained ruler the
+dashboard shows in a different column.  The renderer already
+computes the correct value (`_attach_sustained_outcomes`, median
+srate in [T+60, T+300]); the collector would need the same logic
+plus a per-cookie srate series (currently latest-only in
+`srate_cache`) to match.
+
+That change is a separate release with a real test gate: run the
+new classification against `window-classify.py`'s column B on the
+same 353 swaps; the CSV must then match the sustained column before
+shipping.  Not for this session.
+
+### Working-style additions
+
+- **When a rubric's classifications disagree across layers,
+  identify the number of rulers before deciding which to change.**
+  At the start of 0.4.75 there were three: composite (collector
+  outcome column), point-sample sustained (kernel score), median
+  sustained (renderer sustained column).  Naming them in one place
+  turned a multi-hour debate into a single-constant fix.
+- **A sampled signal is not the same as a median of the same
+  signal.**  "It uses sustained" was true of the kernel score before
+  0.4.75 -- but it used a single sample of sustained, from the
+  worst point in the curve.
 
 ## SESSION 2026-09-24 (night) -- 0.4.74: swap_score rebalance
 
