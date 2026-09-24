@@ -2248,8 +2248,9 @@ def main():
             "pts24": st.get("pts24", 0),
         })
 
-    top_id = docs[0]["id"] if docs else None
-    emit_meta(meta_rows, algs, now, primary=top_id)
+    # 0.4.71: no primary pin.  emit_meta sorts entries by
+    # instances_mean; that is the default bucket.
+    emit_meta(meta_rows, algs, now)
 
     for doc in docs:
         bid = doc["id"]
