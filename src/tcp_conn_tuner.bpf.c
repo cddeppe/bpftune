@@ -894,6 +894,22 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
              * pkts_out<=1.  Those sockets were idle; no algorithm
              * change can help them.  Same threshold the vote path
              * already uses (METRIC_MIN_UTIL_PCT). */
+            /* 0.4.72: restored.  Pass 3 picks by weighted score
+             * (rate_ema * swap_score / 256 * penalty); this gate
+             * uses raw rate_ema.  When the score makes a lower-
+             * raw-rate algorithm the leader, this vetoes the swap
+             * to it -- deliberate: a target whose capability is
+             * below the source's is not a rescue, regardless of
+             * its historical win record.  Removed in 0.4.71 on the
+             * theory that pass 3's score is sufficient; data on
+             * 2026-09-24 shows the blocked class loss rate is 15%
+             * vs 8% for swaps that pass, so the filter is real. */
+            bool rate_ok = true;
+            if (remote_host->rate_best_v > 0 &&
+                remote_host->metrics[swap_tgt].rate_ema <
+                remote_host->metrics[s].rate_ema)
+                rate_ok = false;
+
             bool util_ok = true;
             if (tp->snd_cwnd > 0 &&
                 (__u64)tp->packets_out * 100 < (__u64)tp->snd_cwnd * METRIC_MIN_UTIL_PCT)
@@ -1059,7 +1075,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                  * cubic->cubic three times then froze). */
             } else if (protected_exploring) {
                 /* exploring, not enough votes on the alg yet */
-            } else if (desperate && util_ok) {
+            } else if (desperate && rate_ok && util_ok) {
                 /* Desperate tier fires regardless of frozen. */
                 __u64 bc_fire = statep->bad_checkpoints;
                 __u64 ac = remote_host->metrics[s].metric_count;
@@ -1088,7 +1104,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                (__u32)tp->rate_app_limited,
                                (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                 }
-            } else if (slow_vs_ref && util_ok && !statep->frozen) {
+            } else if (slow_vs_ref && rate_ok && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
@@ -1136,7 +1152,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                    (__u64)(tp->snd_cwnd ? ((__u64)tp->packets_out * 100 / tp->snd_cwnd) : 0));
                     }
                 }
-            } else if (slow_vs_leader && util_ok && !statep->frozen) {
+            } else if (slow_vs_leader && rate_ok && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
                     __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
@@ -1233,6 +1249,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                  * the bad-check count so the socket
                                  * must re-demonstrate rather than
                                  * firing the moment the motion stops. */
+                                statep->bad_checkpoints = 0;
+                            } else if (!rate_ok) {
+                                /* target rate below source; skip swap */
                                 statep->bad_checkpoints = 0;
                             } else if (!util_ok) {
                                 /* socket not using window; skip swap */

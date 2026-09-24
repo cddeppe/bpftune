@@ -1,3 +1,49 @@
+bpftune (0.4.72) UNRELEASED; urgency=medium
+
+  * cgroup attach retry.  On a fast restart the previous instance's
+    cgroup binding may not have released; bpf_prog_attach returns
+    EBUSY / EEXIST and the daemon comes up active but unattached
+    (the "cgroup count 0" state hit repeatedly on 2026-09-24).
+    Three attempts, 250ms apart, ~750ms worst case.  Non-EBUSY /
+    non-EEXIST errors fail immediately as before.
+
+  * restore rate_ok.  Removed in 0.4.71 on the theory that pass 3's
+    weighted score makes the raw-rate check redundant.  Data
+    collected 2026-09-24 on the heavy host:
+
+      target rate_ema < source:  n=39   win 18%  loss 15%
+      target rate_ema >= source: n=228  win 25%  loss  8%
+
+    The blocked class has roughly double the loss rate of the rest,
+    so the guard is filtering real failures.  Back in place: refuse
+    a swap when the target's raw capability is below the source's,
+    regardless of the target's historical score.
+
+  * fix 0.4.70's second-best rate target.  Pass 3 computed rate_2i
+    / rate_2v but the result block only wrote new_rbi / new_rbv;
+    rate_second_* stayed 0 in the map and the vote-path fallback
+    check (rate_second_v != 0) was permanently false.  The 0.4.70
+    fallback has not fired once.  Now persists correctly.
+
+    No STATE_VERSION change for any of the three: all fields exist,
+    no schema change, map survives restart.
+
+  * split STATE_VERSION into STATE_LAYOUT + STATE_EPOCH.
+    Semantics-only releases used to wipe the map: 0.4.68, 0.4.69,
+    and 0.4.71 all bumped the single version without any struct
+    change, and the map spent ~2h rebuilding from zero every time.
+    From now on:
+      - layout compatibility is enforced by the key_size /
+        value_size fields already in the header; a struct change
+        still cannot load
+      - semantics changes bump STATE_EPOCH, and the file loads
+        with migrate_remote_host() run per entry to fix up only
+        the affected fields -- swap_score, metric_value,
+        metric_count, best_i/best_v, and instances all survive
+    No cost this release: on-disk epoch is 0 (was 'reserved'),
+    so 0.4.72 migrates once and rebuilds rate_ema over ~16 votes.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 14:30:00 +0000
 bpftune (0.4.71) UNRELEASED; urgency=medium
 
   * split rate_delivered into capability and health; remove rate_ok.
@@ -32,6 +78,7 @@ bpftune (0.4.71) UNRELEASED; urgency=medium
     sockets on the higher-rate algorithm could not be rescued.
 
     STATE_VERSION 18 -> 19 (rate_ema semantics changed).
+
 
  -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 10:00:00 +0000
 

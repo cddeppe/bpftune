@@ -423,8 +423,9 @@ static void reanchor_best(int map_fd)
 		    }
 
 		    new_rbi = (rate_bv == 0) ? 0 : rate_bi;
-
 		    new_rbv = rate_bv;
+		    new_r2i = (rate_2v == 0) ? 0 : rate_2i;
+		    new_r2v = rate_2v;
 
 		}
 
@@ -603,16 +604,60 @@ static void stop_reanchor(void)
 
 #define STATE_DIR     "/var/lib/bpftune"
 #define STATE_PATH    STATE_DIR "/tcp_conn_tuner.state"
+/* 0.4.72: split the single STATE_VERSION into two independent
+ * numbers.
+ *
+ *   STATE_LAYOUT  bumped only when struct remote_host changes size
+ *                 or shape.  The restore path enforces layout by
+ *                 comparing hdr.key_size / hdr.value_size against
+ *                 sizeof at runtime, which catches any real layout
+ *                 change; this number is informational for logs.
+ *
+ *   STATE_EPOCH   bumped when the MEANING of a field changes but
+ *                 the layout does not.  On load, an older file is
+ *                 accepted and migrate_remote_host() runs per entry
+ *                 to fix up the affected fields.  Everything not
+ *                 redefined is preserved -- swap_score, metric_value,
+ *                 metric_count, best_i/best_v, instances.  Only the
+ *                 fields whose units or source changed get reset.
+ *
+ * Motivation: 0.4.68/0.4.69/0.4.70/0.4.71 all bumped the old
+ * STATE_VERSION.  Three of those were semantics-only, so the map
+ * was wiped each time and spent ~2h rebuilding from zero.  The
+ * naive version split keeps paying that tax forever. */
 #define STATE_MAGIC   0x42504654u
-#define STATE_VERSION 19
+#define STATE_LAYOUT  1
+#define STATE_EPOCH   1
 struct state_header {
         __u32 magic;
-        __u32 version;
-        __u32 key_size;
-        __u32 value_size;
+        __u32 layout_version;   /* informational; not enforced */
+        __u32 key_size;         /* enforced: must match sizeof(key) */
+        __u32 value_size;       /* enforced: must match sizeof(val) */
         __u32 num_entries;
-        __u32 reserved;
+        __u32 epoch;            /* semantics epoch; triggers migrate */
 };
+
+/* 0.4.72: per-entry semantics migration.  Called when the file's
+ * epoch is behind STATE_EPOCH.  The struct layout is unchanged
+ * across epochs -- only the meaning of individual fields.  Resets
+ * the affected fields to a neutral state; everything else the
+ * bucket has learned is preserved. */
+static void migrate_remote_host(struct remote_host *r, __u32 from_epoch)
+{
+        int i;
+
+        if (from_epoch < 1) {
+                /* Epoch 0 -> 1: rate_ema was redefined in 0.4.71.
+                 * Values in an epoch-0 file are byte-over-time; the
+                 * current code expects burst.  Wrong units; zero it
+                 * so it rebuilds from the new source within ~16
+                 * votes.  swap_score, metric_value, metric_count,
+                 * best_i/best_v, instances: preserved. */
+                for (i = 0; i < NUM_TCP_CONN_METRICS; i++)
+                        r->metrics[i].rate_ema = 0;
+        }
+        /* Future epochs: add a block here for each. */
+}
 
 static int restore_remote_host_map(struct bpftuner *tuner)
 {
@@ -636,12 +681,26 @@ static int restore_remote_host_map(struct bpftuner *tuner)
                 bpftune_log(LOG_ERR, "tcp_conn_tuner: %s: truncated header\n", STATE_PATH);
                 err = -1; goto out;
         }
-        if (hdr.magic != STATE_MAGIC || hdr.version != STATE_VERSION ||
-            hdr.key_size != sizeof(key) || hdr.value_size != sizeof(val)) {
+        /* 0.4.72: layout compatibility is enforced by the two size
+         * fields -- a struct change cannot pass this check.  The
+         * epoch is NOT enforced: a semantics-only change loads the
+         * file and runs migrate_remote_host per entry. */
+        if (hdr.magic != STATE_MAGIC ||
+            hdr.key_size != sizeof(key) ||
+            hdr.value_size != sizeof(val)) {
                 bpftune_log(LOG_ERR,
-                            "tcp_conn_tuner: %s: stale or mismatched state (magic=%x ver=%u); ignoring\n",
-                            STATE_PATH, hdr.magic, hdr.version);
+                            "tcp_conn_tuner: %s: incompatible state "
+                            "(magic=%x key=%u/%zu val=%u/%zu); ignoring\n",
+                            STATE_PATH, hdr.magic,
+                            hdr.key_size, sizeof(key),
+                            hdr.value_size, sizeof(val));
                 err = -1; goto out;
+        }
+        if (hdr.epoch != STATE_EPOCH) {
+                bpftune_log(LOG_INFO,
+                            "tcp_conn_tuner: %s: migrating state from "
+                            "epoch %u to %u\n",
+                            STATE_PATH, hdr.epoch, (__u32)STATE_EPOCH);
         }
 
         for (i = 0; i < hdr.num_entries; i++) {
@@ -651,6 +710,8 @@ static int restore_remote_host_map(struct bpftuner *tuner)
                                     STATE_PATH, i);
                         err = -1; goto out;
                 }
+                if (hdr.epoch != STATE_EPOCH)
+                        migrate_remote_host(&val, hdr.epoch);
                 if (bpf_map_update_elem(map_fd, &key, &val, BPF_ANY))
                         bpftune_log(LOG_DEBUG, "tcp_conn_tuner: restore: update failed for entry %u\n", i);
         }
@@ -665,7 +726,9 @@ out:
 static int save_remote_host_map(struct bpftuner *tuner)
 {
         struct bpf_map *map = bpftuner_bpf_map_get(tcp_conn, tuner, remote_host_map);
-        struct state_header hdr = { .magic = STATE_MAGIC, .version = STATE_VERSION };
+        struct state_header hdr = { .magic = STATE_MAGIC,
+                                    .layout_version = STATE_LAYOUT,
+                                    .epoch = STATE_EPOCH };
         struct in6_addr key, next_key;
         struct remote_host val;
         void *prev = NULL;

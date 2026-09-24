@@ -392,11 +392,35 @@ int bpftuner_cgroup_attach(struct bpftuner *tuner, const char *prog_name,
 	}
 	prog_fd = bpf_program__fd(prog);
 
-	if (bpf_prog_attach(prog_fd, cgroup_fd, attach_type,
-			    BPF_F_ALLOW_MULTI)) {
-		err = -errno;
-		bpftune_log(LOG_ERR, "cannot attach '%s' to cgroup '%s': %s\n",
-			    prog_name, cgroup_dir, strerror(-err));
+	/* 0.4.72: retry the attach.  On a fast restart the previous
+	 * instance's cgroup binding may not have released yet and
+	 * bpf_prog_attach returns EBUSY / EEXIST.  Without a retry
+	 * the daemon comes up active but unattached -- the "cgroup
+	 * count 0" state observed repeatedly on 2026-09-24.  Three
+	 * attempts, 250ms apart, ~750ms worst case. */
+	{
+		int attempt;
+		for (attempt = 1; attempt <= 3; attempt++) {
+			if (!bpf_prog_attach(prog_fd, cgroup_fd, attach_type,
+			                     BPF_F_ALLOW_MULTI)) {
+				err = 0;
+				break;
+			}
+			err = -errno;
+			if (err != -EBUSY && err != -EEXIST)
+				break;
+			if (attempt < 3) {
+				bpftune_log(LOG_INFO,
+				            "attach '%s' busy, retry %d/3\n",
+				            prog_name, attempt);
+				usleep(250000);
+			}
+		}
+		if (err) {
+			bpftune_log(LOG_ERR,
+			            "cannot attach '%s' to cgroup '%s': %s\n",
+			            prog_name, cgroup_dir, strerror(-err));
+		}
 	}
 out:
 	bpftune_cap_drop();
