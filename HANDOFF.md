@@ -9,21 +9,367 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `3e621b1` (0.4.45)
-- Latest release: 0.4.45
+- Latest commit: `fac0eda` (0.4.71)
+- Latest release: 0.4.71
+- Branches: `main` = tuner only; `dashboard` = dashboard only.
+  Do not commit dashboard files to main or vice versa.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.45** | capture -> /var/log/bpftune-met-YYYY-MM-DD.log |
-| Builder | amd64 | **0.4.45** | runs git push origin |
-| Target | amd64 | **0.4.45** | mostly idle |
-| Builder | aarch64 | **0.4.45** | builds arm64 |
-| shared mount: /mnt/backup/ holds .debs |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.71** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.71** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.71** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.71** | instance-20250225-1017; builds arm64 |
+| shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-24 -- signal split, branch separation, 0.4.64 to 0.4.71
+
+The 0.4.46 -> 0.4.63 arc tuned swap-target scoring.  Nine releases,
+each reasonable in isolation, none of which moved a user-visible
+number.  This session found why, fixed it, and in the process
+discovered that the "fix" created a second problem -- which required
+tearing rate_ema apart into two signals with two jobs.  Also split
+the tuner and dashboard repos onto separate branches.
+
+### 0.4.46 -> 0.4.63 -- the target-tuning arc (brief)
+
+Detailed in release pages.  Timeline:
+
+- 0.4.46/47/48: midsamp alg field, dest= on swap/freeze printks,
+  weekend data-collection instrumentation
+- 0.4.49: app_lim + util on swapctx; block downgrade swaps
+  (this is `rate_ok`, removed in 0.4.71)
+- 0.4.50: skip swaps on sockets not using their window
+- 0.4.51: d=2 tier -- slow-vs-reference
+- 0.4.52: d=3 tier -- slow-vs-leader on rate
+- 0.4.53: srate printk on every vote
+- 0.4.54: trust floor, explore protection, rate trigger
+- 0.4.55: IPv4 /16 bucket merge; swap_score field reserved
+- 0.4.56: fix 0.4.55 vote-path regression; swap_score feedback
+  (pass 3 becomes rate_ema * swap_score / 256)
+- 0.4.57: skip no-op swaps to the socket's own algorithm
+  (the `swap_tgt == s` branch; given a fallback in 0.4.70)
+- 0.4.58: fail-streak trust on swap targets
+- 0.4.59: null_streak (3 nulls exclude target)
+- 0.4.60: asymmetric swap_score update
+- 0.4.61: soft penalty replaces hard exclusions
+- 0.4.62: initialize swap_score to neutral on first contact
+- 0.4.63: reanchor initializes stale swap_score entries
+
+None of these moved the client-facing win rate.  They were all
+variations on "how should the score update."  The score itself was
+learning from metric outcomes that don't predict throughput.  That
+diagnosis is under 0.4.71 below.
+
+### 0.4.64 -- port-based origin gate (regression) + exploration knob
+
+Two changes, bundled because both affect which population the
+swap engine acts on.
+
+**Exploration knob.**  `bpftune --exp=N` (0-100) reads and writes
+a pinned `tuner_config_map` that BPF reads at ESTABLISHED.
+Default 5.  The 0.4.22 tight-bucket boost is preserved; at
+exp=100 it is a no-op.  Live read; no daemon restart.  Verified
+working on all four hosts.  This is the knob for the 100%
+explore experiment.
+
+**Port-based origin gate.**  Replaced the 0.4.42 `data_segs`
+direction heuristic with:
+
+    {
+        __u32 rp = bpf_ntohl(ops->remote_port);
+        if (rp == 443 || rp == 80)
+            return 1;
+    }
+
+Intent: filter VPS -> YouTube (remote_port = 443); leave
+VPS -> home alone.  Home is the client; the VPS is the server;
+client-facing socket has local_port = 443, remote_port = viewer
+ephemeral.  On paper the gate is safe.
+
+**Empirically it was not.**  Swap rate dropped from ~8.5/h to
+~3.5-6/h after 0.4.64, and recovered to ~8.5/h after 0.4.67.
+The mechanism was not fully traced (see "Open questions").
+
+### 0.4.65 -- swap_score attribution fixes
+
+Two bugs in how the score learned from outcomes.
+
+1. `score_pending_swap` fires at first vote >= T+60 and reads the
+   current rate.  If the socket had swapped off the target first,
+   the rate belonged to the replacement algorithm.  The target was
+   scored on the wrong algorithm.
+
+2. When a new swap replaced an earlier pending one, the earlier
+   target's outcome was dropped -- the "socket rejected the
+   target" case, which is the strongest negative signal.
+
+Fix: pass `cur_alg` into score_pending_swap; force loss-class when
+it doesn't match.  Add `score_pending_rejected()`, called from all
+seven swap sites, scoring the outgoing target as loss-class
+immediately.  No struct or STATE_VERSION change.
+
+Verified: rejections fire.  But only ~8% of swaps are inside the
+10-60s window (inter-swap delta distribution), so the helper is
+rare on this workload.
+
+### 0.4.66 -- protection scales with explore rate (no-op)
+
+`EXPLORE_PROTECT_VOTES` was a fixed 3-vote window blocking a fresh
+socket from being swapped.  Correct at 5% (rare pick needs to
+prove itself); theoretically wrong at 100% (every socket is a
+pick).  Added `explore_protect_votes()` returning 3 at pct<=5,
+ramping linearly to 0 at pct>=100.
+
+Shipped, but **turned out to be a no-op**: the assumption that
+protection was blocking swaps at 100% didn't survive the data.
+Swap rate was flat before and after.
+
+### 0.4.67 -- revert 0.4.64 port gate
+
+Empirical regression (swap rate 8.5 -> 3.5-6) tied to 0.4.64.
+Back to the 0.4.42 direction heuristic:
+
+    if ((__u64)tp->data_segs_out * 4 < (__u64)tp->data_segs_in)
+        return 1;
+
+It leaks ~9% (measured on the 0.4.63 window) but does not drop the
+client-facing population.  Any future direction test MUST be
+validated against this topology: remote_port is not a reliable
+discriminator when the VPS is the server on 443.
+
+After 0.4.67 the swap engine resumed.  At 100% explore on the
+heavy host: ~50 swaps/h, last swap usually <2min old.
+
+### 0.4.68 -- sustained rate from segment movement
+
+`tp->rate_delivered / tp->rate_interval_us` is a burst estimate
+that updates on ACK arrival and can hold minutes-old values.
+Measured on heavy 2026-09-23, comparing to actual segment
+movement on the same socket over the same interval:
+
+    cookie 67545  actual  168 Kbps   reported  9.6-42.8 Mbps  (57-250x high)
+    cookie 67483  actual  1.8 Mbps   reported  38 Mbps        (21x high)
+    cookie 67463  actual  2.9 KB/s   reported  7.2 Mbps       (2500x high)
+    cookie 67437  actual  200 Kbps   reported  7.3 Mbps       (37x high)
+
+The trigger reads this; a slow socket reads as fast, swaps don't
+fire.  Fix: rate = segments moved / wall clock over >=500ms
+(`conn_state.rate_win_ts_ns` / `rate_win_segs`).
+
+### 0.4.69 -- byte-accurate rate
+
+0.4.68 used `segments * mss`.  `tcp_sock.segs_out` counts a GSO
+super-segment as one segment, so the byte total was undercounted
+by the GSO factor.  Switched to `bytes_acked + bytes_received`
+from `bpf_tcp_sock` -- real byte counters, retransmit-excluded.
+Same 500ms wall-clock window.
+
+**This is where the leaderboard collapsed.**  After 0.4.69, every
+algorithm's `rate_ema` landed in the same 12-30 band regardless of
+algorithm.  Reason: the app (YouTube) is the source, not the
+algorithm.  Byte-over-time measures what the ABR fed the socket,
+which is roughly the same for every algorithm.  The capability
+signal the leaderboard needs was gone.
+
+The number is not wrong -- it measures current health correctly.
+But pass 3 needs "how fast can this algorithm go when pushed,"
+which is a different question.
+
+### 0.4.70 -- second-best fallback on the rate target
+
+0.4.45 changed the swap target source from metric (which had a
+second-best fallback predating the fork) to `rate_ema` (no
+fallback).  Then 0.4.57 added a skip when `swap_tgt == s`.  Result:
+a socket already on the rate leader had nowhere to go even when
+the leader was failing for that socket.  Cookie 68810 (0.4.69):
+on vegas at 1.35 Mbps while vegas rate_ema was 81 (8.1 MB/s); no
+swap fired on a socket 60x below its algorithm's own EMA.
+
+Fix: pass 3 tracks second-best by the same weighted score; the
+vote path falls back to it when the socket is already on the
+leader.  STATE_VERSION 17 -> 18.  Verified firing on heavy:
+`swap cookie=69435 from=7 to=0`.
+
+### 0.4.71 -- split rate_delivered into capability + health; remove rate_ok
+
+Two locals, two jobs:
+
+- `sustained_bps`  = bytes_acked + bytes_received / elapsed (health)
+- `rate_delivered` = burst estimate (tp->rate_delivered * mss /
+  rate_interval_us)                                        (capability)
+
+Health feeds `statep->last_rate_bps` (util gate, swap trigger),
+`score_pending_swap` (outcome attribution), and `tcp_metric_calc`.
+Capability feeds `rate_ema` (pass-3 target pick) and the proof
+counters.  The two never need to agree.
+
+Also removed `rate_ok` (added 0.4.49).  Pass 3 already enforces
+MIN_LEADER_TRUST, bad_streak / null_streak penalties, and the
+score term.  `rate_ok` compared raw rate_ema -- a different basis
+than pass 3's weighted score.  When the score ranked a lower-raw-
+rate algorithm as leader (veno) `rate_ok` vetoed the picker and
+sockets on the higher-rate algorithm could not be rescued.
+
+STATE_VERSION 18 -> 19.  Verifier exit 0 on amd64.
+
+### What this session established
+
+**1. The swap engine works.**  Client-facing sustained outcome
+2.94:1 on n=262 pre-0.4.71; origin-facing loses 5x as often
+(26% loss vs 5%).  The direction classification (rport==443 = 
+origin, else client) is correct; the port-based IMPLEMENTATION of
+the gate was the mistake.
+
+**2. The metric ruler and the sustained ruler disagree.**  Per-
+swap agreement between the CSV `outcome` column (metric-based) and
+a byte-based sustained ratio is ~56%.  The metric ruler hides
+~20% of real losses as "nulls."  Every "win% ~24%" reading since
+0.4.30 was the metric ruler; the sustained ruler reads ~43% win /
+15% loss on the same population.
+
+**3. The `rate=` field in the met printk is `rate_term`, not a
+rate.**  It is the composite metric's rate PENALTY, capped at
+8,000,000.  This was misread for most of the session as bytes/sec
+and produced a false "37x to 2500x divergence" finding that cost
+hours.  Do not make this mistake: read `srate=` for rate, `val=`
+for metric; `rate=` is a term, not a value.
+
+**4. Score learning was starved of valid input.**  Two causes:
+the 0.4.65 attribution bug (rate reads from wrong algorithm on
+reject), and the metric-vs-throughput disagreement.  Both fixed;
+whether the score now predicts is open.
+
+**5. Signal separation is the answer, not weight tuning.**  Pass
+3 picks targets by capability.  Trigger fires on health.
+`rate_ema` carries capability.  `last_rate_bps` carries health.
+
+### What this session didn't fully explain
+
+- **The port-gate mechanism.**  Empirical regression is clear
+  (rate dropped after 0.4.64, recovered after 0.4.67) but the
+  exact socket class that got filtered was never traced.  Home
+  bucket showed 0% rport=443 in dir-check on the port-gate build,
+  which reads as "not filtered."  Reconciliation: met lines only
+  cover votes that survived the gate, so dir-check post-0.4.64
+  was observing the post-filter population.  Pre-filter
+  population was not measured.
+
+- **Whether 0.4.71 improves user-visible throughput.**  Design is
+  sound.  Evidence that it fixes the specific stuck-socket case is
+  a single confirmed swap (69435).  Sustained win% moved from
+  42.7% to 46.1% (heavy, n=262 -> 293) -- within noise.  A full
+  day at 100% explore is the next measurement.
+
+- **`swapscore-reject` fires ~once per hour.**  Added in 0.4.65
+  as "the strongest negative signal," but 92% of swaps are outside
+  the 10-60s window that arms it.  Not a bug; workload rarely
+  triggers it.
+
+### Structural changes
+
+**Branch separation.**  `main` is tuner-only.  `dashboard` is a
+separate branch on the same origin.  The dashboard had been
+pushing to `main`, overwriting tags and reinstalling over the
+tuner's own commits.  Rule: tuner pushes to `main`, dashboard
+pushes to `dashboard`; every host's `.git/config` tracks the
+right one.  Any host re-cloning must do the same.
+
+**Installer moved off main.**  `tools/bpftune-dashboard-install.py`,
+`tools/bpftune-deploy-all.sh`, and `tools/patch-swaps-v3.py` were
+removed from `main` (commit 3b587e5) and live on `dashboard` only.
+The installer's embedded `RENDERER_SRC` was silently 64KB behind
+the deployed renderer (64335 -> 76879 chars) -- a reinstall would
+have reverted the streaming rewrite, default-bucket sort, primary-
+pin removal, and localStorage persistence.  Synced at e31ea75.
+
+**Collector `_lookup_ema` projected to /16.**  Map keys have been
+`X.Y.0.0` since 0.4.55; the lookup used the full IP, so `f_ema`
+and `t_ema` in `swaps.csv` were empty on every swap ever recorded.
+Cosmetic (nothing reads them) but the analysis cost was real.
+Fixed in installer source and on all four hosts.
+
+### Open items
+
+1. **0.4.72 cgroup attach retry.**  `bpftuner_cgroup_attach` in
+   `src/libbpftune.c` fails silently on restart when the previous
+   instance hasn't released yet.  Symptom: `systemctl is-active`
+   says active, `bpftool cgroup tree | grep -c conn_tuner` says
+   `0`.  Hit at least four times on 2026-09-24.  Fix: retry 2-3
+   times with a short sleep on failure; log the final result.
+   ~10 lines.  First item in 0.4.72.
+
+2. **Watch `rate_ok` removal.**  If a class of bad swaps emerges
+   that MIN_LEADER_TRUST + score decay don't catch, `rate_ok`
+   comes back with a proper basis (weighted score, not raw
+   rate_ema).
+
+3. **Sustained outcome over a full day at 100% explore.**
+   Client-facing win/loss ratio, n >= 1000.
+
+4. **Prefix bucketing for mobile IPv6.**  Not started.
+
+5. **Renderer memory on old hosts.**  Streaming `aggregate_all`
+   is on heavy (138 MB peak, no OOM).  Any host still running
+   the older tail-read renderer should be checked for
+   `aggregate_all`.
+
+6. **GitHub release pages for 0.4.30 through 0.4.36.**  Missing;
+   cosmetic.
+
+### Hard facts (verified this session)
+
+- Pass 3: `rate_ema * swap_score / 256 * 16 / (16 + bad*4 + null*2)`.
+  `rate_ema` is capability, `swap_score` is outcome history.
+- `met` lines carry `rate=<rate_term>`, not a rate.  `srate=`
+  lines carry the real thing.
+- Client-facing win:loss ~2.94:1 on sustained, n=262 (pre-0.4.71).
+  Metric ruler reads ~4:1 on the same population.  The metric
+  ruler hides losses.
+- The origin gate filters VPS -> YouTube.  A cwnd reset on a
+  receiving socket does nothing useful and doubles the loss rate
+  on the ~9% that leaks.
+- 100% explore is not an anomaly; it is the design condition
+  under which the tuner's ranking can be measured on unbiased
+  samples.
+
+### Do not re-derive
+
+- `rate=` in the met printk is not a rate.  It is `rate_term`.
+- `rate_ema` sourced from bytes-over-time collapses every
+  algorithm to the same value on this workload.  Capability
+  requires the burst estimator.
+- `rate_ok` was a second picker using a different metric.  Do
+  not reintroduce it as a raw-rate comparison.
+- The port-based origin gate does not work for this topology.
+  The `data_segs` heuristic is the working version even though
+  it leaks.
+- No user-visible improvement has been demonstrated from the
+  0.4.46 -> 0.4.63 target-tuning arc.
+
+### Working style additions
+
+- **Never `git push` from more than one host without `git pull
+  --rebase` first.**  Two writers on one branch move refs under
+  each other's feet.  Cost of not doing it: an entire session
+  chasing a stale arm64 build because `origin/main` had been
+  force-pushed with dashboard commits.
+- **Check `git branch -vv` before shipping.**  A commit on the
+  wrong branch (0.4.71 landed on `dashboard` briefly) is easy to
+  miss and creates a recovery puzzle.
+- **Every dashboard file is DEPLOYED under
+  `/opt/bpftune-dashboard/bin/`, not under the git checkout.**
+  Patching the checkout without copying to the deployed path
+  means the cron-run program doesn't see the change.
+- **CHECK `debian/changelog` VERSION BEFORE BUILDING.**  Same
+  lesson as 0.4.64; still got missed on the first 0.4.71 build.
+- **`rate=` in met printk is `rate_term`, not a rate.**  If an
+  analysis claims a rate divergence, check which field was read.
 
 ## SESSION 2026-09-18 (morning) — 0.4.45 swap target uses rate EMA
 
