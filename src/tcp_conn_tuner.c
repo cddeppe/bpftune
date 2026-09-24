@@ -646,16 +646,23 @@ static void migrate_remote_host(struct remote_host *r, __u32 from_epoch)
 {
         int i;
 
-        if (from_epoch < 1) {
-                /* Epoch 0 -> 1: rate_ema was redefined in 0.4.71.
-                 * Values in an epoch-0 file are byte-over-time; the
-                 * current code expects burst.  Wrong units; zero it
-                 * so it rebuilds from the new source within ~16
-                 * votes.  swap_score, metric_value, metric_count,
-                 * best_i/best_v, instances: preserved. */
-                for (i = 0; i < NUM_TCP_CONN_METRICS; i++)
-                        r->metrics[i].rate_ema = 0;
-        }
+        /* Epoch 0 -> 1: rate_ema's source changed in 0.4.71 (byte-
+         * over-time -> burst).  We deliberately do NOTHING here.
+         *
+         * Rationale: the whole point of the layout/epoch split is
+         * that a semantics change must not empty the map.  Zeroing
+         * rate_ema does exactly that -- pass 3 skips all algorithms
+         * with rv == 0, so the leaderboard takes ~1h to rebuild.
+         *
+         * A file from 0.4.71 already has burst-sourced values: they
+         * are correct and should be kept.  A file from 0.4.69/0.4.70
+         * has byte-sourced values (12-30 range); wrong units, but
+         * they wash out over ~16 votes per algorithm when new votes
+         * land -- which is the same decay that would have applied to
+         * the reset anyway.  Trusting the values is strictly better
+         * than zeroing them. */
+        (void)from_epoch;
+        (void)i;
         /* Future epochs: add a block here for each. */
 }
 

@@ -1,3 +1,21 @@
+bpftune (0.4.73) UNRELEASED; urgency=medium
+
+  * fix 0.4.72's epoch migration.  The epoch-0 -> epoch-1 branch
+    zeroed rate_ema for every algorithm on load, which emptied the
+    leaderboard for ~1h.  That is the exact failure the layout/epoch
+    split was introduced to prevent.  Migration is now a no-op for
+    this transition: values from any prior file are trusted, and
+    normal vote decay replaces them if their source had changed.
+
+    0.4.72 shipped to all four hosts.  Its migration ran on each
+    restart, and the on-disk map was overwritten on fini.  The
+    rate_ema values that existed before 0.4.72 are gone; the
+    leaderboard is rebuilding from votes cast on 0.4.72 and will
+    not be restored by installing 0.4.73.  0.4.73 prevents the
+    same wipe from happening again at the next semantics change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Thu, 24 Sep 2026 15:30:00 +0000
+
 bpftune (0.4.72) UNRELEASED; urgency=medium
 
   * cgroup attach retry.  On a fast restart the previous instance's
