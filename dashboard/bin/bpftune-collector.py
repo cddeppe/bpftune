@@ -69,6 +69,13 @@ SWAP_FIELDS = [
 ]
 SRATE_FIELDS = ["collected_ts", "boot_ts", "cookie", "alg", "srate"]
 
+# 0.4.76-live: rolling JSON file the dashboard reads on a fast cadence.
+# Mirrors every row that lands in swaps.csv.  No effect on the CSV.
+DATA_DIR = HIST / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SWAPS_LIVE = DATA_DIR / "swaps-live.json"
+LIVE_MAX = 100
+
 SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
     r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
@@ -122,10 +129,56 @@ def _csv_header(path, default_cols):
     return h
 
 
+# 0.4.76-live: rolling in-memory ring of the last LIVE_MAX rows.
+# Loaded lazily at first append; flushed once by main() after the
+# CSV buffers flush.  Bounded: LIVE_MAX * ~400B = ~40KB.
+_LIVE_RING = None
+_LIVE_DIRTY = False
+
+
+def _live_load():
+    global _LIVE_RING
+    if _LIVE_RING is not None:
+        return
+    _LIVE_RING = []
+    if SWAPS_LIVE.exists():
+        try:
+            with open(SWAPS_LIVE) as f:
+                d = json.load(f)
+            if isinstance(d, list):
+                _LIVE_RING = d[-LIVE_MAX:]
+        except Exception:
+            _LIVE_RING = []
+
+
+def _live_append(row):
+    global _LIVE_DIRTY
+    _live_load()
+    _LIVE_RING.append(row)
+    del _LIVE_RING[:-LIVE_MAX]
+    _LIVE_DIRTY = True
+
+
+def _live_flush():
+    global _LIVE_DIRTY
+    if not _LIVE_DIRTY or _LIVE_RING is None:
+        return
+    tmp = str(SWAPS_LIVE) + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(_LIVE_RING, f, separators=(",", ":"))
+        os.replace(tmp, str(SWAPS_LIVE))
+        _LIVE_DIRTY = False
+    except Exception as e:
+        print("collector: live flush failed: %s" % e, file=sys.stderr)
+
+
 def buffer_csv(path, row, fields=None):
     key = str(path)
     cols = _csv_header(key, fields or list(row.keys()))
     _CSV_BUFFERS.setdefault(key, []).append([row.get(c, "") for c in cols])
+    if key == str(SWAPS_CSV):
+        _live_append(row)
 
 
 def flush_csv_buffers():
@@ -645,6 +698,7 @@ def main():
     nb = collect_buckets(ts_epoch, map_data)
     ns = collect_swaps(map_data)
     flush_csv_buffers()
+    _live_flush()
     doc = run_cli_snapshot(map_raw)
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
