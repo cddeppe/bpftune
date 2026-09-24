@@ -9,23 +9,149 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: `fac0eda` (0.4.71)
-- Latest release: 0.4.71
+- Latest commit: `85fdbd3` (0.4.73)
+- Latest release: 0.4.73
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
   Do not commit dashboard files to main or vice versa.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.71** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.71** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.71** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.71** | instance-20250225-1017; builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.73** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.73** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.73** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.73** | instance-20250225-1017; builds arm64 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+
+## SESSION 2026-09-24 (evening) -- 0.4.72 and 0.4.73: fixes + state-version split
+
+Follow-on to the morning session.  Four changes across two releases,
+one of which was wrong and got fixed in the next release.  Net outcome:
+the tuner is in a better state than it was, plus a real migration bug
+that cost the map and shouldn't have shipped.
+
+### 0.4.72 -- three fixes + one new feature
+
+**A. cgroup attach retry** (src/libbpftune.c).  On a fast restart the
+previous instance's cgroup binding has not been released; bpf_prog_attach
+returns EBUSY / EEXIST and the daemon comes up active but unattached --
+the "cgroup count 0" state that showed up repeatedly on 2026-09-24.
+Three attempts, 250ms apart, ~750ms worst case.  Non-EBUSY/non-EEXIST
+still fail immediately.
+
+**B. rate_ok restored.**  Removed in 0.4.71 on the reasoning that pass-3's
+weighted score makes the raw-rate check redundant.  That reasoning was
+wrong.  Data collected on the 267 swaps whose f_ema/t_ema are populated
+(they only started populating after the collector fix earlier in the day):
+
+    target rate_ema < source:  n= 39   win 18%   loss 15%
+    target rate_ema >= source: n=228   win 25%   loss  8%
+
+The blocked class has ~2x the loss rate of the rest.  The guard is
+filtering real failures.  Restored: refuse the swap when the target's
+raw capability is below the source's, regardless of the target's
+historical score.
+
+Restoration caveat: pass 3 rewards history (swap_score) not capability,
+so a target that scored well once can outrank a target that is
+currently faster.  The raw-rate floor catches that.
+
+**C. Fix 0.4.70's second-best fallback.**  Pass 3 computed rate_2i /
+rate_2v but the result block only wrote new_rbi / new_rbv.  rate_second_*
+has been 0 in the map since 0.4.70 shipped, so the vote-path check
+(rate_second_v != 0) was permanently false.  The second-best fallback
+has never fired.  Now writes correctly.
+
+**D. Split STATE_VERSION into STATE_LAYOUT + STATE_EPOCH.**  The single
+version number was doing two jobs: guarding struct layout (real) and
+signalling semantics changes (not real).  0.4.68, 0.4.69, and 0.4.71
+all bumped it without any struct change; each wipe cost ~2h of
+rebuild-from-zero leaderboard.  Split:
+  - layout guarded at load by hdr.key_size / hdr.value_size; a struct
+    change cannot load
+  - semantics changes bump STATE_EPOCH; the file loads and runs
+    migrate_remote_host() per entry, preserving swap_score,
+    metric_value, metric_count, best_i/best_v, instances
+No cost this release -- on-disk epoch was 0 (was the old reserved u32),
+so 0.4.72 migrated once.
+
+### 0.4.73 -- fix the epoch migration 0.4.72 shipped with
+
+0.4.72's migration for epoch 0 -> 1 zeroed rate_ema for every algorithm
+on load.  That emptied the leaderboard for ~1h -- the exact failure the
+layout/epoch split exists to prevent.  The bug shipped to all four
+hosts; each restart overwrote the on-disk state with the wiped map.
+
+0.4.73 makes the epoch 0 -> 1 migration a no-op.  Rationale: a file
+from 0.4.71 already has burst-sourced rate_ema (the correct units);
+keep it.  A file from 0.4.69/0.4.70 has byte-sourced values (12-30
+range, wrong units) but they wash out over ~16 votes per algorithm --
+the same decay the reset would have applied only slower.
+
+**What was lost:** the rate_ema history that existed before 0.4.72 is
+gone.  The leaderboard on all four hosts is rebuilding from votes cast
+since 0.4.72 was installed.  As of the audit, only htcp had nonzero
+rate_ema (257); the other 15 algorithms were still at 0 because the
+util gate (METRIC_MIN_UTIL_PCT=10) skips most votes on this workload.
+Until at least one more algorithm clears the util gate at nonzero rate,
+rate_second_v stays 0 and 0.4.70's fallback is still unreachable.
+
+### Verified this session
+
+- 0.4.72 and 0.4.73 both have release pages with amd64 and arm64 debs.
+- All four hosts on 0.4.73, cgroup count 2, --exp=100.
+- The state-file code was read end-to-end before 0.4.73 shipped: header
+  struct byte-compatible with 0.4.71's, size checks intact, callers
+  unchanged, no leftover STATE_VERSION references, static assert on
+  struct remote_host size present.
+- 0.4.72's downgrade safety: an old 0.4.71 binary loading a 0.4.73 file
+  sees hdr.version = STATE_LAYOUT = 1 vs STATE_VERSION = 19, rejects.
+  Correct -- new files can't be read by older code.
+
+### Open items
+
+1. Rebuild is in progress on all four hosts.  Check the map in 2-3h.
+   If most algorithms still show rate_ema=0, the util gate is
+   over-filtering on this workload and needs its own investigation.
+2. The util-gate-limited rebuild itself is a real signal: on a
+   YouTube-forward workload most votes are app-limited, so rebuilding
+   a per-algorithm EMA is slow.  Whether that is acceptable for normal
+   operation, or whether rate_ema needs a source that isn't util-gated,
+   is a design question.
+3. IPv6 prefix bucketing for mobile-carrier rotation: not done, not
+   measured, low priority.
+4. The dashboard repo has its own duplicate-constant issue in the
+   renderer (MIN_BUCKET_ROWS and MAX_ROWS_PER_BUCKET defined twice).
+   Cosmetic; second definition wins.
+
+### Working-style additions from this session
+
+- **Never write an anchor from memory or from vision.**  The `sed -n
+  'A,Bp' file` output collapses tabs and spaces; every patch this
+  session that failed to apply failed because the anchor was written
+  from that view rather than from `cat -A`.  Always `cat -A` first,
+  then translate `^I` -> `\t` in Python.
+- **A migration branch on the state file must be tested against the
+  file the fleet actually has on disk, not just what the code thinks
+  is there.**  0.4.72's migration looked correct in isolation; it was
+  obviously wrong the moment you asked "what is in rate_ema right now
+  and what should be there after the migration runs".
+- **Fix the current problem; do not also ship the next feature in the
+  same release.**  0.4.72 bundled three well-understood fixes with a
+  novel state-format change; when the novel change was wrong, the
+  correct move (revert just that) was awkward because the good changes
+  were already in the same deb.  Split would have cost one more build
+  and one less full-fleet recovery.
+- **Rebuilding from zero should be a redesign decision, not a
+  side-effect of a version bump.**  Every release before this one
+  that bumped the single version number was effectively deciding to
+  wipe the leaderboard.  With the split in place, the *default* is now
+  non-destructive; wiping is only correct when the layout actually
+  changed.
 
 ## SESSION 2026-09-24 -- signal split, branch separation, 0.4.64 to 0.4.71
 
