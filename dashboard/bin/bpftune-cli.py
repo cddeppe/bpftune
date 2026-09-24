@@ -12,7 +12,7 @@ Three outcome scales are reported:
                immediate cwnd-reset dip after a swap; this is the
                accurate throughput measure. Higher is better.
 """
-import argparse, json, os, re, subprocess, sys, time
+import argparse, json, os, re, socket, struct, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -666,6 +666,42 @@ def data_churn(text):
             "many": many, "max": max(counts.values())}
 
 
+def _dest_ip(s):
+    if s is None or s in ("", "1"):
+        return ""
+    try:
+        n = int(s)
+    except (TypeError, ValueError):
+        return ""
+    first = (n >> 24) & 0xFF
+    if first == 0 or first == 127:
+        return ""
+    try:
+        return socket.inet_ntoa(struct.pack(">I", n & 0xFFFFFFFF))
+    except Exception:
+        return ""
+
+
+_SWAP_DEST_RX = re.compile(
+    r"swap cookie=(\d+) from=\d+ to=\d+ bc=\d+ ac=\d+ d=\d+"
+    r"(?: mt=\d+ rb=\d+)? dest=(\d+)")
+_ESTAB_DEST_RX = re.compile(
+    r"estab cookie=(\d+) alg=\d+ forced=\d+ dest=(\d+)")
+
+
+def _cookie_dest_map(text):
+    out = {}
+    for line in text.splitlines():
+        m = _SWAP_DEST_RX.search(line)
+        if m:
+            out[m.group(1)] = m.group(2)
+            continue
+        m = _ESTAB_DEST_RX.search(line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
 def data_recent_swaps(text, n=10):
     sw, met, srate = _swaps_mets_srates(text)
     rows = []
@@ -688,12 +724,14 @@ def data_recent_swaps(text, n=10):
             "outcome_sustained":  o3,
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
+            "dest":     _dest_ip(row[9] if len(row) > 9 else None),
         })
     return rows[-n:]
 
 
 def data_recent_proofs(text, n=10):
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
+    cdest = _cookie_dest_map(text)
     out = []
     for l in lines:
         m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
@@ -704,6 +742,7 @@ def data_recent_proofs(text, n=10):
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
             "mbps": round(int(m.group(3)) / BPS_TO_MBPS, 1),
             "tier": "proved" if m.group(4) == "2" else "good",
+            "dest": _dest_ip(cdest.get(m.group(1))),
         })
     return out
 

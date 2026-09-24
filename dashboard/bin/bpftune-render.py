@@ -1672,7 +1672,8 @@ INDEX_HTML = r"""<!doctype html>
     rows.slice().reverse().forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
-        '<span class="meta">' + r.mbps.toFixed(1) + ' Mb/s</span>' +
+        '<span class="meta">' + esc(r.dest || "?") +
+          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s</span>' +
         '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
         '</div>';
     });
@@ -1693,8 +1694,9 @@ INDEX_HTML = r"""<!doctype html>
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
-        '<span class="meta">d' + r.d + ' &middot; mt=' +
-          esc(r.mt_alg || "-") + ' rb=' + esc(r.rb_alg || "-") + '</span>' +
+        '<span class="meta">' + esc(r.dest || "?") + ' &middot; d' + r.d +
+          ' &middot; mt=' + esc(r.mt_alg || "-") +
+          ' rb=' + esc(r.rb_alg || "-") + '</span>' +
         '<span class="pillcol"><span class="lbl">comp</span>' +
           pill(r.outcome) + '</span>' +
         '<span class="pillcol"><span class="lbl">sust</span>' +
