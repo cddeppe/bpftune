@@ -1860,10 +1860,17 @@ def _truth_write(row):
     outcome = (row.get("outcome") or "").lower()
     if not dest or not to_alg or outcome not in ("win", "null", "loss"):
         return
-    parts = dest.split(".")
-    if len(parts) != 4:
-        return
-    bucket = "%s.%s.0.0" % (parts[0], parts[1])
+    # 0.4.79: accept v6:XXXXXXXX (top 32 bits of remote_ip6[0])
+    # as well as dotted-quad v4.  Previously any non-dotted string
+    # was silently dropped, so every IPv6 swap was ignored by the
+    # score reconciler.
+    if dest.startswith("v6:"):
+        bucket = dest
+    else:
+        parts = dest.split(".")
+        if len(parts) != 4:
+            return
+        bucket = "%s.%s.0.0" % (parts[0], parts[1])
     rec = {"bucket": bucket, "tgt": to_alg, "cls": outcome}
     try:
         with open(SWAPS_TRUTH, "a", encoding="utf-8") as f:
