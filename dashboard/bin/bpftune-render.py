@@ -2118,7 +2118,11 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function loadBucket(id) {
-    return j("data/bucket_" + id + ".json").then(function (doc) {
+    // 0.4.78.1: sanitize the same way the renderer did when it
+    // wrote the file -- bucket ids like "v6:XXXXXXXX" become
+    // "v6_XXXXXXXX" on disk.
+    var safe = (id || "").replace(/[^A-Za-z0-9._-]/g, "_");
+    return j("data/bucket_" + safe + ".json").then(function (doc) {
       state.bucketDoc = doc;
       renderBucket();
       renderNow();
