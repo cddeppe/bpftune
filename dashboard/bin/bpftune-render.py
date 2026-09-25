@@ -676,6 +676,7 @@ INDEX_HTML = r"""<!doctype html>
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html, body { max-width: 100vw; overflow-x: hidden; }
   body {
     background: var(--bg); color: var(--fg);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
@@ -762,6 +763,7 @@ INDEX_HTML = r"""<!doctype html>
     box-shadow: var(--shadow);
     padding: 18px;
     margin-bottom: var(--gap);
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
   }
   .card > h2 {
     margin: 0 0 16px;
@@ -835,6 +837,7 @@ INDEX_HTML = r"""<!doctype html>
     box-shadow: var(--shadow);
     padding: 14px 16px;
     min-width: 0;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
   }
   @media (min-width: 900px) {
     .lv-grid > section.c6 { grid-column: span 6; }
@@ -1115,6 +1118,16 @@ INDEX_HTML = r"""<!doctype html>
   .chart-box > canvas {
     position: absolute; inset: 0; width: 100% !important;
     height: 100% !important;
+  }
+
+  @media (max-width: 800px) {
+    .lv-grid { gap: 10px; }
+    .lv-grid > section { padding: 10px 12px; }
+    .card { padding: 12px; }
+    table.tbl { font-size: 11.5px; }
+    table.tbl th, table.tbl td { padding: 4px 3px; }
+    .proof-cell .covbar { flex-basis: 40px; }
+    .proof-cell .mono   { flex-basis: 38px; font-size: 11px; }
   }
 
   .footer {
