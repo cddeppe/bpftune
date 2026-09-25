@@ -727,6 +727,34 @@ INDEX_HTML = r"""<!doctype html>
   }
   .pill.flash { color: var(--accent); }
 
+  html[data-theme="dark"] {
+    --bg: #0f1115;
+    --fg: #e6e8ee;
+    --muted: #9aa0a6;
+    --muted-2: #6b7280;
+    --border: #24272e;
+    --border-strong: #2f333b;
+    --card-bg: #16181d;
+    --code-bg: #13151a;
+    --subtle: #1c1f25;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --accent: #6b8fef;
+    --accent-dim: #6b8fef22;
+    --good: #34d399;
+    --good-dim: #34d39922;
+    --bad: #f87171;
+    --bad-dim: #f8717122;
+    --warn: #fbbf24;
+    --warn-dim: #fbbf2422;
+  }
+  #theme-toggle {
+    position: fixed; top: 12px; right: 12px; z-index: 100;
+    background: var(--card-bg); border: 1px solid var(--border);
+    color: var(--fg); border-radius: 999px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    font-family: var(--mono);
+  }
+
   .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -923,7 +951,7 @@ INDEX_HTML = r"""<!doctype html>
     justify-content: flex-end; width: 100%;
   }
   .proof-cell .mono   { flex: 0 0 46px; text-align: right; }
-  .proof-cell .covbar { flex: 0 0 30px; margin-right: 0; }
+  .proof-cell .covbar { flex: 0 0 60px; margin-right: 0; }
   .bar-cell {
     position: relative;
     display: block;
@@ -972,7 +1000,7 @@ INDEX_HTML = r"""<!doctype html>
   .list { display: flex; flex-direction: column; }
   .list .item {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 8px 12px;
     align-items: center;
     padding: 7px 0;
@@ -1111,6 +1139,7 @@ INDEX_HTML = r"""<!doctype html>
 </style>
 </head>
 <body>
+<button id="theme-toggle" aria-label="toggle theme">◐</button>
 <div class="wrap">
 
   <header class="topbar">
@@ -1589,9 +1618,9 @@ INDEX_HTML = r"""<!doctype html>
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
       '<th>good</th><th>proved</th>' +
-      '<th style="text-align:left">proven max</th>' +
-      '<th style="text-align:left">sampled avg</th>' +
-      '<th style="text-align:left">sampled max</th>' +
+      '<th>proven max</th>' +
+      '<th>sampled avg</th>' +
+      '<th>sampled max</th>' +
       '<th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
@@ -1723,12 +1752,20 @@ INDEX_HTML = r"""<!doctype html>
     rows.slice().reverse().forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
-        '<span class="meta">' + esc(r.dest || "?") +
+        '<span class="meta">' + esc(shortAddr(r.dest)) +
           ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s</span>' +
         '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
         '</div>';
     });
     setHTML("lv-proofs", html + '</div>');
+  }
+
+  function shortAddr(a) {
+    a = a || "";
+    if (a.indexOf("v6:") === 0) return a;
+    var p = a.split(".");
+    if (p.length === 4) return p[0] + "." + p[1] + ".0.0";
+    return a;
   }
 
   function renderRecentSwaps(rows) {
@@ -1745,7 +1782,7 @@ INDEX_HTML = r"""<!doctype html>
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
-        '<span class="meta">' + esc(r.dest || "?") +
+        '<span class="meta">' + esc(shortAddr(r.dest)) +
           ' &middot; d' + r.d + '</span>' +
         pill +
         '</div>';
@@ -2259,6 +2296,28 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   boot();
+
+  // 0.4.78.2: dark/light toggle.  Persists per-browser in
+  // localStorage; falls back to prefers-color-scheme.
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bpftune.theme"); } catch (e) {}
+    if (saved === "dark" || saved === "light") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+    var b = document.getElementById("theme-toggle");
+    if (!b) return;
+    b.addEventListener("click", function () {
+      var cur = document.documentElement.getAttribute("data-theme");
+      if (!cur) {
+        cur = window.matchMedia(
+          "(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      var next = cur === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("bpftune.theme", next); } catch (e) {}
+    });
+  })();
 })();
 </script>
 </body>
