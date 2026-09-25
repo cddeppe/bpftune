@@ -326,7 +326,11 @@ def read_map():
         addr = "?"
         b = k.get("in6_u", {}).get("u6_addr8")
         if isinstance(b, list) and len(b) == 16:
-            addr = ".".join(str(x) for x in b[12:16])
+            if b[10] == 0xff and b[11] == 0xff:
+                addr = ".".join(str(x) for x in b[12:16])
+            else:
+                v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+                addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
         entries.append((inst, addr, v))
     if not entries:
         return None
@@ -1039,6 +1043,31 @@ def data_churn(text):
             "many": many, "max": max(counts.values())}
 
 
+def _dest_str(v4, v6):
+    """Display string for a destination.  Prefers v6 when present."""
+    try: n6 = int(v6) if v6 not in (None, "") else 0
+    except (TypeError, ValueError): n6 = 0
+    if n6:
+        return "v6:%08x" % (n6 & 0xFFFFFFFF)
+    return _dest_ip(v4)
+
+
+def _bucket_of(v4, v6):
+    try: n6 = int(v6) if v6 not in (None, "") else 0
+    except (TypeError, ValueError): n6 = 0
+    if n6:
+        return "v6:%08x" % (n6 & 0xFFFFFFFF)
+    if not v4:
+        return ""
+    try: n = int(v4)
+    except (TypeError, ValueError):
+        return ""
+    first = (n >> 24) & 0xFF
+    if first in (0, 127):
+        return ""
+    return "%d.%d.0.0" % ((n >> 24) & 0xFF, (n >> 16) & 0xFF)
+
+
 def _dest_ip(s):
     if s is None or s in ("", "1"):
         return ""
@@ -1057,9 +1086,9 @@ def _dest_ip(s):
 
 _SWAP_DEST_RX = re.compile(
     r"swap cookie=(\d+) from=\d+ to=\d+ bc=\d+ ac=\d+ d=\d+"
-    r"(?: mt=\d+ rb=\d+)? dest=(\d+)")
+    r"(?: mt=\d+ rb=\d+)? dest=(\d+)(?: dest6=(\d+))?")
 _ESTAB_DEST_RX = re.compile(
-    r"estab cookie=(\d+) alg=\d+ forced=\d+ dest=(\d+)")
+    r"estab cookie=(\d+) alg=\d+ forced=\d+ dest=(\d+)(?: dest6=(\d+))?")
 
 
 def _cookie_dest_map(text):
@@ -1067,11 +1096,11 @@ def _cookie_dest_map(text):
     for line in text.splitlines():
         m = _SWAP_DEST_RX.search(line)
         if m:
-            out[m.group(1)] = m.group(2)
+            out[m.group(1)] = (m.group(2), m.group(3))
             continue
         m = _ESTAB_DEST_RX.search(line)
         if m:
-            out[m.group(1)] = m.group(2)
+            out[m.group(1)] = (m.group(2), m.group(3))
     return out
 
 
@@ -1097,9 +1126,10 @@ def data_recent_swaps(text, n=10):
             "outcome_sustained":  o3,
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
-            "dest":     _dest_ip(row[9] if len(row) > 9 else None),
-            "_bucket":  _dest_ip(row[9] if len(row) > 9 else None).rsplit(".", 2)[0] + ".0.0"
-                         if (len(row) > 9 and _dest_ip(row[9])) else "",
+            "dest":     _dest_str(row[9] if len(row) > 9 else None,
+                                   row[11] if len(row) > 11 else None),
+            "_bucket":  _bucket_of(row[9] if len(row) > 9 else None,
+                                    row[11] if len(row) > 11 else None),
         })
     return rows[-n:]
 
@@ -1117,7 +1147,7 @@ def data_recent_proofs(text, n=10):
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
             "mbps": round(int(m.group(3)) / BPS_TO_MBPS, 1),
             "tier": "proved" if m.group(4) == "2" else "good",
-            "dest": _dest_ip(cdest.get(m.group(1))),
+            "dest": _dest_str(*(cdest.get(m.group(1)) or (None, None))),
         })
     return out
 
@@ -1529,7 +1559,11 @@ SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
     r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
     r"(?: mt=(\d+) rb=(\d+))?"
-    r"(?: dest=(\d+))?")
+    r"(?: dest=(\d+))?"
+    r"(?: dest6=(\d+))?")
+ESTAB_DEST_RX = re.compile(
+    r"(\d+\.\d+): bpf_trace_printk: estab cookie=(\d+) "
+    r"alg=(\d+) forced=\d+ dest=(\d+)(?: dest6=(\d+))?")
 MET_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
     r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
@@ -1670,7 +1704,11 @@ def read_map_data():
         b = k.get("in6_u", {}).get("u6_addr8")
         if not isinstance(b, list) or len(b) != 16:
             continue
-        addr = ".".join(str(x) for x in b[12:16])
+        if b[10] == 0xff and b[11] == 0xff:
+            addr = ".".join(str(x) for x in b[12:16])
+        else:
+            v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+            addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
         result[addr] = v
     return result, out
 
@@ -1782,6 +1820,14 @@ def _lookup_ema(map_data, dest_ip, alg_index):
         return int(ema)
     except (TypeError, ValueError):
         return ""
+
+
+def _decode_dest6(s):
+    try: n6 = int(s) if s not in (None, "") else 0
+    except (TypeError, ValueError): n6 = 0
+    if not n6:
+        return ""
+    return "v6:%08x" % (n6 & 0xFFFFFFFF)
 
 
 def _decode_dest(n):

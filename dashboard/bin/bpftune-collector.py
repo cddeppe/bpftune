@@ -85,7 +85,11 @@ SWAP_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: swap cookie=(\d+) "
     r"from=(\d+) to=(\d+) bc=(\d+) ac=(\d+) d=(\d+)"
     r"(?: mt=(\d+) rb=(\d+))?"
-    r"(?: dest=(\d+))?")
+    r"(?: dest=(\d+))?"
+    r"(?: dest6=(\d+))?")
+ESTAB_DEST_RX = re.compile(
+    r"(\d+\.\d+): bpf_trace_printk: estab cookie=(\d+) "
+    r"alg=(\d+) forced=\d+ dest=(\d+)(?: dest6=(\d+))?")
 MET_RX = re.compile(
     r"(\d+\.\d+): bpf_trace_printk: met cookie=(\d+) "
     r"rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
@@ -226,7 +230,11 @@ def read_map_data():
         b = k.get("in6_u", {}).get("u6_addr8")
         if not isinstance(b, list) or len(b) != 16:
             continue
-        addr = ".".join(str(x) for x in b[12:16])
+        if b[10] == 0xff and b[11] == 0xff:
+            addr = ".".join(str(x) for x in b[12:16])
+        else:
+            v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+            addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
         result[addr] = v
     return result, out
 
@@ -338,6 +346,14 @@ def _lookup_ema(map_data, dest_ip, alg_index):
         return int(ema)
     except (TypeError, ValueError):
         return ""
+
+
+def _decode_dest6(s):
+    try: n6 = int(s) if s not in (None, "") else 0
+    except (TypeError, ValueError): n6 = 0
+    if not n6:
+        return ""
+    return "v6:%08x" % (n6 & 0xFFFFFFFF)
 
 
 def _decode_dest(n):
