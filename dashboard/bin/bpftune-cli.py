@@ -499,7 +499,7 @@ def data_bucket_live():
     return per
 
 
-def data_recent_swaps_by_bucket(text, n_per_bucket=10):
+def data_recent_swaps_by_bucket(text, n_per_bucket=16):
     """Same rows as data_recent_swaps, grouped by destination /16 so
     the panel can follow the bucket dropdown.  Returns
     {bucket_str: [row, ...]} ordered newest-first within each."""
@@ -928,7 +928,7 @@ def data_recent_swaps(text, n=10):
     return rows[-n:]
 
 
-def data_recent_proofs(text, n=10):
+def data_recent_proofs(text, n=16):
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
     cdest = _cookie_dest_map(text)
     out = []

@@ -1174,7 +1174,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="lv-buckets"></div>
     </section>
 
-    <section class="c6">
+    <section class="c8">
       <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
@@ -1183,7 +1183,12 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </section>
 
-    <section class="c6">
+    <section class="c4">
+      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
+      <div id="lv-swaps"></div>
+    </section>
+
+    <section class="c8">
       <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
@@ -1194,12 +1199,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </section>
 
-    <section class="c6">
-      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
-      <div id="lv-swaps"></div>
-    </section>
-
-    <section class="c6">
+    <section class="c4">
       <h3>recent proofs <span class="cnt">Mb/s</span></h3>
       <div id="lv-proofs"></div>
     </section>
