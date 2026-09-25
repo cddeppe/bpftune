@@ -3156,10 +3156,16 @@ INDEX_HTML = r"""<!doctype html>
   }
   table.tbl tr.inactive td { opacity: .45; }
 
-  .proof-tbl td { vertical-align: middle; }
-  .proof-tbl td:nth-child(4),
-  .proof-tbl td:nth-child(5),
-  .proof-tbl td:nth-child(6) { width: 30%; min-width: 90px; }
+  /* 0.4.78.2: proof leaderboard
+   * - nowrap: keep the inline covbar and its value on the same
+   *   line instead of wrapping or overflowing.
+   * - smaller covbar specifically inside the proof table so the
+   *   three series fit and rows sit at the same padding as the
+   *   swap target leaderboard next to them.
+   * - the old 30%-width column rule overflowed when the bar and
+   *   number were placed side by side; auto layout handles it. */
+  .proof-tbl td { vertical-align: middle; white-space: nowrap; }
+  .proof-tbl .covbar { width: 40px; height: 4px; margin-right: 4px; }
   .bar-cell {
     position: relative;
     display: block;
