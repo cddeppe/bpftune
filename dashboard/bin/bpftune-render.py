@@ -899,19 +899,34 @@ INDEX_HTML = r"""<!doctype html>
    *   swap target leaderboard next to them.
    * - the old 30%-width column rule overflowed when the bar and
    *   number were placed side by side; auto layout handles it. */
+  /* 0.4.78.2: proof leaderboard cell is one full-width bar with the
+   * value overlaid at its right edge.  One column per series, no
+   * separate number column to overflow. */
   .proof-tbl td { vertical-align: middle; white-space: nowrap; }
-  /* 0.4.78.2: bar + number laid out as a fixed-width flex row so the
-   * bar's left edge stays put regardless of how wide the number is
-   * ("5.6" vs "188.2").  Without this, the whole inline pair sat
-   * against the right cell edge and the bar drifted. */
-  .proof-cell-inner {
+  .proof-tbl td:nth-child(4),
+  .proof-tbl td:nth-child(5),
+  .proof-tbl td:nth-child(6) { min-width: 90px; }
+  .proof-bar {
+    position: relative;
+    display: block;
+    width: 100%; height: 18px;
+    background: var(--subtle);
+    border-radius: 2px; overflow: hidden;
+  }
+  .proof-bar > i {
+    position: absolute; inset: 0 auto 0 0;
+    border-radius: 2px; display: block;
+  }
+  .proof-bar > span {
+    position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: flex-end;
-    gap: 6px;
+    padding: 0 6px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--fg);
   }
-  .proof-cell-inner .covbar {
-    width: 40px; height: 4px; flex: 0 0 40px; margin-right: 0;
-  }
-  .proof-cell-inner .mono { flex: 0 0 46px; text-align: right; }
+  .proof-bar.v-proven  > i { background: #59a14f; }
+  .proof-bar.v-avg     > i { background: #4e79a7; }
+  .proof-bar.v-sampled > i { background: #e15759; }
   .bar-cell {
     position: relative;
     display: block;
@@ -1561,17 +1576,16 @@ INDEX_HTML = r"""<!doctype html>
       });
     });
     function bar(v, cls) {
-      // 0.4.78.2: inline covbar with a fixed-width number column so
-      // the bar's left edge doesn't shift as the number grows.
+      // 0.4.78.2: full-width bar with the value overlaid on the
+      // right; one column per series.
       if (v == null) {
-        return '<div class="proof-cell-inner">' +
-               '<span class="mono dim">-</span></div>';
+        return '<div class="proof-bar">' +
+               '<span class="dim">-</span></div>';
       }
       var w = Math.max(2, Math.round(100 * v / peak));
-      return '<div class="proof-cell-inner">' +
-             '<span class="covbar ' + cls + '">' +
-             '<i style="width:' + w + '%"></i></span>' +
-             '<span class="mono">' + v.toFixed(1) + '</span>' +
+      return '<div class="proof-bar ' + cls + '">' +
+             '<i style="width:' + w + '%"></i>' +
+             '<span>' + v.toFixed(1) + '</span>' +
              '</div>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
