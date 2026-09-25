@@ -29,6 +29,247 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-25 -- reconciliation, live dashboard, freeze audit
+
+Follow-on to the 0.4.64 -> 0.4.75 arc.  Three tuner releases
+(0.4.76, 0.4.77, 0.4.78), a batch map replay on all four hosts,
+and a sequencing of dashboard changes: dest column, live
+leaderboard, 1h chart, bucket selector wiring.  Plus one data
+finding that invalidates the metric ruler in a way that hadn't been
+visible before.
+
+### 0.4.76 -- swap_score from sustained truth
+
+Two halves, one per repo.
+
+  * Collector (dashboard branch, commit 8b6f15d) writes one JSON
+    line per resolved swap to /var/lib/bpftune/history/
+    swapscore_truth.jsonl:
+        {"bucket":"82.43.0.0","tgt":"lp","cls":"win"}
+    Classification uses the sustained ruler: median srate in
+    [T+60, T+300] vs srate_before, win >= 1.1x, loss <= 0.9x.
+
+  * Tuner (main branch) reads and truncates that file every 30s in
+    the reanchor worker, nudging swap_score by 1/8 toward 600 per
+    win, 100 per loss.  null: no-op.
+
+  * The BPF-side swap_score write is disabled in both
+    score_pending_swap and score_pending_rejected.  The single-
+    sample classifier was 48%-loss-biased vs ~12% under the
+    sustained ruler; writing from it was pulling every score down.
+
+  * STATE_VERSION unchanged, no map wipe.
+
+### 0.4.77 -- streak counters from the same truth
+
+0.4.76 moved swap_score but left bad_streak / null_streak (the
+pass-3 penalty inputs, 16/(16 + bad*4 + null*2)) on the in-kernel
+classifier.  Every target was accumulating penalties the sustained
+ruler would not have applied.
+
+Fix: the reanchor worker updates streaks on the same truth-file
+lines:
+    win  -> clear both streaks
+    loss -> bad_streak++ (capped at 255)
+    null -> null_streak++ (capped at 255)
+BPF-side streak writes disabled.  No change to the picker formula.
+
+### 0.4.78 -- freeze target from rate, not composite metric
+
+`best_seen_alg` was "the algorithm active on the vote that
+returned the lowest composite metric."  Composite = rtt + rate +
+loss, so the choice was contaminated by low-RTT votes on
+algorithms the socket hadn't actually performed well on.
+
+Traced socket cookie 3729 (freeze at monotonic 36601.8): metric
+picked reno on a vote with metric=58321 and tiny rtt.  Cubic later
+showed metric=44011 and delivered 274 KB/s for the rest of the
+socket's life; reno never exceeded 248 KB/s in the srate series.
+The freeze picked wrong.
+
+Across all 65 freeze events in the logs, 46 were comparable
+(both candidates had >=2 pre-freeze samples each):
+    20 matched (metric best == rate best)
+    26 mismatched
+Median missed rate when they disagreed: 1.38 MB/s
+p90: 9.86 MB/s  max: 36 MB/s
+
+Fix: track best_seen_srate / best_seen_srate_alg in conn_state,
+updated on every vote where rate_delivered sets a new max.  At
+freeze time, prefer the rate alg; fall back to metric alg if rate
+track unset.  Same burst signal the leaderboard and proof counters
+use.  No change to rate_ema, metric, or triggers.
+
+BPF only.  conn_state is per-socket (sk_storage), not persisted.
+No STATE_VERSION bump.
+
+### Verified end-to-end (heavy)
+
+Synthetic test: wrote a truth line for lp/loss, waited 45s.
+    lp swap_score: 208 -> 195  (exactly (208-100)/8)
+    lp bad_streak:   0 -> 1
+    truth file consumed and removed
+Reader confirmed working.  The same mechanism had been silently
+no-op for 0.4.76 -- the earlier "mismatch" audit was comparing
+swaps.csv against the wrong bucket attributions; the reader was
+correct all along.
+
+### Batch map replay (all four hosts)
+
+One-shot: for every historical swap in swaps.csv + archives,
+reclassify on the sustained ruler using srate.csv, replay events
+in time order through the 0.4.74 update rule, write final scores
+to the map.  Script at dashboard/bin/map-replay.py (committed
+under 2dbfb96).  Idempotent: re-running is a no-op.
+
+Effect on the home bucket (heavy):
+    alg      before  after
+    cubic       545    520
+    bic         115    506
+    htcp        164    516
+    yeah        107    475
+    westwood     85    465
+    illinois     60    439
+    veno         44    395
+    lp          208    237
+    hybla       197    250
+    (others similar)
+
+Root cause of the jump: pre-0.4.76 the map was a weighted average
+of clean-ruler (post-0.4.76) and biased-ruler (pre-0.4.76) events.
+The replay recomputes from the whole history under one ruler.  Top
+picker target changed from cubic to yeah (rate_ema=301, ss=475,
+weighted 558 vs cubic's 193).
+
+### Dashboard work (dashboard branch)
+
+  * Collector: writes swapscore_truth.jsonl (above).
+  * Collector: accepts single-sample classification (>=1 instead
+    of >=2 samples in window).  Was classifying only ~51% of
+    swaps; now ~77%.  Test gate: 354 historical swaps classified
+    169/133/52 W/N/L, matching window-classify.py's column C.
+  * Renderer: wrote index.html again.  The main() rewrite that
+    added streaming aggregation dropped the HTML write; the file
+    had been frozen since 2026-09-24 00:02 while data/*.json
+    updated every 5 min.  No renderer change had been visible for
+    nearly a day.
+  * Dashboard: destination column on swap and proof rows.  CLI
+    decodes dest= from the swap printk; for proofs, joins cookie
+    to the estab line.
+  * Dashboard: live leaderboard (metric_by_bucket) reads per-
+    bucket from current.json, follows the bucket dropdown.
+  * Dashboard: 1h bucket chart reads bucket_live from
+    current.json (30s freshness); longer ranges still use the
+    renderer output.
+  * Cron: renderer 5 min -> 15 min, installer updated so
+    reinstall doesn't revert.
+
+### Data findings from the swap tally
+
+Numbers from tier-full.py / loss-hunt.py / window-classify.py:
+
+  Overall (all time, 1463 swaps):
+    26% win / 62% null / 12% loss
+
+  Post-0.4.76 (113 swaps):
+    32% win / 55% null / 13% loss  (client 37% win)
+
+  Loss concentration by target (client only):
+    cubic   287  10%   (30% of all losses by count, but only
+                        because cubic has the most volume)
+    lp       36  31%   <- clear outlier
+    veno     24  21%
+    westwood 41  20%
+    htcp     62  13%
+    (bic, dctcp, highspeed all 7%)
+
+  Loss by source algorithm:
+    bbr      40  28%   <- 2x baseline; only source above 16%
+    (all others 6-16%)
+
+  f_ema / t_ema ratio does NOT predict loss.  Buckets:
+    0.XX (downgrade)  51  loss 12%
+    1.0-1.2           106 loss 13%
+    1.2-1.5            71 loss 20%
+    1.5-2.5            88 loss 18%
+    2.5+               89 loss 13%
+  Flat.  rate_ok filters on a signal that doesn't correlate with
+  loss here.
+
+  Loss by hour of day has 18x spread:
+    hour 22  36%   hour 13  23%   hour 06  21%   hour 04  19%
+    hour 19   2%   hour 17   6%   hour 15/16  6-7%
+  Likely ambient congestion, not algorithm quality.
+
+  Churn: swap #1-5 loss rate is flat (13/12/12/8/12%).
+  My earlier "swap #3 is a trap, 34% loss" was reading win rate,
+  not loss rate.  Retracted.
+
+  Tier population:
+    d=1  1112 swaps   25/64/11 W/N/L
+    d=2   178         19/68/12     (shadowed by d=1: 10% of p99
+                                   < 25% of leader on this bucket,
+                                   so d=2 is unreachable)
+    d=3   167         38/49/14     (best outcome rate)
+    d=0     6         --
+  d=1 does 95% of the work; d=2 cannot fire on the home bucket
+  given current thresholds; d=3 is the productive tier.
+
+### Open items (unresolved)
+
+1. **srate.csv is burst-sourced.** The `srate cookie=` printk at
+   the midsamp path (line ~520) computes from
+   `tps->rate_delivered * mss / interval` -- the kernel burst
+   estimator.  Everything we call "sustained" in the collector /
+   truth-file / reconciliation pipeline is built on it.  The
+   sustained byte-window (sustained_bps) exists but is not what's
+   printed to srate.csv.  Adding `srate_sustained=` as a second
+   column is the right fix; it keeps the capability signal
+   available while giving the collector the health signal.
+
+2. **The metric's rate term may or may not use sustained_bps.**
+   Grep at session end shows
+       metric = tcp_metric_calc(..., rate_delivered, ...)
+   with `rate_delivered` being the burst estimator at that point.
+   The 0.4.71 changelog comments claim _sustained_bps_.  The
+   source and the comments disagree.  Reconcile before changing.
+
+3. **Tier architecture.**  d=2 is shadowed by d=1 because
+   10% of p99 lands under 25% of leader.  d=0 has 6 lifetime
+   fires.  Either re-anchor all tiers to max_rate_delivered
+   (stable, non-overlapping) or collapse to a single rate-band
+   gate.  Data says d=3 has the best outcome rate; the current
+   ordering doesn't privilege it.
+
+4. **HANDOFF was ~12h behind.**  0.4.72 through 0.4.78 plus the
+   dashboard work now written down here.  Verify at session start
+   that this is the latest.
+
+5. **bbr as source.**  28% loss, 2x baseline.  Either bbr's
+   failure mode isn't what a swap fixes, or bbr -> cubic
+   specifically is bad.  Sample is n=40 across all bbr sources.
+
+### Working-style additions
+
+- **When two pieces of state disagree, test the reader
+  empirically before touching the code.**  A synthetic truth-file
+  line confirmed the reader in <45 seconds; a 200-line audit
+  script was wrong for a subtler reason.
+- **A "sustained" name does not make a value sustained.**  The
+  collector, the truth file, and the reconciliation pipeline all
+  label their ruler "sustained" while sourcing from the burst
+  estimator.  Read the printk, not the column name.
+- **Batch replay is a legitimate one-shot tool.**  Waiting for
+  new events to wash out old evidence takes days when the update
+  rate is 1/8 and cells get 2-3 events/hour.  Recompute the
+  equilibrium from history instead.  Idempotent, reversible,
+  no runtime cost.
+- **Freeze is overrun.**  Socket 3729 froze at 36601.8 and then
+  swapped 15 more times.  `frozen` gates d=2/d=3/d=0 but not d=1.
+  The d=1 escape requires `last_metric >= best_seen_metric * 2`,
+  which uses the same contaminated composite.  If we want freeze
+  to actually be a stop, d=1 needs to check frozen too.
+
 ## SESSION 2026-09-24 (late) -- collector sustained-ruler + single-sample coverage
 
 Two collector changes after the tuner work settled.  Both userspace-only,
