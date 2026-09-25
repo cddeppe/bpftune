@@ -3121,6 +3121,10 @@ INDEX_HTML = r"""<!doctype html>
     vertical-align: middle; margin-right: 6px; overflow: hidden;
   }
   .covbar > i { display: block; height: 100%; background: var(--good); }
+  /* 0.4.78.2: proof leaderboard reuses .covbar with per-series color */
+  .covbar.v-proven  > i { background: #59a14f; }
+  .covbar.v-avg     > i { background: #4e79a7; }
+  .covbar.v-sampled > i { background: #e15759; }
 
   table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.tbl th, table.tbl td {
@@ -3152,7 +3156,7 @@ INDEX_HTML = r"""<!doctype html>
   }
   table.tbl tr.inactive td { opacity: .45; }
 
-  .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
+  .proof-tbl td { vertical-align: middle; }
   .proof-tbl td:nth-child(4),
   .proof-tbl td:nth-child(5),
   .proof-tbl td:nth-child(6) { width: 30%; min-width: 90px; }
@@ -3805,14 +3809,15 @@ INDEX_HTML = r"""<!doctype html>
       });
     });
     function bar(v, cls) {
+      // 0.4.78.2: inline covbar, same shape as the coverage column
+      // on top destination buckets.  cls picks the fill color.
       if (v == null) {
-        return '<div class="bar-cell ' + cls + '">' +
-               '<div class="bar-num">-</div></div>';
+        return '<span class="mono dim">-</span>';
       }
       var w = Math.max(2, Math.round(100 * v / peak));
-      return '<div class="bar-cell ' + cls + '">' +
-             '<div class="bar-fill" style="width:' + w + '%"></div>' +
-             '<div class="bar-num">' + v.toFixed(1) + '</div></div>';
+      return '<span class="covbar ' + cls + '">' +
+             '<i style="width:' + w + '%"></i></span>' +
+             '<span class="mono">' + v.toFixed(1) + '</span>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
