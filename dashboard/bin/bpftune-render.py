@@ -850,6 +850,13 @@ INDEX_HTML = r"""<!doctype html>
   .kv .v.hi { color: var(--fg); font-weight: 500; }
   .kv .v.dim { color: var(--muted-2); }
 
+  .covbar {
+    display: inline-block; width: 80px; height: 6px;
+    background: var(--subtle); border-radius: 3px;
+    vertical-align: middle; margin-right: 6px; overflow: hidden;
+  }
+  .covbar > i { display: block; height: 100%; background: var(--good); }
+
   table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.tbl th, table.tbl td {
     padding: 6px 4px; text-align: right;
@@ -1132,8 +1139,6 @@ INDEX_HTML = r"""<!doctype html>
     <section class="c12">
       <h3>top destination buckets <span class="cnt">rate-board coverage &middot; last 24h</span></h3>
       <div id="lv-buckets"></div>
-      <div class="chart-box" id="fleetbox"
-           style="height:400px;margin-top:14px"><canvas id="fleet"></canvas></div>
     </section>
 
     <section class="c6">
@@ -1400,15 +1405,32 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderBuckets(rows) {
+    state.lastBucketRows = rows || [];
     if (!rows.length) {
       setHTML("lv-buckets", '<div class="placeholder">(no buckets)</div>');
       return;
     }
+    var cov = {};
+    var f = state.fleet || {};
+    var fb = f.buckets || [];
+    var fc = f.coverage_24h || [];
+    for (var i = 0; i < fb.length; i++) cov[fb[i]] = fc[i];
+
     var html = '<table class="tbl"><thead><tr>' +
       '<th>dest</th><th>instances</th><th>min rtt</th>' +
       '<th>ref rate</th><th>best alg</th><th>algs</th>' +
+      '<th style="width:24%">coverage · 24h</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
+      var v = cov[r.dest];
+      var cell;
+      if (v == null) {
+        cell = '<td class="mono dim">&ndash;</td>';
+      } else {
+        var pct = Math.max(0, Math.min(100, v));
+        cell = '<td class="mono"><span class="covbar"><i style="width:' +
+               pct.toFixed(0) + '%"></i></span>' + pct.toFixed(0) + '%</td>';
+      }
       html += '<tr>' +
         '<td class="mono name">' + esc(r.dest) + '</td>' +
         '<td class="mono">' + fmtN(r.inst) + '</td>' +
@@ -1416,6 +1438,7 @@ INDEX_HTML = r"""<!doctype html>
         '<td class="mono">' + r.ref_mbps.toFixed(1) + '</td>' +
         '<td>' + esc(r.best_alg) + '</td>' +
         '<td class="mono dim">' + r.n_alg + '</td>' +
+        cell +
         '</tr>';
     });
     setHTML("lv-buckets", html + '</tbody></table>');
@@ -2049,39 +2072,12 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderFleet() {
-    var f = state.fleet;
-    var n = (f && f.buckets) ? f.buckets.length : 0;
-    var box = document.getElementById("fleetbox");
-    if (box) {
-      box.style.height = Math.max(200, Math.min(800, n * 22 + 40)) + "px";
-    }
-    mk("fleet", {
-      type: "bar",
-      data: {
-        labels: f.buckets,
-        datasets: [{
-          label: "% bins with leader",
-          data: f.coverage_24h,
-          backgroundColor: "#59a14f",
-          borderColor: "#59a14f",
-          borderRadius: 2,
-          maxBarThickness: 12,
-        }],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        animation: false, indexAxis: "y",
-        layout: {padding: {top: 4, right: 16, bottom: 0, left: 0}},
-        scales: {
-          x: {min: 0, max: 100, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 6, padding: 6,
-                      callback: function (v) { return v + "%"; }}},
-          y: {grid: {display: false},
-              ticks: {font: {size: 10.5}, autoSkip: false, padding: 4}},
-        },
-        plugins: {legend: {display: false}},
-      },
-    });
+    /* 0.4.78.2: fleet.json no longer drives a separate chart.  Its
+     * coverage_24h feeds the new coverage column on the top-
+     * destination-buckets table.  refreshAll calls this right
+     * after assigning state.fleet, so re-render the buckets tail
+     * here and the column will fill in. */
+    if (state.lastBucketRows) renderBuckets(state.lastBucketRows);
   }
 
   function loadBucket(id) {
