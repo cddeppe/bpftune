@@ -507,6 +507,7 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
         mt_i = m.group(8)
         rb_i = m.group(9)
         dest_s = m.group(10)
+        dest6_s = m.group(11) if m.lastindex and m.lastindex >= 11 else None
 
         pre = None
         pre_ts = -1.0
@@ -556,6 +557,14 @@ def _parse_swaps_from(text, now_epoch, met_cache, srate_cache, map_data,
                 dest_ip = _decode_dest(int(dest_s))
             except (TypeError, ValueError):
                 dest_ip = ""
+        # 0.4.78.2: dest=0 means the socket is IPv6 (remote_ip4
+        # unset).  Prefer the dest6 field in that case; without
+        # this, every v6 swap reached _truth_write with an empty
+        # dest and was silently dropped.
+        if not dest_ip and dest6_s:
+            dest_ip = _decode_dest6(dest6_s)
+            if dest_ip and not dest_raw:
+                dest_raw = dest6_s
 
         f_ema = _lookup_ema(map_data, dest_ip, fa)
         t_ema = _lookup_ema(map_data, dest_ip, ta)
