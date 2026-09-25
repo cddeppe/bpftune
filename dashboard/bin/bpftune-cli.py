@@ -643,7 +643,8 @@ def _swaps_mets_srates(text):
                        r"swap cookie=(\d+) from=(\d+) to=(\d+) "
                        r"bc=(\d+) ac=(\d+) d=(\d+)"
                        r"(?: mt=(\d+) rb=(\d+))?"
-                       r"(?: dest=(\d+))?")
+                       r"(?: dest=(\d+))?"
+                       r"(?: dest6=(\d+))?")
     rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
     rx_sr = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
@@ -654,7 +655,7 @@ def _swaps_mets_srates(text):
             sw.append((float(m.group(1)), int(m.group(2)),
                        int(m.group(3)), int(m.group(4)),
                        int(m.group(5)), int(m.group(6)), m.group(7),
-                       m.group(8), m.group(9), m.group(10), line))
+                       m.group(8), m.group(9), m.group(10), m.group(11), line))
             continue
         v = rx_mt.search(line)
         if v:
@@ -920,9 +921,9 @@ def data_recent_swaps(text, n=10):
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
             "dest":     _dest_str(row[9] if len(row) > 9 else None,
-                                   row[11] if len(row) > 11 else None),
+                                   row[10] if len(row) > 10 else None),
             "_bucket":  _bucket_of(row[9] if len(row) > 9 else None,
-                                    row[11] if len(row) > 11 else None),
+                                    row[10] if len(row) > 10 else None),
         })
     return rows[-n:]
 
