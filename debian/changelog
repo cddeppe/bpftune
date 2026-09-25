@@ -1,3 +1,35 @@
+bpftune (0.4.78) UNRELEASED; urgency=medium
+
+  * freeze chooses target by max observed rate, not by composite
+    metric min.
+
+    best_seen_alg was "the algorithm active on the vote that returned
+    the lowest composite metric."  Composite = rtt + rate + loss, so
+    the choice was contaminated by low-RTT votes on algorithms the
+    socket didn't actually perform well on.  Traced socket cookie
+    3729: metric picked reno (metric=58321 on a low-rtt vote); cubic
+    showed metric=44011 later and delivered 274 KB/s -- higher than
+    any reno vote on that socket.  The freeze chose wrong.
+
+    Across all 65 freeze events in the logs, 46 have enough pre-
+    freeze samples on both candidates to compare.  20 matched
+    (metric best == rate best).  26 mismatched.  Median rate
+    difference when they disagreed: 1.38 MB/s; p90: 9.86 MB/s;
+    max: 36 MB/s left on the table.
+
+    Fix: track best_seen_srate and best_seen_srate_alg in
+    conn_state, updated on every vote where rate_delivered exceeds
+    the current max.  At freeze time, use the rate alg when it's
+    populated; fall back to best_seen_alg otherwise.  Same burst
+    signal the leaderboard and proof counters already use -- no
+    change to rate_ema, no change to the metric, no change to the
+    triggers.
+
+    BPF-only.  conn_state is per-socket (sk_storage), not persisted.
+    No STATE_VERSION bump, no dashboard or collector change.
+
+ -- cddeppe <91772433+cddeppe@users.noreply.github.com>  Fri, 25 Sep 2026 12:00:00 +0000
+
 bpftune (0.4.77) UNRELEASED; urgency=medium
 
   * streak counters now driven by the sustained truth file.

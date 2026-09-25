@@ -98,6 +98,14 @@ struct conn_state {
     __u64 time_check_segs;   /* segments at last time check */
     __u64 best_seen_metric;  /* lowest metric seen on this socket */
     __u64 best_seen_alg;     /* algorithm it was running then */
+    /* 0.4.78: parallel track on the rate signal.  The composite
+     * metric mixes rtt + rate + loss; when the composite dips on
+     * a low-rtt vote the freeze would pick an algorithm the
+     * socket did not actually do well on.  This pair records the
+     * peak burst rate ever seen on this socket and which alg it
+     * was running.  Freeze uses this alg when populated. */
+    __u64 best_seen_srate;
+    __u64 best_seen_srate_alg;
     __u64 frozen;            /* 1 = no more swaps on this socket */
     /* 0.4.54: exploring=1 when assigned alg is neither leader. votes_on_alg counts votes on that alg; reset at every set_cong. */
     __u64 exploring;

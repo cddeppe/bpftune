@@ -827,6 +827,14 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             statep->best_seen_metric = metric;
             statep->best_seen_alg = s;
         }
+        /* 0.4.78: parallel best-by-rate on the same socket.  Uses
+         * rate_delivered (burst), matching the capability signal
+         * the leaderboard and proof counters rely on. */
+        if (rate_delivered > 0 &&
+            rate_delivered > statep->best_seen_srate) {
+            statep->best_seen_srate = rate_delivered;
+            statep->best_seen_srate_alg = s;
+        }
     }
 
     {
@@ -1102,12 +1110,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             } else if (slow_vs_ref && rate_ok && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
-                    __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
+                    /* 0.4.78: prefer the rate best over the metric best.  The
+                     * metric dip the socket hit may have been an rtt or loss
+                     * artifact, not an algorithm-quality signal. */
+                    __u64 tgt = (statep->best_seen_srate > 0)
+                              ? statep->best_seen_srate_alg
+                              : statep->best_seen_alg;
+                    tgt &= (NUM_TCP_CONG_ALGS - 1);
                     __u8 tgt8 = (__u8)tgt;
-                    if (statep->best_seen_metric != 0 && tgt8 != s)
+                    if ((statep->best_seen_metric != 0 ||
+                         statep->best_seen_srate != 0) && tgt8 != s)
                         fret = set_cong(ops, remote_host, tgt8);
-                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d dest=%u",
-                               bpf_get_socket_cookie(ops), s, tgt8, fret, (__u32)bpf_ntohl(ops->remote_ip4));
+                    bpf_printk("freeze cookie=%llu from=%u to=%u bsrate=%llu ret=%d dest=%u",
+                               bpf_get_socket_cookie(ops), s, tgt8, statep->best_seen_srate, fret, (__u32)bpf_ntohl(ops->remote_ip4));
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
@@ -1150,12 +1165,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             } else if (slow_vs_leader && rate_ok && util_ok && !statep->frozen) {
                 if (statep->swap_count >= FREEZE_AFTER_SWAPS) {
                     int fret = 0;
-                    __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
+                    /* 0.4.78: prefer the rate best over the metric best.  The
+                     * metric dip the socket hit may have been an rtt or loss
+                     * artifact, not an algorithm-quality signal. */
+                    __u64 tgt = (statep->best_seen_srate > 0)
+                              ? statep->best_seen_srate_alg
+                              : statep->best_seen_alg;
+                    tgt &= (NUM_TCP_CONG_ALGS - 1);
                     __u8 tgt8 = (__u8)tgt;
-                    if (statep->best_seen_metric != 0 && tgt8 != s)
+                    if ((statep->best_seen_metric != 0 ||
+                         statep->best_seen_srate != 0) && tgt8 != s)
                         fret = set_cong(ops, remote_host, tgt8);
-                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d dest=%u",
-                               bpf_get_socket_cookie(ops), s, tgt8, fret, (__u32)bpf_ntohl(ops->remote_ip4));
+                    bpf_printk("freeze cookie=%llu from=%u to=%u bsrate=%llu ret=%d dest=%u",
+                               bpf_get_socket_cookie(ops), s, tgt8, statep->best_seen_srate, fret, (__u32)bpf_ntohl(ops->remote_ip4));
                     statep->frozen = 1;
                     statep->last_swap_at = now;
                     statep->last_metric = 0;
@@ -1200,12 +1222,19 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     /* FREEZE: go to the algorithm on which this socket
                      * looked best, then stop trying. */
                     int fret = 0;
-                    __u64 tgt = statep->best_seen_alg & (NUM_TCP_CONG_ALGS - 1);
+                    /* 0.4.78: prefer the rate best over the metric best.  The
+                     * metric dip the socket hit may have been an rtt or loss
+                     * artifact, not an algorithm-quality signal. */
+                    __u64 tgt = (statep->best_seen_srate > 0)
+                              ? statep->best_seen_srate_alg
+                              : statep->best_seen_alg;
+                    tgt &= (NUM_TCP_CONG_ALGS - 1);
                     __u8 tgt8 = (__u8)tgt;
-                    if (statep->best_seen_metric != 0 && tgt8 != s)
+                    if ((statep->best_seen_metric != 0 ||
+                         statep->best_seen_srate != 0) && tgt8 != s)
                         fret = set_cong(ops, remote_host, tgt8);
-                    bpf_printk("freeze cookie=%llu from=%u to=%u ret=%d dest=%u",
-                               bpf_get_socket_cookie(ops), s, tgt8, fret, (__u32)bpf_ntohl(ops->remote_ip4));
+                    bpf_printk("freeze cookie=%llu from=%u to=%u bsrate=%llu ret=%d dest=%u",
+                               bpf_get_socket_cookie(ops), s, tgt8, statep->best_seen_srate, fret, (__u32)bpf_ntohl(ops->remote_ip4));
                     bpf_printk("swapctx cookie=%llu d=f cwnd=%llu ssthresh=%llu pkts=%llu wnd_out=%llu on_ldr=%u swaps=%llu app_lim=%u util=%llu",
                                bpf_get_socket_cookie(ops),
                                (__u64)tp->snd_cwnd, (__u64)tp->snd_ssthresh,
