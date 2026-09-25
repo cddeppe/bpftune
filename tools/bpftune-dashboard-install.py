@@ -3165,7 +3165,18 @@ INDEX_HTML = r"""<!doctype html>
    * - the old 30%-width column rule overflowed when the bar and
    *   number were placed side by side; auto layout handles it. */
   .proof-tbl td { vertical-align: middle; white-space: nowrap; }
-  .proof-tbl .covbar { width: 40px; height: 4px; margin-right: 4px; }
+  /* 0.4.78.2: bar + number laid out as a fixed-width flex row so the
+   * bar's left edge stays put regardless of how wide the number is
+   * ("5.6" vs "188.2").  Without this, the whole inline pair sat
+   * against the right cell edge and the bar drifted. */
+  .proof-cell-inner {
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 6px;
+  }
+  .proof-cell-inner .covbar {
+    width: 40px; height: 4px; flex: 0 0 40px; margin-right: 0;
+  }
+  .proof-cell-inner .mono { flex: 0 0 46px; text-align: right; }
   .bar-cell {
     position: relative;
     display: block;
@@ -3815,15 +3826,18 @@ INDEX_HTML = r"""<!doctype html>
       });
     });
     function bar(v, cls) {
-      // 0.4.78.2: inline covbar, same shape as the coverage column
-      // on top destination buckets.  cls picks the fill color.
+      // 0.4.78.2: inline covbar with a fixed-width number column so
+      // the bar's left edge doesn't shift as the number grows.
       if (v == null) {
-        return '<span class="mono dim">-</span>';
+        return '<div class="proof-cell-inner">' +
+               '<span class="mono dim">-</span></div>';
       }
       var w = Math.max(2, Math.round(100 * v / peak));
-      return '<span class="covbar ' + cls + '">' +
+      return '<div class="proof-cell-inner">' +
+             '<span class="covbar ' + cls + '">' +
              '<i style="width:' + w + '%"></i></span>' +
-             '<span class="mono">' + v.toFixed(1) + '</span>';
+             '<span class="mono">' + v.toFixed(1) + '</span>' +
+             '</div>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
