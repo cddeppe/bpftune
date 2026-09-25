@@ -1,3 +1,18 @@
+bpftune (0.4.78.2) unstable; urgency=medium
+
+  * reader and collector accept v6:XXXXXXXX as a bucket key.
+
+    _truth_write in the collector dropped any dest not shaped
+    like dotted-quad, so every IPv6 swap was silently skipped
+    before it reached swapscore_truth.jsonl.  The reanchor
+    reader then rejected v6:... too via inet_pton(AF_INET).
+    On a v6-heavy host that meant the map's swap_score and
+    streak counters stalled.
+
+    No schema change; STATE_VERSION unchanged.
+
+ -- cddeppe <cddeppe@users.noreply.github.com>  Fri, 25 Sep 2026 18:00:00 +0000
+
 bpftune (0.4.78.1) unstable; urgency=medium
 
   * tcp_conn_tuner: log IPv6 destination as dest6=

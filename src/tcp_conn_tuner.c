@@ -337,6 +337,19 @@ struct truth_bucket {
 static int truth_bucket_key(const char *s, struct in6_addr *out)
 {
         struct in_addr a4;
+        /* 0.4.78.2: v6:hhhhhhhh form -- top 32 bits of the remote
+         * IPv6 address, matching the map key bpftune_conn_tuner
+         * builds from ops->remote_ip6[0]. */
+        if (s[0] == 'v' && s[1] == '6' && s[2] == ':') {
+                unsigned int h;
+                if (sscanf(s + 3, "%8x", &h) != 1) return -1;
+                memset(out, 0, sizeof(*out));
+                out->s6_addr[0] = (h >> 24) & 0xff;
+                out->s6_addr[1] = (h >> 16) & 0xff;
+                out->s6_addr[2] = (h >>  8) & 0xff;
+                out->s6_addr[3] =  h        & 0xff;
+                return 0;
+        }
         if (inet_pton(AF_INET, s, &a4) != 1) return -1;
         memset(out, 0, sizeof(*out));
         out->s6_addr[10] = 0xff;
