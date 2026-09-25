@@ -1159,10 +1159,11 @@ INDEX_HTML = r"""<!doctype html>
     <section class="c4">
       <h3>swap outcomes <span class="cnt">sustained</span></h3>
       <div id="lv-swapout"></div>
-      <div id="lv-churn" style="margin-top:12px"></div>
       <div class="note">
         <b>sustained</b> = median srate in [t+60, t+300].
       </div>
+      <div id="lv-churn" class="kv"
+           style="margin-top:16px;padding-top:12px;border-top:1px solid var(--subtle)"></div>
     </section>
 
   </div>
