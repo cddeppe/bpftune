@@ -1447,6 +1447,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     var bs = $("bucket");
     var addr = (bs && bs.value) ? bs.value : null;
+    if (!addr && state.meta && state.meta.default_bucket) {
+      addr = state.meta.default_bucket;
+    }
     var rows = (addr && by[addr]) ? by[addr] : [];
     renderRecentSwaps(rows);
   }
@@ -2119,6 +2122,10 @@ INDEX_HTML = r"""<!doctype html>
       state.bucketDoc = doc;
       renderBucket();
       renderNow();
+      // 0.4.78: recent-swaps panel follows the dropdown too.
+      // loadBucket runs after bs.value is set (both boots and
+      // onchange), so this is the right place to re-render.
+      renderRecentSwapsForBucket();
     });
   }
 
