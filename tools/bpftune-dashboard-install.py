@@ -3148,11 +3148,21 @@ INDEX_HTML = r"""<!doctype html>
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
   table.tbl tr.pick td { background: var(--accent-dim); }
+  /* 0.4.78.2: position the pick badge absolutely so it cannot
+   * wrap or affect the row height.  The old inline ::after on
+   * td.name could wrap in the narrow c6 and grow the whole row,
+   * breaking the balance with the proof leaderboard next to it. */
+  table.tbl tr.pick td.name { position: relative; padding-right: 40px; }
   table.tbl tr.pick td.name::after {
-    content: " \25b8 pick";
+    content: "\25b8 pick";
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     color: var(--accent); font-size: 9.5px;
     text-transform: uppercase; letter-spacing: .05em;
-    margin-left: 6px; font-weight: 600;
+    font-weight: 600;
+    white-space: nowrap;
   }
   table.tbl tr.inactive td { opacity: .45; }
 
