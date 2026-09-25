@@ -2500,6 +2500,7 @@ def aggregate_all(bfile, algs, now):
     last_row = {}
     meta_stats = {}
     inst_i = cols.get("instances")
+    rbv_i  = cols.get("rate_best_v")
 
     with open(bfile, "r", newline="") as f:
         rd = csv.reader(f)
@@ -2534,6 +2535,22 @@ def aggregate_all(bfile, algs, now):
                         try:
                             ms["inst_sum"] += float(iv)
                             ms["inst_n"] += 1
+                        except ValueError:
+                            pass
+                # 0.4.78.2: 5-min bin coverage for the fleet chart.
+                # A bucket is "covered" in a bin if any row in that
+                # bin had rate_best_v > 0 (i.e. a rate leader existed).
+                if "co_seen" not in ms:
+                    ms["co_seen"] = set()
+                    ms["co_have"] = set()
+                b5 = int(t // 300)
+                ms["co_seen"].add(b5)
+                if rbv_i is not None and rbv_i < len(row):
+                    rv = row[rbv_i]
+                    if rv:
+                        try:
+                            if float(rv) > 0:
+                                ms["co_have"].add(b5)
                         except ValueError:
                             pass
 
@@ -2847,28 +2864,20 @@ def emit_swaps(rows, srate_rows, now):
     write_json("swaps.json", doc)
 
 
-def emit_fleet(buckets, now):
-    lo = now - 86400
-    width = 300
-    rows = [r for r in buckets if (ts_of(r) or 0) > lo]
-    by = defaultdict(list)
-    for r in rows:
-        by[r.get("addr") or "unknown"].append(r)
-
+def emit_fleet(meta_stats, now):
+    """Per-bucket: fraction of 5-minute bins in the last 24h where the
+    bucket's rate_best_v was > 0.  meta_stats carries the two sets
+    (co_seen / co_have) filled by aggregate_all's streaming pass.
+    The prior body tried to re-derive this from meta_rows, which only
+    ever carried addr / instances / collected_ts -- rate_best_v was
+    never present, so every bucket came back 0.0."""
     pairs = []
-    for bid, rs in by.items():
-        bins = defaultdict(list)
-        for r in rs:
-            t = ts_of(r)
-            if t is not None:
-                bins[int((t - lo) // width)].append(r)
-        if not bins:
+    for bid, ms in meta_stats.items():
+        seen = ms.get("co_seen") or set()
+        if not seen:
             continue
-        have = sum(1 for grp in bins.values()
-                   if any((to_float(x.get("rate_best_v")) or 0) > 0
-                          for x in grp))
-        pairs.append((bid, round(100 * have / len(bins), 1)))
-
+        have = len(ms.get("co_have") or ())
+        pairs.append((bid, round(100.0 * have / len(seen), 1)))
     pairs.sort(key=lambda p: -p[1])
     pairs = pairs[:25]
     labels = [p[0] for p in pairs]
@@ -3386,8 +3395,10 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c12">
-      <h3>top destination buckets</h3>
+      <h3>top destination buckets <span class="cnt">rate-board coverage &middot; last 24h</span></h3>
       <div id="lv-buckets"></div>
+      <div class="chart-box" id="fleetbox"
+           style="height:400px;margin-top:14px"><canvas id="fleet"></canvas></div>
     </section>
 
     <section class="c6">
@@ -3455,11 +3466,6 @@ INDEX_HTML = r"""<!doctype html>
   <section class="card">
     <h2><span class="dot"></span>swaps per bin</h2>
     <div class="chart-box h-sm"><canvas id="swaps"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
-    <div class="chart-box" id="fleetbox" style="height:500px"><canvas id="fleet"></canvas></div>
   </section>
 
   <div class="footer">
@@ -4552,7 +4558,7 @@ def main():
                     pass
 
     emit_swaps(swaps, srate, now)
-    emit_fleet(meta_rows, now)
+    emit_fleet(meta_stats, now)
 
     # 0.4.76: the main() rewrite that added streaming aggregation
     # dropped this write; the renderer has been updating JSON for
