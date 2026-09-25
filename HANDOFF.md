@@ -9,8 +9,8 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: see `git log -1` (0.4.75 tip)
-- Latest release: 0.4.75
+- Latest commit: see `git log -1` (0.4.78.1 tip)
+- Latest release: 0.4.78.1
 - Collector (on `dashboard` branch): sustained-ruler classification,
   single-sample acceptance.  See 2026-09-24 (late) session below.
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
@@ -18,10 +18,11 @@ per gateway), not just single-path datacenters.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.75** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.75** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.75** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.75** | instance-20250225-1017; builds arm64 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.78.1** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.78.1** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.78.1** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.78.1** | instance-20250225-1017; builds arm64 |
+| al | amd64 | **0.4.78.1** | VPS-IP; new host, nginx serves dashboard on 8080 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -29,6 +30,140 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-25 (late) -- 0.4.78.1 IPv6 visibility, dashboard pass
+
+Follow-on to the session already written above. Everything in
+bf740a8 is accurate for 0.4.76/77/78. This section covers what
+landed after that.
+
+### 0.4.78.1 -- IPv6 destination visibility
+
+Every printk that reported a destination used dest=%u from
+bpf_ntohl(ops->remote_ip4), which is 0 on IPv6 sockets. On a
+v6-heavy host that meant roughly 30 percent of the population was
+invisible to every log-derived panel -- recent swaps, recent
+proofs, churn, per-target attribution.
+
+Fix: add dest6=%u carrying bpf_ntohl(ops->remote_ip6[0]) (same
+/32 prefix the map key uses) to all swap, freeze, and estab
+printks. 9 sites. BPF-only; no other layout touched.
+
+Consumers updated in the same release window:
+- CLI _dest_str(v4, v6) and _bucket_of(v4, v6).
+- CLI _swaps_mets_srates had its own rx_sw regex and tuple,
+  separate from _SWAP_DEST_RX (which only feeds the proof
+  cookie-map). First patch missed it; follow-up commit b7446f3
+  added dest6 to rx_sw, to the row tuple, and fixed the indices
+  (dest6 is row[10], not row[11]).
+- Collector _decode_dest6(); map key decoder handles non-v4-
+  embedded IPv6 keys as v6:XXXXXXXX.
+
+Verified end-to-end on al: newest swaps show dest=v6:2603c020
+(home v6 range) and dest=v6:20014860 (CDN v6).
+
+### Dashboard fixes after bf740a8
+
+- recent_swaps_by_bucket was returning oldest, not newest (dd8e04d).
+  data_recent_swaps(text, n=200) yields rows in oldest-to-newest
+  order; the bucket-grouping iterated front-first and filled each
+  bucket with the oldest 10 of the window. Fixed: iterate in reverse.
+- Boot race on the recent-swaps panel (3cd2de9).
+  renderRecentSwapsForBucket() was called from renderLiveState
+  before the bucket dropdown was populated; the select had no
+  value and the panel showed "(none in tail)" permanently. Fixed:
+  hook into loadBucket (runs after the dropdown is set), and fall
+  back to state.meta.default_bucket.
+- bucket_<safe>.json filename mismatch (9443793). Renderer
+  sanitizes the bucket id with [A-Za-z0-9._-] / underscore before
+  writing data/bucket_<safe>.json. The frontend's loadBucket built
+  the URL from the raw id, so v6:XXXXXXXX 404'd. Fixed with the
+  same sanitize rule on the fetch side.
+
+### Batch map replay
+
+dashboard/bin/map-replay.py (committed under 2dbfb96). Reads
+swaps.csv + archives, reclassifies on the sustained ruler using
+srate.csv, replays the timeline through the 0.4.74 update rule,
+writes final scores and streak counters to remote_host_map.
+Idempotent. Rerunning is a no-op.
+
+Home bucket effect (heavy):
+
+  alg        before  after
+  cubic         545    520
+  bic           115    506
+  htcp          164    516
+  yeah          107    475
+  westwood       85    465
+  illinois       60    439
+  veno           44    395
+  lp            208    237
+  hybla         197    250
+
+### New host: al (VPS-IP)
+
+Fully installed: bpftune 0.4.78.1, dashboard installed beside
+itself at /opt/bpftune/tools/, nginx serving /var/lib/bpftune/
+history/ on 8080. nginx worker needs o+x on /var/lib/bpftune and
+o+rx on .../history -- the parent is 0700 root:root by default and
+the default nginx worker can't traverse.
+
+Fresh-host install failures hit tonight, in order:
+- bpftool missing. tools/bpftune-deploy-all.sh checks
+  "bpftool map dump name remote_host_map" and silently exits 0
+  with "not loaded here" -- but the real cause is a missing
+  binary. Two-line fix: command -v bpftool check first.
+- bpftune-met-trace.service is written by deploy-all after the
+  bpftool check. If the check short-circuits, no trace unit means
+  no /var/log/bpftune-met-live.log, so the dashboard stays empty
+  even though the tuner is running.
+
+### Open items
+
+1. 0.4.79 queue:
+   - bpftool dependency not declared by deploy-all.
+   - bpftune-met-trace.service install order (see above).
+   - MIN_BUCKET_ROWS defined three times in bpftune-render.py
+     (lines 26, 29, and a local inside aggregate_all at ~196).
+     The local wins; edits to the module-level constants are
+     silently ignored.
+   - default_bucket="all" when no buckets exist yet -- frontend
+     then 404s on bucket_all.json. Fallback should be empty
+     string plus a frontend guard.
+   - srate.csv labeled "sustained" but sourced from
+     tps->rate_delivered * mss / interval (kernel burst). All
+     downstream consumers use burst under a name that suggests
+     otherwise.
+   - tcp_metric_calc is called with rate_delivered (burst) but
+     the 0.4.71 comments describe sustained_bps. Reconcile.
+2. Leaderboard churn. rate_best_i flips every few minutes under
+   100 percent explore; picker re-evaluates every 30s; score moves
+   1/8 per event. Short win streaks occasionally put an unusual
+   target at the top for 1-2 swaps before reverting. Measure the
+   churn rate, then decide between score step 1/8 -> 1/16 or
+   reanchor 30s -> 60/120s.
+3. Tier architecture. d=2 shadowed by d=1, d=0 near-silent.
+   Either re-anchor all tiers to max_rate_delivered, or collapse
+   to a single rate-band gate. d=3 is the productive tier today.
+4. bbr as source. n=40, loss 28 percent, 2x baseline. Either
+   bbr's failure mode isn't what a swap fixes, or bbr -> cubic is
+   specifically bad. n too small to separate.
+5. Freeze overrun by d=1. Socket 3729 froze at monotonic
+   36601.8 and swapped 15 more times. frozen gates d=2/d=3/d=0
+   but not d=1; the escape uses last_metric >= best_seen_metric * 2.
+   If freeze is meant to stick, d=1 needs !frozen too.
+
+### Working-style additions
+
+- Names can lie about signals. "sustained" in srate.csv is burst.
+  Presumed-unit mismatches cost hours across the session.
+- Two code paths, one concept -- check both sides before patching.
+  The IPv6 fix missed the second rx_sw inside _swaps_mets_srates;
+  the fix was right on the read side but silently didn't show in
+  the panel until the second commit.
+- On swap lines, to= and rb= are the same variable (swap_tgt);
+  mt= is a different target that can differ. Reading rb= as "the
+  rate leaderboard chose this" is wrong; it's a re-echo of to=.
 ## SESSION 2026-09-25 -- reconciliation, live dashboard, freeze audit
 
 Follow-on to the 0.4.64 -> 0.4.75 arc.  Three tuner releases
