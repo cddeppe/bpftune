@@ -3386,20 +3386,16 @@ INDEX_HTML = r"""<!doctype html>
       <div id="lv-buckets"></div>
     </section>
 
-    <section class="c12">
+    <section class="c6">
       <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
-        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>,
-        <b>penalty</b> = <code>16 / (16 + bad&times;4 + null&times;2)</code>.
-        Penalty starts at 1.0 (no failures) and falls as bad/null streaks
-        grow, but is always positive &mdash; streaks are a multiplier, not
-        a gate. Sorted by score; the top row is what the picker would
-        choose right now.
+        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>.
+        Top row is what the picker would choose right now.
       </div>
     </section>
 
-    <section class="c12">
+    <section class="c6">
       <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
@@ -3407,9 +3403,17 @@ INDEX_HTML = r"""<!doctype html>
         <b style="color:#4e79a7">sampled avg</b>,
         <b style="color:#59a14f">proven max</b>,
         <b style="color:#e15759">sampled max</b>.
-        Different populations &mdash; sampled avg may exceed proven max
-        on the same row, by design.
       </div>
+    </section>
+
+    <section class="c6">
+      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
+      <div id="lv-swaps"></div>
+    </section>
+
+    <section class="c6">
+      <h3>recent proofs <span class="cnt">Mb/s</span></h3>
+      <div id="lv-proofs"></div>
     </section>
 
     <section class="c8">
@@ -3418,12 +3422,10 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="c4">
-      <h3>swap outcomes</h3>
+      <h3>swap outcomes <span class="cnt">sustained</span></h3>
       <div id="lv-swapout"></div>
       <div class="note">
-        <b>composite</b> = met val= ratio. <b>sustained</b> = median srate
-        in [t+60, t+300] &mdash; excludes the cwnd-reset dip; this is
-        the accurate throughput measure.
+        <b>sustained</b> = median srate in [t+60, t+300].
       </div>
     </section>
 
@@ -3432,36 +3434,26 @@ INDEX_HTML = r"""<!doctype html>
       <div id="lv-div"></div>
     </section>
 
-    <section class="c6">
-      <h3>recent proofs</h3>
-      <div id="lv-proofs"></div>
-    </section>
-
-    <section class="c6">
+    <section class="c12">
       <h3>cookie churn</h3>
       <div class="kv" id="lv-churn"></div>
-    </section>
-
-    <section class="c12">
-      <h3>recent swaps <span class="cnt">composite vs sustained</span></h3>
-      <div id="lv-swaps"></div>
     </section>
 
   </div>
 
   <section class="card">
     <h2><span class="dot"></span>rate_ema per algorithm &mdash; Mb/s</h2>
-    <div class="chart-box h-xl"><canvas id="rate"></canvas></div>
+    <div class="chart-box h-lg"><canvas id="rate"></canvas></div>
   </section>
 
   <section class="card">
     <h2><span class="dot"></span>swap_score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
-    <div class="chart-box h-xl"><canvas id="sscore"></canvas></div>
+    <div class="chart-box h-lg"><canvas id="sscore"></canvas></div>
   </section>
 
   <section class="card">
     <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
-    <div class="chart-box h-xl"><canvas id="streaks"></canvas></div>
+    <div class="chart-box h-lg"><canvas id="streaks"></canvas></div>
   </section>
 
   <section class="card">
@@ -3866,33 +3858,15 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderSwapOutcomes(payload) {
-    if (payload && payload.composite && payload.sustained) {
-      var c = payload.composite;
-      var s = payload.sustained;
-      var html =
-        '<div class="outcome-group">' +
-          '<div class="grp-k">composite metric</div>' + bigTriple(c) +
-          '<div class="kv" style="margin-top:6px">' +
-            '<div class="row"><span class="k">measurable</span>' +
-              '<span class="v">' + c.measurable + '</span></div>' +
-            '<div class="row"><span class="k">unmeasurable</span>' +
-              '<span class="v dim">' + c.unmeasurable + '</span></div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="outcome-group">' +
-          '<div class="grp-k">sustained (accurate)</div>' + bigTriple(s) +
-          '<div class="kv" style="margin-top:6px">' +
-            '<div class="row"><span class="k">measurable</span>' +
-              '<span class="v">' + s.measurable + '</span></div>' +
-            '<div class="row"><span class="k">unmeasurable</span>' +
-              '<span class="v dim">' + s.unmeasurable + '</span></div>' +
-          '</div>' +
-        '</div>';
-      setHTML("lv-swapout", html);
-      return;
+    var so = null;
+    if (payload && payload.sustained) {
+      so = payload.sustained;
+    } else if (payload && (payload.win != null || payload.loss != null)) {
+      so = payload;
+    } else {
+      so = {win:0,win_pct:0,null:0,null_pct:0,
+            loss:0,loss_pct:0,measurable:0,unmeasurable:0};
     }
-    var so = payload || {win:0,win_pct:0,null:0,null_pct:0,
-                         loss:0,loss_pct:0,measurable:0,unmeasurable:0};
     setHTML("lv-swapout", bigTriple(so) +
       '<div class="kv" style="margin-top:10px">' +
         '<div class="row"><span class="k">measurable</span>' +
@@ -3976,22 +3950,18 @@ INDEX_HTML = r"""<!doctype html>
       setHTML("lv-swaps", '<div class="placeholder">(none in tail)</div>');
       return;
     }
-    function pill(o) {
-      if (!o) return '<span class="sp dash">&hellip;</span>';
-      return '<span class="sp ' + o + '">' + o + '</span>';
-    }
     var html = '<div class="list">';
     rows.slice().reverse().forEach(function (r) {
+      var o = r.outcome_sustained || r.outcome || "";
+      var pill = o
+        ? '<span class="sp ' + o + '">' + o + '</span>'
+        : '<span class="sp dash">&hellip;</span>';
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
-        '<span class="meta">' + esc(r.dest || "?") + ' &middot; d' + r.d +
-          ' &middot; mt=' + esc(r.mt_alg || "-") +
-          ' rb=' + esc(r.rb_alg || "-") + '</span>' +
-        '<span class="pillcol"><span class="lbl">comp</span>' +
-          pill(r.outcome) + '</span>' +
-        '<span class="pillcol"><span class="lbl">sust</span>' +
-          pill(r.outcome_sustained) + '</span>' +
+        '<span class="meta">' + esc(r.dest || "?") +
+          ' &middot; d' + r.d + '</span>' +
+        pill +
         '</div>';
     });
     setHTML("lv-swaps", html + '</div>');
