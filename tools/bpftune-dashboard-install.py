@@ -3164,11 +3164,18 @@ INDEX_HTML = r"""<!doctype html>
    *   swap target leaderboard next to them.
    * - the old 30%-width column rule overflowed when the bar and
    *   number were placed side by side; auto layout handles it. */
-  /* 0.4.78.2: proof leaderboard: small inline covbar + number on
-   * the same row.  Same padding as the swap leaderboard so the two
-   * tables next to each other sit at the same rhythm. */
+  /* 0.4.78.2: proof leaderboard: small covbar + number on one row.
+   * Right-aligned cell with a fixed-width number column so the
+   * bar's left edge is the same on every row regardless of the
+   * value width.  Same base padding as the swap leaderboard, so
+   * the two tables sit at the same rhythm side by side. */
   .proof-tbl td { vertical-align: middle; white-space: nowrap; }
-  .proof-tbl .covbar { width: 30px; height: 5px; margin-right: 4px; }
+  .proof-cell {
+    display: inline-flex; align-items: center; gap: 4px;
+    justify-content: flex-end; width: 100%;
+  }
+  .proof-cell .covbar { flex: 0 0 30px; margin-right: 0; }
+  .proof-cell .mono   { flex: 0 0 46px; text-align: right; }
   .bar-cell {
     position: relative;
     display: block;
@@ -3818,14 +3825,18 @@ INDEX_HTML = r"""<!doctype html>
       });
     });
     function bar(v, cls) {
-      // 0.4.78.2: small inline covbar + number, one row.
+      // 0.4.78.2: covbar + fixed-width number in a single flex row
+      // so the bar's left edge aligns across all rows.
       if (v == null) {
-        return '<span class="mono dim">-</span>';
+        return '<span class="proof-cell">' +
+               '<span class="mono dim">-</span></span>';
       }
       var w = Math.max(2, Math.round(100 * v / peak));
-      return '<span class="covbar ' + cls + '">' +
+      return '<span class="proof-cell">' +
+             '<span class="covbar ' + cls + '">' +
              '<i style="width:' + w + '%"></i></span>' +
-             '<span class="mono">' + v.toFixed(1) + '</span>';
+             '<span class="mono">' + v.toFixed(1) + '</span>' +
+             '</span>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
