@@ -495,6 +495,26 @@ def data_bucket_live():
     return per
 
 
+def data_recent_swaps_by_bucket(text, n_per_bucket=10):
+    """Same rows as data_recent_swaps, grouped by destination /16 so
+    the panel can follow the bucket dropdown.  Returns
+    {bucket_str: [row, ...]} ordered newest-first within each."""
+    rows = data_recent_swaps(text, n=200)
+    out = {}
+    for r in rows:
+        b = r.get("_bucket") or ""
+        if not b:
+            continue
+        lst = out.setdefault(b, [])
+        if len(lst) < n_per_bucket:
+            lst.append(r)
+    # strip the internal key before handing off
+    for b, lst in out.items():
+        for r in lst:
+            r.pop("_bucket", None)
+    return out
+
+
 def _proof_events(text):
     MET_WINDOW_S = 60.0
     lines = text.splitlines()
@@ -869,6 +889,8 @@ def data_recent_swaps(text, n=10):
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
             "dest":     _dest_ip(row[9] if len(row) > 9 else None),
+            "_bucket":  _dest_ip(row[9] if len(row) > 9 else None).rsplit(".", 2)[0] + ".0.0"
+                         if (len(row) > 9 and _dest_ip(row[9])) else "",
         })
     return rows[-n:]
 
@@ -982,6 +1004,7 @@ def collect_all():
         "divergence":     data_divergence(text),
         "churn":          data_churn(text),
         "recent_swaps":   data_recent_swaps(text),
+        "recent_swaps_by_bucket": data_recent_swaps_by_bucket(text),
         "recent_proofs":  data_recent_proofs(text),
     }
 

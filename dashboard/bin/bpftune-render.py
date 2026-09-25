@@ -1438,6 +1438,19 @@ INDEX_HTML = r"""<!doctype html>
     setHTML("lv-buckets", html + '</tbody></table>');
   }
 
+  function renderRecentSwapsForBucket() {
+    var by = state.recentSwapsByBucket;
+    if (!by) {
+      // fallback: pristine behaviour, unfiltered recent swaps
+      renderRecentSwaps((state.lastLiveSwaps) || []);
+      return;
+    }
+    var bs = $("bucket");
+    var addr = (bs && bs.value) ? bs.value : null;
+    var rows = (addr && by[addr]) ? by[addr] : [];
+    renderRecentSwaps(rows);
+  }
+
   function renderMetricForBucket() {
     var bs = $("bucket");
     var addr = (bs && bs.value) ? bs.value : null;
@@ -1723,7 +1736,9 @@ INDEX_HTML = r"""<!doctype html>
     renderBuckets(doc.buckets || []);
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
+    state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
     renderMetricForBucket();
+    renderRecentSwapsForBucket();
     if ($("range") && $("range").value === "1h" && state.bucketDoc) {
       renderBucket();   // refresh 1h chart from live data
     }
@@ -1733,7 +1748,8 @@ INDEX_HTML = r"""<!doctype html>
     renderDivergence(doc.divergence || []);
     renderChurn(doc.churn || {});
     renderRecentProofs(doc.recent_proofs || []);
-    renderRecentSwaps(doc.recent_swaps || []);
+    state.lastLiveSwaps = doc.recent_swaps || [];
+    renderRecentSwapsForBucket();
   }
 
   function liveRefresh() {
@@ -1785,7 +1801,7 @@ INDEX_HTML = r"""<!doctype html>
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null, bucketLive: {} };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null, bucketLive: {}, recentSwapsByBucket: null };
   var charts = {};
 
   function mk(id, cfg) {
@@ -2213,6 +2229,7 @@ INDEX_HTML = r"""<!doctype html>
           try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
           loadBucket(bs.value);
           renderMetricForBucket();
+          renderRecentSwapsForBucket();
         };
         try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {
