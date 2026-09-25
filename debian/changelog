@@ -1,3 +1,10 @@
+bpftune (0.4.78.1) unstable; urgency=medium
+
+  * tcp_conn_tuner: log IPv6 destination as dest6=
+  * dashboard: IPv6 destinations in dest/read_map
+
+ -- cddeppe <cddeppe@users.noreply.github.com>  Fri, 25 Sep 2026 16:55:12 +0200
+
 bpftune (0.4.78) UNRELEASED; urgency=medium
 
   * freeze chooses target by max observed rate, not by composite
