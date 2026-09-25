@@ -785,6 +785,10 @@ INDEX_HTML = r"""<!doctype html>
     display: grid;
     grid-template-columns: repeat(12, 1fr);
     gap: 14px;
+    /* 0.4.78.2: match the bottom spacing the .card stack uses
+     * between cards, so the first chart below the grid doesn't
+     * bump into the rate progression / swap outcomes row. */
+    margin-bottom: var(--gap);
   }
   .lv-grid > section {
     grid-column: span 12;
