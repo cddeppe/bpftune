@@ -3170,12 +3170,15 @@ INDEX_HTML = r"""<!doctype html>
    * value width.  Same base padding as the swap leaderboard, so
    * the two tables sit at the same rhythm side by side. */
   .proof-tbl td { vertical-align: middle; white-space: nowrap; }
+  /* 0.4.78.2: number first, then bar.  Number sits in a fixed-
+   * width right-aligned slot; bar starts at the same x on every
+   * row, so its left edge aligns across the table. */
   .proof-cell {
     display: inline-flex; align-items: center; gap: 4px;
     justify-content: flex-end; width: 100%;
   }
-  .proof-cell .covbar { flex: 0 0 30px; margin-right: 0; }
   .proof-cell .mono   { flex: 0 0 46px; text-align: right; }
+  .proof-cell .covbar { flex: 0 0 30px; margin-right: 0; }
   .bar-cell {
     position: relative;
     display: block;
@@ -3833,9 +3836,9 @@ INDEX_HTML = r"""<!doctype html>
       }
       var w = Math.max(2, Math.round(100 * v / peak));
       return '<span class="proof-cell">' +
+             '<span class="mono">' + v.toFixed(1) + '</span>' +
              '<span class="covbar ' + cls + '">' +
              '<i style="width:' + w + '%"></i></span>' +
-             '<span class="mono">' + v.toFixed(1) + '</span>' +
              '</span>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
