@@ -1159,19 +1159,10 @@ INDEX_HTML = r"""<!doctype html>
     <section class="c4">
       <h3>swap outcomes <span class="cnt">sustained</span></h3>
       <div id="lv-swapout"></div>
+      <div id="lv-churn" style="margin-top:12px"></div>
       <div class="note">
         <b>sustained</b> = median srate in [t+60, t+300].
       </div>
-    </section>
-
-    <section class="c12">
-      <h3>divergence <span class="cnt">swap target: rate vs metric</span></h3>
-      <div id="lv-div"></div>
-    </section>
-
-    <section class="c12">
-      <h3>cookie churn</h3>
-      <div class="kv" id="lv-churn"></div>
     </section>
 
   </div>
@@ -1189,17 +1180,6 @@ INDEX_HTML = r"""<!doctype html>
   <section class="card">
     <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
     <div class="chart-box h-lg"><canvas id="streaks"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>divergence &mdash; composite win rate <span class="sub">95% Wilson CI</span></h2>
-    <div class="chart-box h-md"><canvas id="div"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>divergence &mdash; sustained win rate <span class="sub">median srate in [t+60, t+300] &middot; 95% Wilson CI</span></h2>
-    <div class="chart-box h-md"><canvas id="div_sustained"></canvas></div>
-    <div class="chart-note" id="div_sustained_note"></div>
   </section>
 
   <section class="card">
@@ -1718,7 +1698,6 @@ INDEX_HTML = r"""<!doctype html>
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null);
-    renderDivergence(doc.divergence || []);
     renderChurn(doc.churn || {});
     renderRecentProofs(doc.recent_proofs || []);
     state.lastLiveSwaps = doc.recent_swaps || [];
@@ -2145,7 +2124,6 @@ INDEX_HTML = r"""<!doctype html>
 
       return loadBucket(bs.value);
     }).then(function () {
-      renderDivergenceCharts();
       renderSwaps();
       renderFleet();
     }).catch(function (e) {
@@ -2222,14 +2200,12 @@ INDEX_HTML = r"""<!doctype html>
         try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {
           renderBucket();
-          renderDivergenceCharts();
           renderSwaps();
         };
 
         return loadBucket(state.meta.default_bucket);
       })
       .then(function () {
-        renderDivergenceCharts();
         renderSwaps();
         renderFleet();
       })
