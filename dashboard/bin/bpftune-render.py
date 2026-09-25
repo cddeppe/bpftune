@@ -1876,25 +1876,32 @@ INDEX_HTML = r"""<!doctype html>
     var ts = s.ts;
     // 0.4.76: for the 1h range, prefer the CLI-provided live
     // series (30s freshness) over the 15-minute renderer output.
+    // bucket_live carries re_* columns only, so this override
+    // applies to the rate chart alone; the score and streak
+    // charts always use the historical series.
+    var rateS = s, rateTs = ts;
     var bid = $("bucket") ? $("bucket").value : null;
     if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
       var lb = state.bucketLive[bid];
-      var liveS = {};
-      for (var k in (lb.cols || {})) liveS[k] = lb.cols[k];
-      s = liveS;
-      ts = lb.ts || [];
+      if (lb.ts && lb.ts.length) {
+        var liveS = {};
+        for (var k in (lb.cols || {})) liveS[k] = lb.cols[k];
+        rateS = liveS;
+        rateTs = lb.ts;
+      }
     }
 
-    function makeSeries(prefix) {
+    function makeSeries(prefix, source) {
+      source = source || s;
       return algs.map(function (a) {
         return prefix + a;
-      }).filter(function (c) { return c in s; });
+      }).filter(function (c) { return c in source; });
     }
 
-    var rateCols = makeSeries("re_");
+    var rateCols = makeSeries("re_", rateS);
     mk("rate", {
       type: "line",
-      data: {datasets: lineData(rateCols, s, ts, PALETTE, scaleRe, 0)},
+      data: {datasets: lineData(rateCols, rateS, rateTs, PALETTE, scaleRe, 0)},
       options: timeOpts({
         plugins: {
           legend: {
