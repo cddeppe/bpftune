@@ -501,7 +501,9 @@ def data_recent_swaps_by_bucket(text, n_per_bucket=10):
     {bucket_str: [row, ...]} ordered newest-first within each."""
     rows = data_recent_swaps(text, n=200)
     out = {}
-    for r in rows:
+    # Iterate newest-first so each bucket gets its newest
+    # n_per_bucket entries, not the oldest of the window.
+    for r in reversed(rows):
         b = r.get("_bucket") or ""
         if not b:
             continue
