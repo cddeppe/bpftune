@@ -242,6 +242,7 @@ static int pin_alias_map(struct bpftuner *tuner)
         char line[256];
         FILE *f = NULL, *jf = NULL;
         int fd, err, n = 0, nj = 0;
+        char prev_to[64] = {0};
 
         map = bpftuner_bpf_map_get(tcp_conn, tuner, dest_alias_map);
         if (!map) {
@@ -327,7 +328,7 @@ static int pin_alias_map(struct bpftuner *tuner)
                         continue;
                 }
                 n++;
-                if (lbl && jf) {
+                if (lbl && jf && strcmp(to_s, prev_to) != 0) {
                         if (nj) fputs(",\n", jf);
                         fputs("  \"", jf);
                         fputs(to_s, jf);
@@ -335,6 +336,8 @@ static int pin_alias_map(struct bpftuner *tuner)
                         fputs(lbl, jf);
                         fputs("\"", jf);
                         nj++;
+                        strncpy(prev_to, to_s, sizeof(prev_to) - 1);
+                        prev_to[sizeof(prev_to) - 1] = '\0';
                 }
         }
 
