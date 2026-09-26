@@ -4226,7 +4226,11 @@ INDEX_HTML = r"""<!doctype html>
       return;
     }
     var html = '<div class="list">';
-    rows.slice().reverse().forEach(function (r) {
+    /* 0.4.79: rows arrive newest-first from the CLI.  Do NOT
+     * reverse here -- that was flipping to oldest-first, so the
+     * top of the panel showed hours-old swaps and looked
+     * current.  Fixed 2026-09-26. */
+    rows.forEach(function (r) {
       /* 0.4.79: only outcome_sustained is final.  The composite
        * outcome is provisional -- it may read null while the
        * sustained window is still open.  Show "pending" until the
