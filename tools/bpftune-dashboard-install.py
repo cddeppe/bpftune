@@ -733,8 +733,10 @@ def data_bucket_live():
             pd[c] = [[k * LIVE_CHART_WIDTH_S, sum(bins[k]) / len(bins[k])]
                      for k in keys]
         cs = {c: [v for _, v in arr] for c, arr in pd.items()}
-        ts = [k * LIVE_CHART_WIDTH_S for k in
-              sorted({k for arr in pd.values() for k, _ in arr})]
+        # 0.4.79 fix: pd entries are already [bin*width, value].
+        # The previous form multiplied by width a second time, so
+        # a 65-minute ring came out as 65 hours on the chart.
+        ts = sorted({k for arr in pd.values() for k, _ in arr})
         per[addr] = {"ts": ts, "cols": cs}
 
     return per
