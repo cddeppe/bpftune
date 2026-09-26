@@ -251,9 +251,23 @@ def _load_labels():
     return _LABELS_CACHE
 
 
+
+def _canon_bucket(addr):
+    """Collapse to /16 (v4) or /32 (v6)."""
+    if not addr:
+        return addr
+    if addr.startswith('v6:'):
+        return addr
+    p = addr.split('.')
+    if len(p) == 4:
+        return '%s.%s.0.0' % (p[0], p[1])
+    return addr
+
+
 def _label_for(addr):
     if not addr:
         return addr
+    addr = _canon_bucket(addr)
     return _load_labels().get(addr, addr)
 
 
@@ -2372,9 +2386,26 @@ def _load_labels():
     _LABELS_MTIME = m
     return _LABELS_CACHE
 
+
+def _canon_bucket(addr):
+    """0.4.79: collapse to /16 (v4) or /32 (v6).  During the
+    prefix4/6 testing the collector wrote some rows at /24 and
+    /32, so identical physical buckets ended up as two keys.
+    This makes meta.json and bucket_live agree."""
+    if not addr:
+        return addr
+    if addr.startswith('v6:'):
+        return addr
+    p = addr.split('.')
+    if len(p) == 4:
+        return '%s.%s.0.0' % (p[0], p[1])
+    return addr
+
+
 def _label_for(addr):
     if not addr:
         return addr
+    addr = _canon_bucket(addr)
     return _load_labels().get(addr, addr)
 
 RANGES = {
@@ -4679,7 +4710,12 @@ INDEX_HTML = r"""<!doctype html>
           renderSwaps();
         };
 
-        return loadBucket(state.meta.default_bucket);
+        /* 0.4.79 fix: load the bucket the dropdown actually shows
+         * (bs.value), not meta's default.  Boot was setting bs.value
+         * to the saved bucket and then loading a different one, so
+         * the chart showed one bucket's data under another's name
+         * until the user re-selected. */
+        return loadBucket(bs.value);
       })
       .then(function () {
         renderSwaps();

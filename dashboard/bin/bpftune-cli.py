@@ -44,9 +44,23 @@ def _load_labels():
     return _LABELS_CACHE
 
 
+
+def _canon_bucket(addr):
+    """Collapse to /16 (v4) or /32 (v6)."""
+    if not addr:
+        return addr
+    if addr.startswith('v6:'):
+        return addr
+    p = addr.split('.')
+    if len(p) == 4:
+        return '%s.%s.0.0' % (p[0], p[1])
+    return addr
+
+
 def _label_for(addr):
     if not addr:
         return addr
+    addr = _canon_bucket(addr)
     return _load_labels().get(addr, addr)
 
 
