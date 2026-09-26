@@ -438,6 +438,20 @@ def read_map():
                 v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
                 addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
         entries.append((inst, _label_for(addr), v))
+    # 0.4.79: two map keys can decode to the same final label
+    # (an exact-alias entry and a prefix-fold entry for the same
+    # physical location).  Merge by final addr -- sum instances,
+    # keep the entry with more instances for the other fields.
+    _merged = {}
+    for _inst, _addr, _v in entries:
+        if _addr in _merged:
+            _p, _pv = _merged[_addr]
+            _merged[_addr] = (_p + _inst, _pv)
+            if _inst > _p:
+                _merged[_addr] = (_p + _inst, _v)
+        else:
+            _merged[_addr] = (_inst, _v)
+    entries = [(i, a, v) for a, (i, v) in _merged.items()]
     if not entries:
         return None
     entries.sort(key=lambda x: -x[0])
@@ -1932,6 +1946,23 @@ def collect_buckets(ts_epoch, map_data):
         return 0
     rm_min, rm_def, rm_max = tcp_rmem()
     n = 0
+    # 0.4.79: pre-fold and merge.  Two map keys can fold to the
+    # same canonical (exact-address entry and prefix-fold entry
+    # for the same location); the CSV wants one row per bucket
+    # per tick, not two.
+    _folded = {}
+    for _a, _v in map_data.items():
+        _k = _fold_v6(_a)
+        if _k in _folded:
+            _pv = _folded[_k]
+            _pi = int(_pv.get('instances', 0) or 0)
+            _ci = int(_v.get('instances', 0) or 0)
+            _merged = dict(_v if _ci > _pi else _pv)
+            _merged['instances'] = _pi + _ci
+            _folded[_k] = _merged
+        else:
+            _folded[_k] = _v
+    map_data = _folded
     for addr, v in map_data.items():
         try:
             inst = int(v.get("instances", 0))
@@ -1947,7 +1978,7 @@ def collect_buckets(ts_epoch, map_data):
             best_i = 0
         row = {
             "collected_ts": ts_epoch,
-            "addr": _fold_v6(addr),
+            "addr": addr,
             "instances": inst,
             "min_rtt": int(v.get("min_rtt", 0) or 0),
             "ref_rate": int(v.get("max_rate_delivered", 0) or 0),

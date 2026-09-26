@@ -231,6 +231,20 @@ def read_map():
                 v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
                 addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
         entries.append((inst, _label_for(addr), v))
+    # 0.4.79: two map keys can decode to the same final label
+    # (an exact-alias entry and a prefix-fold entry for the same
+    # physical location).  Merge by final addr -- sum instances,
+    # keep the entry with more instances for the other fields.
+    _merged = {}
+    for _inst, _addr, _v in entries:
+        if _addr in _merged:
+            _p, _pv = _merged[_addr]
+            _merged[_addr] = (_p + _inst, _pv)
+            if _inst > _p:
+                _merged[_addr] = (_p + _inst, _v)
+        else:
+            _merged[_addr] = (_inst, _v)
+    entries = [(i, a, v) for a, (i, v) in _merged.items()]
     if not entries:
         return None
     entries.sort(key=lambda x: -x[0])

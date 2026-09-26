@@ -335,6 +335,23 @@ def collect_buckets(ts_epoch, map_data):
         return 0
     rm_min, rm_def, rm_max = tcp_rmem()
     n = 0
+    # 0.4.79: pre-fold and merge.  Two map keys can fold to the
+    # same canonical (exact-address entry and prefix-fold entry
+    # for the same location); the CSV wants one row per bucket
+    # per tick, not two.
+    _folded = {}
+    for _a, _v in map_data.items():
+        _k = _fold_v6(_a)
+        if _k in _folded:
+            _pv = _folded[_k]
+            _pi = int(_pv.get('instances', 0) or 0)
+            _ci = int(_v.get('instances', 0) or 0)
+            _merged = dict(_v if _ci > _pi else _pv)
+            _merged['instances'] = _pi + _ci
+            _folded[_k] = _merged
+        else:
+            _folded[_k] = _v
+    map_data = _folded
     for addr, v in map_data.items():
         try:
             inst = int(v.get("instances", 0))
@@ -350,7 +367,7 @@ def collect_buckets(ts_epoch, map_data):
             best_i = 0
         row = {
             "collected_ts": ts_epoch,
-            "addr": _fold_v6(addr),
+            "addr": addr,
             "instances": inst,
             "min_rtt": int(v.get("min_rtt", 0) or 0),
             "ref_rate": int(v.get("max_rate_delivered", 0) or 0),
