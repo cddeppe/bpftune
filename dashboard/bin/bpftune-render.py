@@ -1762,7 +1762,7 @@ INDEX_HTML = r"""<!doctype html>
       return;
     }
     var html = '<div class="list">';
-    rows.forEach(function (r) {
+    rows.slice().reverse().forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
