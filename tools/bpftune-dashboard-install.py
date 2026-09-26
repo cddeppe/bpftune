@@ -2523,7 +2523,7 @@ def aggregate_all(bfile, algs, now):
     Returns (header, cols, docs, meta_stats).
     """
     MAX_BUCKETS = 60
-    MIN_BUCKET_ROWS = 20
+    MIN_BUCKET_ROWS = 5
 
     with open(bfile, "r", newline="") as f:
         rd = csv.reader(f)
