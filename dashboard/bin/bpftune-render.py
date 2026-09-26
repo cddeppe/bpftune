@@ -1026,6 +1026,8 @@ INDEX_HTML = r"""<!doctype html>
   .sp.good { color: var(--warn); background: var(--warn-dim); }
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
+  .sp.pending { color: var(--warn); background: var(--warn-dim);
+                font-size: 9.5px; }
 
   .cell-good { color: var(--good); font-weight: 600; }
   .cell-bad  { color: var(--bad);  font-weight: 600; }
@@ -1819,10 +1821,15 @@ INDEX_HTML = r"""<!doctype html>
     }
     var html = '<div class="list">';
     rows.slice().reverse().forEach(function (r) {
-      var o = r.outcome_sustained || r.outcome || "";
+      /* 0.4.79: only outcome_sustained is final.  The composite
+       * outcome is provisional -- it may read null while the
+       * sustained window is still open.  Show "pending" until the
+       * collector has classified the swap on the sustained ruler
+       * (T+60..T+300 after the swap). */
+      var o = r.outcome_sustained || "";
       var pill = o
         ? '<span class="sp ' + o + '">' + o + '</span>'
-        : '<span class="sp dash">&hellip;</span>';
+        : '<span class="sp pending">pending</span>';
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
