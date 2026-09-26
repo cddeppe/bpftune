@@ -1,3 +1,23 @@
+bpftune (0.4.79) unstable; urgency=medium
+
+  * configurable v4 bucket prefix, live via 'bpftune --prefix4=N'.
+
+    The 0.4.55 /16 merge is now a runtime knob: N is 1-32 bits of
+    the remote IPv4 kept in the bucket key.  Default 16 preserves
+    current behavior byte-for-byte.  Setting a different N does
+    NOT wipe learned state: existing buckets keep their keys,
+    their swap_score, their streaks, their rate_emas.  Only new
+    sockets land under the new prefix.
+
+    Mechanism: tuner_config_map grows from 1 to 3 slots (slot 0
+    keeps exp_pct; slot 1 is prefix4; slot 2 reserved).  Same
+    pinned path, so the CLI sees both slots via the same fd.
+    BPF helper bucket_prefix4() reads slot 1 (clamped to 1-32)
+    and bucket_key_apply_prefix() re-masks the v4-mapped key
+    after the switch at both ESTABLISHED sites.
+
+ -- cddeppe <cddeppe@users.noreply.github.com>  Sat, 26 Sep 2026 10:13:49 +0200
+
 bpftune (0.4.78.2) unstable; urgency=medium
 
   * reader and collector accept v6:XXXXXXXX as a bucket key.

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (c) 2023, Oracle and/or its affiliates.
@@ -121,6 +122,11 @@ static void stop_reanchor(void);
 #define EXPLORE_PIN_DIR  "/sys/fs/bpf/bpftune/tcp_conn"
 #define EXPLORE_PIN_PATH EXPLORE_PIN_DIR "/explore"
 #define EXPLORE_STATE    "/var/lib/bpftune/explore_pct"
+#define PREFIX4_STATE    "/var/lib/bpftune/prefix4"
+#define PREFIX6_STATE    "/var/lib/bpftune/prefix6"
+#define ALIAS_PIN_PATH   EXPLORE_PIN_DIR "/aliases"
+#define ALIAS_FILE       "/etc/bpftune/aliases"
+#define LABELS_FILE      "/var/lib/bpftune/aliases.labels.json"
 
 /* 0.4.64: pin tuner_config_map under BPFTUNE_PIN so a separate
  * process ('bpftune --exp') can read and update it without
@@ -165,9 +171,186 @@ static int pin_explore_map(struct bpftuner *tuner)
 		bpftune_log(LOG_ERR, "explore: init failed: %s\n", strerror(-err));
 		return err;
 	}
+        {
+                __u32 pfx = 16;
+                FILE *pf = fopen(PREFIX4_STATE, "r");
+                if (pf) {
+                        unsigned int v;
+                        if (fscanf(pf, "%u", &v) == 1 && v >= 1 && v <= 32)
+                                pfx = v;
+                        fclose(pf);
+                }
+                key = 1;
+                if (bpf_map_update_elem(fd, &key, &pfx, BPF_ANY))
+                        bpftune_log(LOG_ERR,
+                                    "prefix4: init failed: %s\n",
+                                    strerror(errno));
+                else
+                        bpftune_log(BPFTUNE_LOG_LEVEL,
+                                    "prefix4: pinned at %s, pfx=%u\n",
+                                    EXPLORE_PIN_PATH, pfx);
+        }
+        {
+                __u32 pfx6 = 32;
+                FILE *pf = fopen(PREFIX6_STATE, "r");
+                if (pf) {
+                        unsigned int v;
+                        if (fscanf(pf, "%u", &v) == 1 && v >= 1 && v <= 128)
+                                pfx6 = v;
+                        fclose(pf);
+                }
+                key = 2;
+                if (bpf_map_update_elem(fd, &key, &pfx6, BPF_ANY))
+                        bpftune_log(LOG_ERR,
+                                    "prefix6: init failed: %s\n",
+                                    strerror(errno));
+                else
+                        bpftune_log(BPFTUNE_LOG_LEVEL,
+                                    "prefix6: pinned at %s, pfx6=%u\n",
+                                    EXPLORE_PIN_PATH, pfx6);
+        }
 	bpftune_log(BPFTUNE_LOG_LEVEL,
 		    "explore: pinned at %s, pct=%u\n", EXPLORE_PIN_PATH, pct);
 	return 0;
+}
+
+/* 0.4.79: load /etc/bpftune/aliases into the pinned dest_alias_map.
+ * File format, one rule per line, '#' comments allowed:
+ *     FROM_IP = TO_IP
+ * FROM is the raw destination as the socket reports it.  TO is the
+ * canonical bucket key to use instead.  Both v4 and v6 accepted.
+ * Parse or update errors logged and skipped. */
+static int alias_text_to_key(const char *s, struct in6_addr *out)
+{
+        struct in_addr a4;
+        memset(out, 0, sizeof(*out));
+        if (inet_pton(AF_INET, s, &a4) == 1) {
+                out->s6_addr[10] = 0xff;
+                out->s6_addr[11] = 0xff;
+                memcpy(&out->s6_addr[12], &a4.s_addr, 4);
+                return 0;
+        }
+        if (inet_pton(AF_INET6, s, out) == 1)
+                return 0;
+        return -1;
+}
+
+static int pin_alias_map(struct bpftuner *tuner)
+{
+        struct bpf_map *map;
+        struct in6_addr from, to;
+        char line[256];
+        FILE *f = NULL, *jf = NULL;
+        int fd, err, n = 0, nj = 0;
+
+        map = bpftuner_bpf_map_get(tcp_conn, tuner, dest_alias_map);
+        if (!map) {
+                bpftune_log(LOG_ERR, "aliases: map not found\n");
+                return -ENOENT;
+        }
+        fd = bpf_map__fd(map);
+        if (fd < 0)
+                return -EINVAL;
+
+        mkdir(BPFTUNE_PIN, 0755);
+        mkdir(EXPLORE_PIN_DIR, 0755);
+        unlink(ALIAS_PIN_PATH);
+        err = bpf_obj_pin(fd, ALIAS_PIN_PATH);
+        if (err) {
+                bpftune_log(LOG_ERR, "aliases: pin failed: %s\n",
+                            strerror(-err));
+                return err;
+        }
+
+        f = fopen(ALIAS_FILE, "r");
+        if (!f) {
+                bpftune_log(BPFTUNE_LOG_LEVEL,
+                            "aliases: no %s, none loaded\n", ALIAS_FILE);
+                return 0;
+        }
+
+        jf = fopen(LABELS_FILE ".tmp", "w");
+        if (jf)
+                fputs("{\n", jf);
+
+        while (fgets(line, sizeof(line), f)) {
+                char *p = line, *eq, *to_s, *lbl, *e;
+
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p == '#' || *p == '\n' || *p == '\0') continue;
+                eq = strchr(p, '=');
+                if (!eq) continue;
+                *eq = '\0';
+
+                /* trim trailing ws from FROM */
+                e = p + strlen(p);
+                while (e > p && (e[-1] == ' ' || e[-1] == '\t'))
+                        *--e = '\0';
+
+                /* RHS: canonical IP, optional third column = label */
+                to_s = eq + 1;
+                while (*to_s == ' ' || *to_s == '\t') to_s++;
+                e = to_s + strlen(to_s);
+                while (e > to_s && (e[-1] == ' ' || e[-1] == '\t' ||
+                                    e[-1] == '\n' || e[-1] == '\r'))
+                        *--e = '\0';
+
+                lbl = NULL;
+                {
+                        char *sp = to_s;
+                        while (*sp && *sp != ' ' && *sp != '\t') sp++;
+                        if (*sp) {
+                                *sp = '\0';
+                                lbl = sp + 1;
+                                while (*lbl == ' ' || *lbl == '\t') lbl++;
+                                e = lbl + strlen(lbl);
+                                while (e > lbl && (e[-1] == ' ' ||
+                                                   e[-1] == '\t' ||
+                                                   e[-1] == '\n' ||
+                                                   e[-1] == '\r'))
+                                        *--e = '\0';
+                                if (!*lbl) lbl = NULL;
+                        }
+                }
+
+                if (alias_text_to_key(p, &from)) {
+                        bpftune_log(LOG_ERR, "aliases: bad FROM '%s'\n", p);
+                        continue;
+                }
+                if (alias_text_to_key(to_s, &to)) {
+                        bpftune_log(LOG_ERR, "aliases: bad TO '%s'\n", to_s);
+                        continue;
+                }
+                if (bpf_map_update_elem(fd, &from, &to, BPF_ANY)) {
+                        bpftune_log(LOG_ERR, "aliases: update failed: %s\n",
+                                    strerror(errno));
+                        continue;
+                }
+                n++;
+                if (lbl && jf) {
+                        if (nj) fputs(",\n", jf);
+                        fputs("  \"", jf);
+                        fputs(to_s, jf);
+                        fputs("\": \"", jf);
+                        fputs(lbl, jf);
+                        fputs("\"", jf);
+                        nj++;
+                }
+        }
+
+        fclose(f);
+        if (jf) {
+                if (nj) fputs("\n", jf);
+                fputs("}\n", jf);
+                fclose(jf);
+                rename(LABELS_FILE ".tmp", LABELS_FILE);
+        } else {
+                unlink(LABELS_FILE);
+        }
+        bpftune_log(BPFTUNE_LOG_LEVEL,
+                    "aliases: loaded %d entries (%d labels) from %s\n",
+                    n, nj, ALIAS_FILE);
+        return 0;
 }
 
 int init(struct bpftuner *tuner)
@@ -211,6 +394,9 @@ int init(struct bpftuner *tuner)
 	if (pin_explore_map(tuner))
 		bpftune_log(LOG_ERR,
 			    "explore: pin failed; --exp will be unavailable\n");
+	if (pin_alias_map(tuner))
+		bpftune_log(LOG_ERR,
+			    "aliases: pin failed; aliases unavailable\n");
 
 	/* attach to root cgroup */
 	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
@@ -220,6 +406,38 @@ int init(struct bpftuner *tuner)
 	err = bpftuner_cgroup_attach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
 	if (err)
 		goto out;
+
+	/* 0.4.79: verify both progs actually landed on the root cgroup.
+	 * Observed on fast systemctl restart: the attaches return 0 but
+	 * the tree ends up empty, then a second restart fixes it.  The
+	 * exact interleaving between the dying instance's detach and
+	 * ours hasn't been pinned down; this retry makes startup
+	 * reliable regardless.  Up to 8 attempts, 250ms apart (~2s). */
+	{
+		int attempt;
+		for (attempt = 0; attempt < 8; attempt++) {
+			FILE *p = popen("bpftool cgroup tree 2>/dev/null", "r");
+			int n = 0;
+			char buf[512];
+			if (!p)
+				break;
+			while (fgets(buf, sizeof(buf), p)) {
+				if (strstr(buf, "bpftune_conn_tuner"))
+					n++;
+			}
+			pclose(p);
+			if (n >= 2)
+				break;
+			bpftune_log(LOG_INFO,
+			            "cgroup attach verify: %d of 2 progs visible, retry %d/8\n",
+			            n, attempt + 1);
+			usleep(250000);
+			bpftuner_cgroup_detach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+			bpftuner_cgroup_detach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
+			bpftuner_cgroup_attach(tuner, CONN_TUNER_BPF, BPF_CGROUP_SOCK_OPS);
+			bpftuner_cgroup_attach(tuner, CONN_TUNER_VOTE_BPF, BPF_CGROUP_SOCK_OPS);
+		}
+	}
 
 	start_reanchor(tuner);
 

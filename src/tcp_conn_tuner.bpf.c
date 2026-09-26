@@ -37,7 +37,17 @@ BPF_MAP_DEF(midsamp_map, BPF_MAP_TYPE_SK_STORAGE, int, __u64, 0, BPF_F_NO_PREALL
 /* 0.4.64: runtime config map.  Currently a single __u32 at key 0:
  * exploration percent for fresh sockets.  Pinned by the userspace
  * daemon so 'bpftune --exp=N' can update it live. */
-BPF_MAP_DEF(tuner_config_map, BPF_MAP_TYPE_ARRAY, __u32, __u32, 1, 0);
+/* slot 0 = exp_pct, slot 1 = v4 bucket prefix (1-32),
+ * slot 2 = reserved. */
+BPF_MAP_DEF(tuner_config_map, BPF_MAP_TYPE_ARRAY, __u32, __u32, 3, 0);
+
+/* 0.4.79: alias table.  Key is the raw destination as it arrives
+ * from the socket (v4-mapped or v6/32 top bits); value is the
+ * canonical bucket key to use instead.  Lets multiple public IPs
+ * that the operator knows are the same physical destination share
+ * one bucket.  Loaded from /etc/bpftune/aliases at daemon start. */
+BPF_MAP_DEF(dest_alias_map, BPF_MAP_TYPE_HASH, struct in6_addr,
+            struct in6_addr, 1024, 0);
 
 /* per-CPU scratch buffer used to initialize new remote_host entries without
  * placing a >512B struct temporary on the BPF stack (NUM_TCP_CONG_ALGS=16
@@ -117,6 +127,81 @@ static __always_inline __u32 explore_protect_votes(void)
 	if (pct >= 100)
 		return 0;
 	return (EXPLORE_PROTECT_VOTES * (100 - pct)) / 95;
+}
+
+/* 0.4.79: v4 bucket prefix, read live from tuner_config_map[1].
+ * Default 16 = the 0.4.55 /16 merge.  Changing --prefix4 only
+ * affects NEW sockets' keys; existing buckets keep their key and
+ * their accumulated scores/streaks. */
+static __always_inline __u32 bucket_prefix4(void)
+{
+        __u32 key = 1;
+        __u32 pfx = 16;
+        __u32 *p = bpf_map_lookup_elem(&tuner_config_map, &key);
+        if (p)
+                pfx = *p;
+        if (pfx < 1)  pfx = 1;
+        if (pfx > 32) pfx = 32;
+        return pfx;
+}
+/* 0.4.79: v6 bucket prefix, read live from tuner_config_map[2].
+ * Default 32 = the 0.4.56 /32 merge. */
+static __always_inline __u32 bucket_prefix6(void)
+{
+        __u32 key = 2;
+        __u32 pfx = 32;
+        __u32 *p = bpf_map_lookup_elem(&tuner_config_map, &key);
+        if (p)
+                pfx = *p;
+        if (pfx < 1)   pfx = 1;
+        if (pfx > 128) pfx = 128;
+        return pfx;
+}
+
+
+static __always_inline void bucket_key_apply_prefix(struct in6_addr *key)
+{
+        if (key->s6_addr32[2] == bpf_htonl(0xffff)) {
+                __u32 pfx = bucket_prefix4();
+                __u32 ip_host = bpf_ntohl(key->s6_addr32[3]);
+                __u32 mask = pfx ? (0xffffffffu << (32 - pfx)) : 0;
+                key->s6_addr32[3] = bpf_htonl(ip_host & mask);
+                return;
+        }
+        /* 0.4.79: v6 side.  pfx 1-128; zero everything after. */
+        {
+                __u32 pfx = bucket_prefix6();
+                __u32 word = pfx / 32;
+                __u32 bits = pfx % 32;
+                int i;
+                for (i = 0; i < 4; i++) {
+                        if ((__u32)i < word)
+                                continue;
+                        if ((__u32)i == word) {
+                                if (bits == 0) {
+                                        key->s6_addr32[i] = 0;
+                                } else {
+                                        __u32 m = 0xffffffffu << (32 - bits);
+                                        __u32 h = bpf_ntohl(key->s6_addr32[i]);
+                                        key->s6_addr32[i] = bpf_htonl(h & m);
+                                }
+                        } else {
+                                key->s6_addr32[i] = 0;
+                        }
+                }
+        }
+}
+
+/* 0.4.79: prefer an alias if the operator has declared one for
+ * this exact raw destination; otherwise fall through to prefix. */
+static __always_inline void bucket_key_alias_or_prefix(struct in6_addr *key)
+{
+        struct in6_addr *a = bpf_map_lookup_elem(&dest_alias_map, key);
+        if (a) {
+                *key = *a;
+                return;
+        }
+        bucket_key_apply_prefix(key);
 }
 
 static __always_inline int set_cong(struct bpf_sock_ops *ops,
@@ -212,18 +297,23 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
     }
     switch (ops->family) {
     case AF_INET:
+        /* 0.4.79: don't pre-mask; bucket_key_apply_prefix() applies
+         * the configured prefix (default 16 = old /16 behavior). */
         key->s6_addr32[2] = bpf_htonl(0xffff);
-        key->s6_addr32[3] = ops->remote_ip4 & bpf_htonl(0xFFFF0000)   /* 0.4.55: /16 merge */;
+        key->s6_addr32[3] = ops->remote_ip4;
         break;
     case AF_INET6:
-        key->s6_addr32[0] = ops->remote_ip6[0];  /* 0.4.56: /32 */
-        key->s6_addr32[1] = 0;
-        key->s6_addr32[2] = 0;
-        key->s6_addr32[3] = 0;
+        /* 0.4.79: keep the full address; bucket_key_apply_prefix()
+         * masks to the configured prefix6 (default 32 = the old /32). */
+        key->s6_addr32[0] = ops->remote_ip6[0];
+        key->s6_addr32[1] = ops->remote_ip6[1];
+        key->s6_addr32[2] = ops->remote_ip6[2];
+        key->s6_addr32[3] = ops->remote_ip6[3];
         break;
     default:
         return 1;
     }
+    bucket_key_alias_or_prefix(key);
     remote_host = get_remote_host(key, true);
     if (!remote_host)
         return 1;
@@ -575,18 +665,22 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
     }
     switch (ops->family) {
     case AF_INET:
+        /* 0.4.79: raw; helper applies the configured prefix. */
         key->s6_addr32[2] = bpf_htonl(0xffff);
-        key->s6_addr32[3] = ops->remote_ip4 & bpf_htonl(0xFFFF0000);
+        key->s6_addr32[3] = ops->remote_ip4;
         break;
     case AF_INET6:
-        key->s6_addr32[0] = ops->remote_ip6[0];  /* 0.4.56: /32 */
-        key->s6_addr32[1] = 0;
-        key->s6_addr32[2] = 0;
-        key->s6_addr32[3] = 0;
+        /* 0.4.79: keep the full address; bucket_key_apply_prefix()
+         * masks to the configured prefix6 (default 32 = the old /32). */
+        key->s6_addr32[0] = ops->remote_ip6[0];
+        key->s6_addr32[1] = ops->remote_ip6[1];
+        key->s6_addr32[2] = ops->remote_ip6[2];
+        key->s6_addr32[3] = ops->remote_ip6[3];
         break;
     default:
         return 1;
     }
+    bucket_key_alias_or_prefix(key);
     remote_host = get_remote_host(key, false);
     if (!remote_host)
         return 1;

@@ -307,6 +307,8 @@ void print_support_level(enum bpftune_support_level support_level)
 
 #define EXPLORE_PIN_PATH "/sys/fs/bpf/bpftune/tcp_conn/explore"
 #define EXPLORE_STATE    "/var/lib/bpftune/explore_pct"
+#define PREFIX4_STATE    "/var/lib/bpftune/prefix4"
+#define PREFIX6_STATE    "/var/lib/bpftune/prefix6"
 #define EXPLORE_PCT_MAX  100
 
 /* 0.4.64: 'bpftune --exp[=N]'.  Reads or updates the pinned
@@ -376,6 +378,120 @@ static int do_explore(const char *arg)
 	return 0;
 }
 
+/* 0.4.79: 'bpftune --prefix4[=N]' */
+/* 0.4.79: 'bpftune --prefix6[=N]' — 1-128; default 32. */
+static int do_prefix6(const char *arg)
+{
+        __u32 key = 2, pfx;
+        int fd;
+
+        fd = bpf_obj_get(EXPLORE_PIN_PATH);
+        if (fd < 0) {
+                fprintf(stderr,
+                        "bpftune: no pinned map at %s\n", EXPLORE_PIN_PATH);
+                return 1;
+        }
+        if (bpf_map_lookup_elem(fd, &key, &pfx)) {
+                fprintf(stderr, "bpftune: read failed: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+        }
+        if (!arg) {
+                printf("prefix6: /%u\n", pfx);
+                close(fd);
+                return 0;
+        }
+        {
+                char *end = NULL;
+                long v = strtol(arg, &end, 10);
+                __u32 old = pfx, nv;
+
+                if (end == arg || *end != '\0' || v < 1 || v > 128) {
+                        fprintf(stderr, "bpftune: prefix6 must be 1-128\n");
+                        close(fd);
+                        return 1;
+                }
+                nv = (__u32)v;
+                if (bpf_map_update_elem(fd, &key, &nv, BPF_ANY)) {
+                        fprintf(stderr, "bpftune: update failed: %s\n",
+                                strerror(errno));
+                        close(fd);
+                        return 1;
+                }
+                {
+                        FILE *f = fopen(PREFIX6_STATE ".tmp", "w");
+                        if (f) {
+                                fprintf(f, "%u\n", nv);
+                                fclose(f);
+                                rename(PREFIX6_STATE ".tmp", PREFIX6_STATE);
+                        }
+                }
+                if (old == nv)
+                        printf("prefix6: /%u\n", nv);
+                else
+                        printf("prefix6: /%u -> /%u\n", old, nv);
+        }
+        close(fd);
+        return 0;
+}
+
+static int do_prefix4(const char *arg)
+{
+        __u32 key = 1, pfx;
+        int fd;
+
+        fd = bpf_obj_get(EXPLORE_PIN_PATH);
+        if (fd < 0) {
+                fprintf(stderr,
+                        "bpftune: no pinned map at %s\n", EXPLORE_PIN_PATH);
+                return 1;
+        }
+        if (bpf_map_lookup_elem(fd, &key, &pfx)) {
+                fprintf(stderr, "bpftune: read failed: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+        }
+        if (!arg) {
+                printf("prefix4: /%u\n", pfx);
+                close(fd);
+                return 0;
+        }
+        {
+                char *end = NULL;
+                long v = strtol(arg, &end, 10);
+                __u32 old = pfx, nv;
+
+                if (end == arg || *end != '\0' || v < 1 || v > 32) {
+                        fprintf(stderr, "bpftune: prefix4 must be 1-32\n");
+                        close(fd);
+                        return 1;
+                }
+                nv = (__u32)v;
+                if (bpf_map_update_elem(fd, &key, &nv, BPF_ANY)) {
+                        fprintf(stderr, "bpftune: update failed: %s\n",
+                                strerror(errno));
+                        close(fd);
+                        return 1;
+                }
+                {
+                        FILE *f = fopen(PREFIX4_STATE ".tmp", "w");
+                        if (f) {
+                                fprintf(f, "%u\n", nv);
+                                fclose(f);
+                                rename(PREFIX4_STATE ".tmp", PREFIX4_STATE);
+                        }
+                }
+                if (old == nv)
+                        printf("prefix4: /%u\n", nv);
+                else
+                        printf("prefix4: /%u -> /%u\n", old, nv);
+        }
+        close(fd);
+        return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	static const struct option options[] = {
@@ -396,6 +512,8 @@ int main(int argc, char *argv[])
 		{ "version",	no_argument,		NULL,	'V' },
             { "reset-state", no_argument,        NULL,   'x' },
             { "explore",    optional_argument,   NULL,   'e' },
+		{ "prefix4",    optional_argument,   NULL,  1000 },
+		{ "prefix6",    optional_argument,   NULL,  1001 },
 		{ 0 }
 	};
 	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
@@ -409,6 +527,10 @@ int main(int argc, char *argv[])
 	bool client = false;
 	char *query = NULL;
 	const char *explore_arg = NULL;
+	int prefix4_seen = 0;
+	int prefix6_seen = 0;
+	const char *prefix4_arg = NULL;
+	const char *prefix6_arg = NULL;
 	bool explore_seen = false;
 	int interval = 100;
 	unsigned short port = 0;
@@ -477,6 +599,14 @@ int main(int argc, char *argv[])
                         unlink("/var/lib/bpftune/tcp_conn_tuner.state");
                         fprintf(stderr, "reset tcp_conn_tuner state\n");
                         return 0;
+                case 1000:
+                        prefix4_seen = 1;
+                        prefix4_arg = optarg;
+                        break;
+                case 1001:
+                        prefix6_seen = 1;
+                        prefix6_arg = optarg;
+                        break;
                 case 'e':
                         explore_seen = true;
                         explore_arg = optarg;
@@ -495,8 +625,13 @@ int main(int argc, char *argv[])
 			use_stderr ? bpftune_log_stderr : bpftune_log_syslog,
 			NULL);
 
+	if (prefix4_seen)
+	        return do_prefix4(prefix4_arg);
+	if (prefix6_seen)
+	        return do_prefix6(prefix6_arg);
+
 	if (explore_seen)
-		return do_explore(explore_arg);
+	        return do_explore(explore_arg);
 
 	if (client) {
 		char buf[BPFTUNE_SERVER_MSG_MAX];
