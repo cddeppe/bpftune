@@ -14,6 +14,35 @@ from collections import defaultdict, deque
 HIST = "/var/lib/bpftune/history"
 DATA = os.path.join(HIST, "data")
 
+_LABELS_CACHE = None
+_LABELS_MTIME = None
+
+def _load_labels():
+    """0.4.79: {canonical_ip: label} from aliases.labels.json."""
+    global _LABELS_CACHE, _LABELS_MTIME
+    path = "/var/lib/bpftune/aliases.labels.json"
+    try:
+        m = os.path.getmtime(path)
+    except OSError:
+        _LABELS_CACHE = {}
+        _LABELS_MTIME = None
+        return _LABELS_CACHE
+    if _LABELS_CACHE is not None and _LABELS_MTIME == m:
+        return _LABELS_CACHE
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        _LABELS_CACHE = d if isinstance(d, dict) else {}
+    except Exception:
+        _LABELS_CACHE = {}
+    _LABELS_MTIME = m
+    return _LABELS_CACHE
+
+def _label_for(addr):
+    if not addr:
+        return addr
+    return _load_labels().get(addr, addr)
+
 RANGES = {
     "1h":  (3600,       60),
     "24h": (86400,      300),
@@ -209,6 +238,7 @@ def aggregate_all(bfile, algs, now):
         for row in rd:
             a = row[ai] if ai < len(row) else ""
             a = a or "unknown"
+            a = _label_for(a)
             if a.count(".") == 3 and not a.endswith(".0.0"):
                 continue
             counts[a] = counts.get(a, 0) + 1
@@ -245,6 +275,7 @@ def aggregate_all(bfile, algs, now):
             if len(row) < hlen:
                 continue
             a = row[ai]
+            a = _label_for(a)
             if a not in topset:
                 continue
             t_raw = row[ti]

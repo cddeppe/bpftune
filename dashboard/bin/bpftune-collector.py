@@ -292,7 +292,7 @@ def collect_buckets(ts_epoch, map_data):
             best_i = 0
         row = {
             "collected_ts": ts_epoch,
-            "addr": _label_for(addr),
+            "addr": addr,
             "instances": inst,
             "min_rtt": int(v.get("min_rtt", 0) or 0),
             "ref_rate": int(v.get("max_rate_delivered", 0) or 0),
