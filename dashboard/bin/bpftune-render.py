@@ -1412,6 +1412,18 @@ INDEX_HTML = r"""<!doctype html>
 
   function $(id) { return document.getElementById(id); }
   function setHTML(id, s) { var e = $(id); if (e) e.innerHTML = s; }
+  /* 0.4.79: monotonic-age label for recent swaps / proofs. */
+  var SERVER_NOW_MONO = 0;
+  function ageLabel(boot_ts) {
+    if (!boot_ts || !SERVER_NOW_MONO) return '';
+    var age = SERVER_NOW_MONO - boot_ts;
+    if (age < 0) return '';
+    if (age < 60)    return Math.round(age) + 's';
+    if (age < 3600)  return Math.round(age/60) + 'm';
+    if (age < 86400) return Math.round(age/3600) + 'h';
+    return Math.round(age/86400) + 'd';
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
@@ -1830,7 +1842,9 @@ INDEX_HTML = r"""<!doctype html>
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
-          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s</span>' +
+          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s' +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
         '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
         '</div>';
     });
@@ -1865,7 +1879,9 @@ INDEX_HTML = r"""<!doctype html>
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
-          ' &middot; d' + r.d + '</span>' +
+          ' &middot; d' + r.d +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
         pill +
         '</div>';
     });
@@ -1873,6 +1889,7 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderLiveState(doc) {
+    if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
     renderBuild(doc.build || {});
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);

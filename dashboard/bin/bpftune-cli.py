@@ -962,6 +962,7 @@ def data_recent_swaps(text, n=10):
         rb_alg = (CONGS[int(rb_i) & 15]
                   if rb_i and rb_i.isdigit() else None)
         rows.append({
+            "boot_ts":  ts,
             "from_alg": CONGS[fa] if fa < 16 else str(fa),
             "to_alg":   CONGS[ta] if ta < 16 else str(ta),
             "d":        int(d),
@@ -983,15 +984,18 @@ def data_recent_proofs(text, n=16):
     cdest = _cookie_dest_map(text)
     out = []
     for l in lines:
-        m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
+        m = re.search(r"(\d+\.\d+): .*proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
         if not m:
             continue
-        a = int(m.group(2))
+        ts = float(m.group(1))
+        c = m.group(2)
+        a = int(m.group(3))
         out.append({
+            "boot_ts":  ts,
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
-            "mbps": round(int(m.group(3)) / BPS_TO_MBPS, 1),
-            "tier": "proved" if m.group(4) == "2" else "good",
-            "dest": _dest_str(*(cdest.get(m.group(1)) or (None, None))),
+            "mbps": round(int(m.group(4)) / BPS_TO_MBPS, 1),
+            "tier": "proved" if m.group(5) == "2" else "good",
+            "dest": _dest_str(*(cdest.get(c) or (None, None))),
         })
     return out
 
@@ -1066,12 +1070,21 @@ def data_live_leaders(hosts):
     return out
 
 
+def _uptime_now():
+    try:
+        with open('/proc/uptime') as f:
+            return float(f.read().split()[0])
+    except Exception:
+        return 0.0
+
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
     text    = tail_recent()
     return {
         "generated_ts":   int(time.time()),
+        "now_mono":       _uptime_now(),
         "hostname":       os.uname().nodename,
         "build":          data_build(logpath),
         "system":         data_system(),

@@ -1169,6 +1169,7 @@ def data_recent_swaps(text, n=10):
         rb_alg = (CONGS[int(rb_i) & 15]
                   if rb_i and rb_i.isdigit() else None)
         rows.append({
+            "boot_ts":  ts,
             "from_alg": CONGS[fa] if fa < 16 else str(fa),
             "to_alg":   CONGS[ta] if ta < 16 else str(ta),
             "d":        int(d),
@@ -1190,15 +1191,18 @@ def data_recent_proofs(text, n=16):
     cdest = _cookie_dest_map(text)
     out = []
     for l in lines:
-        m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
+        m = re.search(r"(\d+\.\d+): .*proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", l)
         if not m:
             continue
-        a = int(m.group(2))
+        ts = float(m.group(1))
+        c = m.group(2)
+        a = int(m.group(3))
         out.append({
+            "boot_ts":  ts,
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
-            "mbps": round(int(m.group(3)) / BPS_TO_MBPS, 1),
-            "tier": "proved" if m.group(4) == "2" else "good",
-            "dest": _dest_str(*(cdest.get(m.group(1)) or (None, None))),
+            "mbps": round(int(m.group(4)) / BPS_TO_MBPS, 1),
+            "tier": "proved" if m.group(5) == "2" else "good",
+            "dest": _dest_str(*(cdest.get(c) or (None, None))),
         })
     return out
 
@@ -1273,12 +1277,21 @@ def data_live_leaders(hosts):
     return out
 
 
+def _uptime_now():
+    try:
+        with open('/proc/uptime') as f:
+            return float(f.read().split()[0])
+    except Exception:
+        return 0.0
+
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
     text    = tail_recent()
     return {
         "generated_ts":   int(time.time()),
+        "now_mono":       _uptime_now(),
         "hostname":       os.uname().nodename,
         "build":          data_build(logpath),
         "system":         data_system(),
@@ -3760,6 +3773,18 @@ INDEX_HTML = r"""<!doctype html>
 
   function $(id) { return document.getElementById(id); }
   function setHTML(id, s) { var e = $(id); if (e) e.innerHTML = s; }
+  /* 0.4.79: monotonic-age label for recent swaps / proofs. */
+  var SERVER_NOW_MONO = 0;
+  function ageLabel(boot_ts) {
+    if (!boot_ts || !SERVER_NOW_MONO) return '';
+    var age = SERVER_NOW_MONO - boot_ts;
+    if (age < 0) return '';
+    if (age < 60)    return Math.round(age) + 's';
+    if (age < 3600)  return Math.round(age/60) + 'm';
+    if (age < 86400) return Math.round(age/3600) + 'h';
+    return Math.round(age/86400) + 'd';
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
@@ -4178,7 +4203,9 @@ INDEX_HTML = r"""<!doctype html>
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
-          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s</span>' +
+          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s' +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
         '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
         '</div>';
     });
@@ -4213,7 +4240,9 @@ INDEX_HTML = r"""<!doctype html>
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
-          ' &middot; d' + r.d + '</span>' +
+          ' &middot; d' + r.d +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
         pill +
         '</div>';
     });
@@ -4221,6 +4250,7 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   function renderLiveState(doc) {
+    if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
     renderBuild(doc.build || {});
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);
