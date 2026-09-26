@@ -264,9 +264,68 @@ def _canon_bucket(addr):
     return addr
 
 
+_FOLD_CACHE = None
+_FOLD_MTIME = None
+
+def _load_fold():
+    """0.4.79: {"v6:XXXXXXXX": "canonical"} from /32-form entries in
+    /etc/bpftune/aliases.  Line form:
+        2603:c020:0:0:0:0:0:0 = 89.168.0.0 [label]
+    Only lines where groups 2..7 are all zero are treated as /32 folds."""
+    global _FOLD_CACHE, _FOLD_MTIME
+    import os as _os
+    path = "/etc/bpftune/aliases"
+    try:
+        m = _os.path.getmtime(path)
+    except OSError:
+        _FOLD_CACHE = {}
+        _FOLD_MTIME = None
+        return _FOLD_CACHE
+    if _FOLD_CACHE is not None and _FOLD_MTIME == m:
+        return _FOLD_CACHE
+    out = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                lhs, rhs = line.split("=", 1)
+                lhs = lhs.strip()
+                bits = rhs.strip().split()
+                if not bits:
+                    continue
+                to = bits[0]
+                if "." not in to:
+                    continue
+                if ":" not in lhs:
+                    continue
+                groups = lhs.split(":")
+                if len(groups) != 8:
+                    continue
+                if not all(g in ("0", "0000", "") for g in groups[2:]):
+                    continue
+                key = "v6:" + (groups[0].zfill(4) + groups[1].zfill(4)).lower()
+                out[key] = to
+    except Exception:
+        out = {}
+    _FOLD_CACHE = out
+    _FOLD_MTIME = m
+    return out
+
+
+def _fold_v6(addr):
+    """0.4.79: replace a v6 /32 bucket key with its canonical v4 bucket
+    if that /32 is declared in /etc/bpftune/aliases."""
+    if not addr or not addr.startswith("v6:"):
+        return addr
+    return _load_fold().get(addr, addr)
+
+
 def _label_for(addr):
     if not addr:
         return addr
+    addr = _fold_v6(addr)
     addr = _canon_bucket(addr)
     return _load_labels().get(addr, addr)
 
@@ -1606,6 +1665,64 @@ def _load_labels():
     return _LABELS_CACHE
 
 
+_FOLD_CACHE = None
+_FOLD_MTIME = None
+
+def _load_fold():
+    """0.4.79: {"v6:XXXXXXXX": "canonical"} from /32-form entries in
+    /etc/bpftune/aliases.  Line form:
+        2603:c020:0:0:0:0:0:0 = 89.168.0.0 [label]
+    Only lines where groups 2..7 are all zero are treated as /32 folds."""
+    global _FOLD_CACHE, _FOLD_MTIME
+    import os as _os
+    path = "/etc/bpftune/aliases"
+    try:
+        m = _os.path.getmtime(path)
+    except OSError:
+        _FOLD_CACHE = {}
+        _FOLD_MTIME = None
+        return _FOLD_CACHE
+    if _FOLD_CACHE is not None and _FOLD_MTIME == m:
+        return _FOLD_CACHE
+    out = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                lhs, rhs = line.split("=", 1)
+                lhs = lhs.strip()
+                bits = rhs.strip().split()
+                if not bits:
+                    continue
+                to = bits[0]
+                if "." not in to:
+                    continue
+                if ":" not in lhs:
+                    continue
+                groups = lhs.split(":")
+                if len(groups) != 8:
+                    continue
+                if not all(g in ("0", "0000", "") for g in groups[2:]):
+                    continue
+                key = "v6:" + (groups[0].zfill(4) + groups[1].zfill(4)).lower()
+                out[key] = to
+    except Exception:
+        out = {}
+    _FOLD_CACHE = out
+    _FOLD_MTIME = m
+    return out
+
+
+def _fold_v6(addr):
+    """0.4.79: replace a v6 /32 bucket key with its canonical v4 bucket
+    if that /32 is declared in /etc/bpftune/aliases."""
+    if not addr or not addr.startswith("v6:"):
+        return addr
+    return _load_fold().get(addr, addr)
+
+
 def _label_for(addr):
     if not addr:
         return addr
@@ -1830,7 +1947,7 @@ def collect_buckets(ts_epoch, map_data):
             best_i = 0
         row = {
             "collected_ts": ts_epoch,
-            "addr": addr,
+            "addr": _fold_v6(addr),
             "instances": inst,
             "min_rtt": int(v.get("min_rtt", 0) or 0),
             "ref_rate": int(v.get("max_rate_delivered", 0) or 0),
