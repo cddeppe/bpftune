@@ -4336,7 +4336,7 @@ INDEX_HTML = r"""<!doctype html>
       }).filter(function (c) { return c in source; });
     }
 
-    var rateCols = makeSeries("re_", rateS);
+    var rateCols = makeSeries("re_", s);
     mk("rate", {
       type: "line",
       data: {datasets: lineData(rateCols, s, ts, PALETTE, scaleRe, 0)},
