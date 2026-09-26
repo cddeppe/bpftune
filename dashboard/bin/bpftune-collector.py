@@ -41,6 +41,39 @@ lost (at most 300 seconds of unresolved swaps).
 import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
 from pathlib import Path
 
+
+_LABELS_CACHE = None
+_LABELS_MTIME = None
+
+def _load_labels():
+    """0.4.79: /var/lib/bpftune/aliases.labels.json {canonical_ip: label}."""
+    global _LABELS_CACHE, _LABELS_MTIME
+    import os as _os, json as _json
+    path = "/var/lib/bpftune/aliases.labels.json"
+    try:
+        m = _os.path.getmtime(path)
+    except OSError:
+        _LABELS_CACHE = {}
+        _LABELS_MTIME = None
+        return _LABELS_CACHE
+    if _LABELS_CACHE is not None and _LABELS_MTIME == m:
+        return _LABELS_CACHE
+    try:
+        with open(path) as f:
+            d = _json.load(f)
+        _LABELS_CACHE = d if isinstance(d, dict) else {}
+    except Exception:
+        _LABELS_CACHE = {}
+    _LABELS_MTIME = m
+    return _LABELS_CACHE
+
+
+def _label_for(addr):
+    if not addr:
+        return addr
+    return _load_labels().get(addr, addr)
+
+
 HIST = Path("/var/lib/bpftune/history")
 HIST.mkdir(parents=True, exist_ok=True)
 BUCKETS_CSV  = HIST / "buckets.v2.csv"
@@ -259,7 +292,7 @@ def collect_buckets(ts_epoch, map_data):
             best_i = 0
         row = {
             "collected_ts": ts_epoch,
-            "addr": addr,
+            "addr": _label_for(addr),
             "instances": inst,
             "min_rtt": int(v.get("min_rtt", 0) or 0),
             "ref_rate": int(v.get("max_rate_delivered", 0) or 0),
