@@ -515,7 +515,7 @@ def data_bucket_live():
             inst = 0
         if inst < 2:
             continue
-        bucket = per.setdefault(addr, {"ts": [], "cols": {}})
+        bucket = per.setdefault(_label_for(addr), {"ts": [], "cols": {}})
         bucket["ts"].append(t)
         for alg in CONGS:
             for pre in ("re_", "ss_", "bs_", "ns_"):
