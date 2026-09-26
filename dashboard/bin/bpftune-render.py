@@ -1628,7 +1628,9 @@ INDEX_HTML = r"""<!doctype html>
       if (rows[i].active) { picked = i; break; }
     }
     var html = '<table class="tbl"><thead><tr>' +
-      '<th>alg</th><th>rate_ema</th><th>swap_score</th>' +
+      '<th>alg</th><th>rate_ema<br>'
+        + '<span style="font-weight:400;text-transform:none;letter-spacing:0">Mb/s</span></th>'
+        + '<th>swap_score</th>' +
       '<th>penalty</th><th>score</th><th>metric</th>' +
       '<th>bad</th><th>null</th>' +
       '</tr></thead><tbody>';
@@ -1640,7 +1642,12 @@ INDEX_HTML = r"""<!doctype html>
       var pen = (r.penalty == null) ? "-" : r.penalty.toFixed(3);
       html += '<tr' + trClass + '>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
-        '<td class="mono">' + (r.rate_ema == null ? "-" : r.rate_ema) + '</td>' +
+        '<td class="mono">' +
+          (r.rate_ema == null ? "-"
+           : fmtRe(r.rate_ema)
+             + '<span class="dim" style="font-weight:400"> ('
+             + r.rate_ema + ')</span>') +
+        '</td>' +
         '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
           (r.swap_score == null ? "-" : r.swap_score) + '</td>' +
         '<td class="mono ' + colorPenalty(r.penalty) + '">' + pen + '</td>' +
@@ -1653,7 +1660,11 @@ INDEX_HTML = r"""<!doctype html>
           (r.null_streak == null ? "-" : r.null_streak) + '</td>' +
         '</tr>';
     });
-    setHTML("lv-metric", html + '</tbody></table>');
+    setHTML("lv-metric", html + '</tbody></table>' +
+      '<div class="note" style="margin-top:8px">' +
+      'rate_ema is <b>Mb/s</b> in this table, matching the chart and NOW. ' +
+      'The raw 100&nbsp;KB/s value the picker uses is shown in parenthesis.' +
+      '</div>');
   }
 
   function renderProof(rows) {
