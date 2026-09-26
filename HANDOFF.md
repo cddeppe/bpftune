@@ -9,8 +9,8 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: see `git log -1` (0.4.78.2 tip)
-- Latest release: 0.4.78.2
+- Latest commit: see `git log -1` (0.4.79 tip)
+- Latest release: 0.4.79
 - Collector (on `dashboard` branch): sustained-ruler classification,
   single-sample acceptance.  See 2026-09-24 (late) session below.
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
@@ -18,11 +18,11 @@ per gateway), not just single-path datacenters.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.78.2** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.78.2** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.78.2** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.78.2** | instance-20250225-1017; builds arm64 |
-| al | amd64 | **0.4.78.2** | VPS-IP; new host, nginx serves dashboard on 8080 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.79** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.79** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.79** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.79** | instance-20250225-1017; builds arm64 |
+| al | amd64 | **0.4.79** | VPS-IP; new host, nginx serves dashboard on 8080 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -30,6 +30,164 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-26 (late) -- 0.4.79 prefix, alias, labels, attach-verify
+
+Follow-on to the 0.4.78.2 session.  Three new tuner capabilities
+plus a fix for the long-running silent-detach problem.
+
+### 0.4.79 -- configurable bucket prefix
+
+The 0.4.55 /16 merge and the 0.4.56 v6 /32 merge are now runtime
+knobs.
+
+  bpftune --prefix4          prints current (default /16)
+  bpftune --prefix4=24       live update, takes effect on next
+                             ESTABLISHED
+  bpftune --prefix6          prints current (default /32)
+  bpftune --prefix6=64       live update
+
+Mechanism: `tuner_config_map` grew from 1 to 3 slots.  Slot 0 is
+still exp_pct, slot 1 is prefix4, slot 2 is prefix6.  Same pinned
+path; the CLI reads/writes all three through one fd.  `--exp`
+unchanged.
+
+BPF side: `bucket_prefix4()` and `bucket_prefix6()` read the slots
+(clamped 1-32 and 1-128) and `bucket_key_apply_prefix()` re-masks
+the key from the *raw* address at ESTABLISHED.  Both v4-mapped and
+full-IPv6 paths are handled.  Changing the prefix does NOT wipe
+learned state -- existing buckets keep their key, swap_score,
+streaks, rate_emas.  Only new sockets land under the new prefix.
+
+### 0.4.79 -- destination alias map
+
+`dest_alias_map` is a BPF_MAP_TYPE_HASH (struct in6_addr ->
+struct in6_addr) pinned at
+`/sys/fs/bpf/bpftune/tcp_conn/aliases`.  Loaded from
+`/etc/bpftune/aliases` at daemon init.
+
+File format, one rule per line, `#` comments:
+
+    FROM_IP = TO_IP [label]
+
+FROM is a destination as the socket reports it.  TO is the
+canonical bucket to use instead.  Both v4 and v6 are legal on
+either side (the FROM gets stored v4-mapped; the TO is stored as
+given).
+
+BPF lookup happens at both ESTABLISHED sites, before prefix
+application.  Hit -> use the canonical TO verbatim.  Miss ->
+fall through to the prefix mask.  This lets multiple public IPs
+that the operator knows are the same physical destination share
+one bucket.
+
+### 0.4.79 -- alias labels
+
+The optional third column on an alias rule is a display label.  The
+loader writes:
+
+    /var/lib/bpftune/aliases.labels.json
+    {"147.224.0.0": "location-1",
+     "89.168.0.0":  "location-2",
+     ...}
+
+Deduplicated: one entry per canonical IP, regardless of how many
+FROM addresses point at it.
+
+The collector (`_label_for(addr)` in the row builder) and the CLI
+(`_label_for(addr)` in `read_map`) read that file on each run and
+substitute the label for the canonical IP in the `addr` column.
+Everything downstream -- renderer, dashboard, all panels -- shows
+`location-1` instead of `147.224.0.0`.  The BPF map key stays
+IP-shaped; only the display changes.
+
+Verified live on vps-3959: a socket to a Location-3 IP landed under
+canonical bucket `44.235.0.0` and the CSV `addr` column shows
+`location-3`.
+
+### 0.4.79 -- cgroup attach verify
+
+Observed for days: on a fast `systemctl restart`, the two BPF
+programs report successful `bpf_prog_attach` but end up missing
+from `bpftool cgroup tree`.  `systemctl is-active` says `active`;
+cgroup count reads `0`.  A second restart usually fixes it.
+
+The 0.4.72 retry inside `bpftuner_cgroup_attach` only fires on
+EBUSY/EEXIST.  Whatever the real interleaving is, it doesn't
+surface as either, so the retry never runs.
+
+0.4.79 adds a post-attach verify in `init()`: after both attach
+calls, run `bpftool cgroup tree`, count occurrences of
+`bpftune_conn_tuner`; if fewer than 2, detach both, re-attach both,
+sleep 250ms, retry up to 8 times (~2s worst case).  Three
+back-to-back `systemctl restart` on vps-3959 now all show cgroup
+count `2`.  The underlying cause is still not fully understood;
+this makes startup reliable regardless.
+
+### 0.4.79 -- _GNU_SOURCE
+
+`tcp_conn_tuner.c` uses `popen`, `pclose`, `usleep`.  glibc hides
+these behind `_GNU_SOURCE`, so without it they compile as implicit
+declarations and the Debian build (`-Werror=implicit-function-
+declaration`) fails.  The resulting error message points at line
+969 (`migrate_remote_host`) -- a false cascade, not the real
+problem.  Cost multiple sessions of diagnosis.  Fixed by adding
+`#define _GNU_SOURCE` as line 1.
+
+Rule for next time: when a compile fails, read the *first*
+`error:` line, never a filtered `tail`.
+
+### Dashboard -- recent swaps & proofs sorted
+
+Two order bugs fixed:
+
+- `data_recent_swaps_by_bucket` returns newest-first; render was
+  reversing row order again, so the panel showed oldest first.
+  Removed the extra reverse.
+- `data_recent_proofs` returns oldest-first; render's reverse was
+  the single necessary flip.  An earlier attempt to remove it
+  flipped the proof list the wrong way; reverted.
+
+Both panels now show newest at the top.
+
+### Fleet
+
+All five hosts on 0.4.79 (amd64 deb for vps-3959/ip-172/al,
+arm64 for heavy/2025).  Collector and CLI with alias-label support
+deployed on all five.  Existing `/etc/bpftune/aliases` on vps-3959
+contains the operator's five locations, all IPv4 and IPv6 addresses
+grouped under labels `location-1` through `location-5`.
+
+### Open items
+
+1. 0.4.80 -- attach-verify works but the real interleaving that
+   caused silent detach is still unidentified.  Look at whether
+   the old process's `fini()` detach raced the new process's
+   attach at the kernel level before retrying.
+2. `srate.csv` labeled "sustained" is sourced from the kernel
+   burst estimator; still unresolved.
+3. `tcp_metric_calc` comment says sustained_bps; source passes
+   the burst estimate; reconcile.
+4. Leaderboard churn measurement under 100% explore.
+5. Tier architecture: d=2 shadowed by d=1; d=0 near-silent.
+6. bbr-source loss 2x baseline, n=40.
+7. Freeze overrun by d=1 (socket froze, then swapped 15 more
+   times).
+8. New-host install brittleness (bpftool not declared, met-trace
+   install order).
+
+### Working style additions
+
+- **When a compile error points at an unchanged line, look
+  higher.**  "struct remote_host undefined at 969" was a
+  cascade all the way up from a missing feature-macro at line 1.
+- **Filtered build output is dangerous.**  `grep -E 'error:|...'`
+  and `tail -N` are fine for a build that already compiles, but
+  useless when diagnosing; they hid the actual error text in
+  most of this session's failed builds.
+- **Multi-line heredocs on paste can mangle.**  Prefer a
+  `cat > /tmp/script.py << 'PYEOF' ... PYEOF` then execute
+  the file; single-shot terminal pages truncate or reflow long
+  lines.
 ## SESSION 2026-09-26 -- 0.4.78.2 IPv6 end-to-end, dashboard layout pass
 
 Follow-on to the 0.4.78.1 session.  Two things landed: IPv6 bucket
