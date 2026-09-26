@@ -4646,7 +4646,19 @@ INDEX_HTML = r"""<!doctype html>
                    state.meta.ranges[m] + '</option>';
         }
         rs.innerHTML = rhtml;
-        rs.value = "24h";
+        /* 0.4.79: default to 1h so the first paint reads the
+         * live ring (current.json, 60s) instead of loading a
+         * 260 KB bucket_*.json just to show the page.  Restore
+         * the user's last choice if there is one; historical
+         * ranges load on demand. */
+        var saved_range = null;
+        try { saved_range = localStorage.getItem("bpftune.range"); } catch (e) {}
+        rs.value = (saved_range && state.meta.ranges.indexOf(saved_range) >= 0)
+                   ? saved_range : "1h";
+        rs.onchange = function () {
+          try { localStorage.setItem("bpftune.range", rs.value); } catch (e) {}
+          renderBucket();
+        };
 
         var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                         .replace("T", " ").slice(0, 19) + "Z";
