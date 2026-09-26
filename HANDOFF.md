@@ -9,8 +9,8 @@ per gateway), not just single-path datacenters.
 
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
-- Latest commit: see `git log -1` (0.4.78.1 tip)
-- Latest release: 0.4.78.1
+- Latest commit: see `git log -1` (0.4.78.2 tip)
+- Latest release: 0.4.78.2
 - Collector (on `dashboard` branch): sustained-ruler classification,
   single-sample acceptance.  See 2026-09-24 (late) session below.
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
@@ -18,11 +18,11 @@ per gateway), not just single-path datacenters.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.78.1** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.78.1** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.78.1** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.78.1** | instance-20250225-1017; builds arm64 |
-| al | amd64 | **0.4.78.1** | VPS-IP; new host, nginx serves dashboard on 8080 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.78.2** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.78.2** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.78.2** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.78.2** | instance-20250225-1017; builds arm64 |
+| al | amd64 | **0.4.78.2** | VPS-IP; new host, nginx serves dashboard on 8080 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
@@ -30,6 +30,159 @@ Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
 
 
 
+## SESSION 2026-09-26 -- 0.4.78.2 IPv6 end-to-end, dashboard layout pass
+
+Follow-on to the 0.4.78.1 session.  Two things landed: IPv6 bucket
+keys are now propagated through the whole pipeline (BPF printk ->
+collector -> truth file -> reanchor reader -> map), and the
+dashboard got a substantial layout pass plus a dark mode.
+
+### 0.4.78.2 -- v6:XXXXXXXX bucket keys
+
+Three independent defects in the same chain:
+
+1. **BPF printks.** Swap / freeze / estab all wrote `dest=%u` from
+   `bpf_ntohl(ops->remote_ip4)`, which is 0 on IPv6 sockets.  On a
+   v6-heavy host that hid ~30% of the population from every log-
+   derived panel.  Fix: add `dest6=%u` carrying
+   `bpf_ntohl(ops->remote_ip6[0])` -- the same /32 prefix the map
+   key uses.  9 sites.
+
+2. **Collector _truth_write.**  `dest.split(".")`, `if len(parts)
+   != 4: return` -- dropped any non-dotted string, so `v6:XXXX`
+   rows never reached `swapscore_truth.jsonl`.
+
+3. **Collector row builder.**  Even after (2), the row's `dest`
+   column was empty for v6 sockets because the builder only read
+   `dest=NNN` from the swap line and `_decode_dest(0)` returns "".
+   Needed a second fix: read regex group for `dest6=` and fall
+   back to it when the v4 decode is empty.
+
+4. **Reanchor reader.**  `truth_bucket_key` used
+   `inet_pton(AF_INET, ...)`, which only parses dotted-quad.  A
+   `v6:XXXX` key was rejected.  Now recognises the `v6:` prefix
+   and parses 8 hex digits into `s6_addr[0..3]`.
+
+5. **Retroactive backfill.**  For rows already resolved before the
+   collector fix, `dest` was blank and `dest_raw=0`.  A one-shot
+   script (`retro-v6.py`) rebuilds cookie->dest6 from the estab /
+   swap lines in the log and rewrites the `dest` column.  Ran on
+   al: fixed 7 rows.  `map-replay.py` also had the same
+   `b16()` v4-only shape; patched to pass `v6:` keys through, then
+   replayed to rebuild the v6 buckets' swap_score and streaks from
+   the now-correct CSV.
+
+Verified end-to-end on al: recent swaps show `dest=v6:2603c020`
+(home v6 range) and `dest=v6:20014860` (CDN v6).
+
+### Dashboard layout pass
+
+Layout:
+
+- swap target leaderboard (c8) paired with recent swaps (c4);
+  proof leaderboard (c8) paired with recent proofs (c4).  Each
+  pair is one grid row.
+- Divergence section and both standalone divergence charts removed
+  (dead call sites were already removed earlier).
+- Cookie churn folded into the swap outcomes card, separated by a
+  border-top line and labelled with the sustained note above it.
+
+Coverage:
+
+- `emit_fleet` was called with `meta_rows`, which only carries
+  `addr` / `instances` / `collected_ts` / `pts24` -- never
+  `rate_best_v`.  Every bucket returned 0.0 coverage; the fleet
+  chart had been drawing empty bars since the streaming rewrite.
+  Fixed: `aggregate_all` now tracks per-bucket 5-min bins in the
+  last 24h and the subset where `rate_best_v > 0`, and
+  `emit_fleet` reads that.
+- The fleet chart is gone.  Coverage now renders as an inline
+  green bar + percent column on the top-destination-buckets
+  table, one bar per row, keyed by bucket id from `fleet.json`.
+
+Recents:
+
+- `data_recent_swaps_by_bucket` returns newest-first and
+  `renderRecentSwaps` no longer double-reverses; the panel is
+  now newest-at-top matching the log tail.
+- `renderRecentProofs` keeps its `.slice().reverse()` -- the
+  proof feed from the CLI is oldest-first and the single reverse
+  is what puts the newest at the top.  An earlier attempt to
+  remove it flipped the list the other way and was reverted.
+- Both recents capped at n=16 so the columns match the
+  leaderboard row counts above them.
+
+Visual:
+
+- Dark mode: `html[data-theme="dark"]` overrides the CSS vars;
+  a fixed pill button in the top-right toggles between light and
+  dark and persists to localStorage, falling back to
+  prefers-color-scheme if nothing is saved.
+- Destinations in the recent lists are shortened to /16
+  (`82.43.0.0`) to fit next to the algorithm column; v6 strings
+  pass through unchanged.
+- Proof leaderboard: the three series are inline covbars
+  (30 -> 60 px) with a fixed-width right-aligned number column
+  so the bar's left edge is the same on every row and headers
+  line up with values.
+- Mobile: `overflow-x: auto` on cards so wide tables scroll
+  inside their card instead of stretching the page; a
+  max-width:800px media query tightens padding and font sizes.
+- The ▸ pick badge on the swap leaderboard is now absolutely
+  positioned so it cannot wrap in the c6/c8 columns and change
+  the row height.
+
+Also: `bpftune-met-trace.service` on heavy was dropping events
+under load (`[LOST 22086 EVENTS]` in the trace buffer); the
+recommended fix is to enlarge the tracefs buffer
+(`buffer_size_kb`), not yet applied.
+
+### New host: al (VPS-IP)
+
+First install completed: 0.4.78.1 tuner, dashboard at
+`/opt/bpftune/tools/`, nginx serving `/var/lib/bpftune/history/`
+on 8080, met-trace installed manually (deploy-all bailed at its
+bpftool check before reaching the unit-write step).  nginx worker
+needs `o+x /var/lib/bpftune` and `o+rx .../history`.
+
+### Open items
+
+1. New-host install still brittle:
+   - `bpftool` not declared or installed by `tools/bpftune-deploy-all.sh`;
+     its map check silently `exit 0`s with "not loaded here".
+   - `bpftune-met-trace.service` is written by deploy-all *after*
+     that check, so a missing bpftool leaves no trace unit and no
+     log, and the dashboard is empty even though the tuner runs.
+   Move the unit install before the check, or into the dashboard
+   installer.
+2. `srate.csv` labeled "sustained" but sourced from
+   `tps->rate_delivered * mss / interval` (kernel burst).  All
+   downstream consumers use burst under a name that suggests
+   otherwise.  Adding `srate_sustained=` as a parallel column
+   keeps the capability signal while making health honest.
+3. `tcp_metric_calc` is called with `rate_delivered` (burst) but
+   the 0.4.71 comments describe `sustained_bps`.  Reconcile.
+4. Leaderboard churn: `rate_best_i` flips every few minutes under
+   100% explore.  Measure the churn rate, then decide between
+   score step 1/8 -> 1/16 or reanchor 30s -> 60/120s.
+5. Tier architecture: d=2 shadowed by d=1, d=0 near-silent.
+6. bbr as source: 2x baseline loss on small n, unresolved.
+7. Freeze overrun by d=1.
+
+### Working-style additions
+
+- **A wide dashboard problem is often a column decision, not a
+  data problem.**  Three of tonight's four panels were "wrong
+  information" where the underlying data was correct and only
+  the display choice was bad (row order, inline vs stacked bars,
+  which column showed what).
+- **When two code paths produce the same field, keep them in
+  one file.**  `_swaps_mets_srates` had its own `rx_sw` regex
+  and tuple, separate from `_SWAP_DEST_RX` used for the proof
+  cookie map.  The 0.4.78.1 v6 patch updated only the latter,
+  and swap rows stayed empty until a follow-up commit.
+- **Aliases lie.**  "sustained" in srate.csv is burst.  Cost
+  more session time than any other single confusion.
 ## SESSION 2026-09-25 (late) -- 0.4.78.1 IPv6 visibility, dashboard pass
 
 Follow-on to the session already written above. Everything in
