@@ -651,7 +651,7 @@ def data_metric_by_bucket(hosts):
 
 
 BUCKET_HISTORY_CSV = "/var/lib/bpftune/history/buckets.v2.csv"
-LIVE_CHART_MIN      = 180
+LIVE_CHART_MIN      = 65   # 65 min x 60s = 65 pts per series; covers 1h with margin
 LIVE_CHART_WIDTH_S  = 60
 
 
@@ -711,12 +711,13 @@ def data_bucket_live():
         bucket = per.setdefault(addr, {"ts": [], "cols": {}})
         bucket["ts"].append(t)
         for alg in CONGS:
-            c = row.get("re_" + alg)
-            try:
-                v = int(c) if c not in (None, "") else None
-            except (TypeError, ValueError):
-                v = None
-            bucket["cols"].setdefault("re_" + alg, []).append(v)
+            for pre in ("re_", "ss_", "bs_", "ns_"):
+                c = row.get(pre + alg)
+                try:
+                    v = int(c) if c not in (None, "") else None
+                except (TypeError, ValueError):
+                    v = None
+                bucket["cols"].setdefault(pre + alg, []).append(v)
 
     # bin to LIVE_CHART_WIDTH_S
     for addr, d in per.items():
@@ -4313,20 +4314,18 @@ INDEX_HTML = r"""<!doctype html>
     var rng = $("range").value;
     var s = doc.series[rng];
     var ts = s.ts;
-    // 0.4.76: for the 1h range, prefer the CLI-provided live
-    // series (30s freshness) over the 15-minute renderer output.
-    // bucket_live carries re_* columns only, so this override
-    // applies to the rate chart alone; the score and streak
-    // charts always use the historical series.
-    var rateS = s, rateTs = ts;
+    // 0.4.79: for the 1h range, prefer the CLI-provided ring
+    // (60s freshness) for all four series.  bucket_live now
+    // carries re_/ss_/bs_/ns_, so the same source serves the
+    // rate, score, and streak charts.  Other ranges still load
+    // the 15-minute renderer output on demand.
     var bid = $("bucket") ? $("bucket").value : null;
     if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
       var lb = state.bucketLive[bid];
       if (lb.ts && lb.ts.length) {
-        var liveS = {};
-        for (var k in (lb.cols || {})) liveS[k] = lb.cols[k];
-        rateS = liveS;
-        rateTs = lb.ts;
+        s = {};
+        for (var k in (lb.cols || {})) s[k] = lb.cols[k];
+        ts = lb.ts;
       }
     }
 
@@ -4340,7 +4339,7 @@ INDEX_HTML = r"""<!doctype html>
     var rateCols = makeSeries("re_", rateS);
     mk("rate", {
       type: "line",
-      data: {datasets: lineData(rateCols, rateS, rateTs, PALETTE, scaleRe, 0)},
+      data: {datasets: lineData(rateCols, s, ts, PALETTE, scaleRe, 0)},
       options: timeOpts({
         plugins: {
           legend: {

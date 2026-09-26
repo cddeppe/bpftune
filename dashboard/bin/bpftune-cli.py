@@ -444,7 +444,7 @@ def data_metric_by_bucket(hosts):
 
 
 BUCKET_HISTORY_CSV = "/var/lib/bpftune/history/buckets.v2.csv"
-LIVE_CHART_MIN      = 180
+LIVE_CHART_MIN      = 65   # 65 min x 60s = 65 pts per series; covers 1h with margin
 LIVE_CHART_WIDTH_S  = 60
 
 
@@ -504,12 +504,13 @@ def data_bucket_live():
         bucket = per.setdefault(addr, {"ts": [], "cols": {}})
         bucket["ts"].append(t)
         for alg in CONGS:
-            c = row.get("re_" + alg)
-            try:
-                v = int(c) if c not in (None, "") else None
-            except (TypeError, ValueError):
-                v = None
-            bucket["cols"].setdefault("re_" + alg, []).append(v)
+            for pre in ("re_", "ss_", "bs_", "ns_"):
+                c = row.get(pre + alg)
+                try:
+                    v = int(c) if c not in (None, "") else None
+                except (TypeError, ValueError):
+                    v = None
+                bucket["cols"].setdefault(pre + alg, []).append(v)
 
     # bin to LIVE_CHART_WIDTH_S
     for addr, d in per.items():
