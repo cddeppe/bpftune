@@ -3936,6 +3936,9 @@ INDEX_HTML = r"""<!doctype html>
   function renderMetricForBucket() {
     var bs = $("bucket");
     var addr = (bs && bs.value) ? bs.value : null;
+    if (!addr && state.meta && state.meta.default_bucket) {
+      addr = state.meta.default_bucket;
+    }
     var byB = state.metricByBucket || {};
     var keys = Object.keys(byB);
     var rows = (addr && byB[addr]) ? byB[addr]
@@ -4577,10 +4580,8 @@ INDEX_HTML = r"""<!doctype html>
       state.bucketDoc = doc;
       renderBucket();
       renderNow();
-      // 0.4.78: recent-swaps panel follows the dropdown too.
-      // loadBucket runs after bs.value is set (both boots and
-      // onchange), so this is the right place to re-render.
       renderRecentSwapsForBucket();
+      renderMetricForBucket();
     });
   }
 
