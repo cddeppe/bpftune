@@ -4027,7 +4027,7 @@ INDEX_HTML = r"""<!doctype html>
       return;
     }
     var html = '<div class="list">';
-    rows.slice().reverse().forEach(function (r) {
+    rows.forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
