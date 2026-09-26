@@ -80,7 +80,67 @@ fall through to the prefix mask.  This lets multiple public IPs
 that the operator knows are the same physical destination share
 one bucket.
 
-### 0.4.79 -- alias labels
+### 0.4.79 -- alias labels (render-time, not CSV-time)
+
+The optional third column on an alias rule is a display label.  The
+tuner loader writes:
+
+    /var/lib/bpftune/aliases.labels.json
+    {"147.224.0.0": "loc-1",
+     "89.168.0.0":  "loc-2",
+     ...}
+
+Deduplicated: one entry per canonical IP, regardless of how many
+FROM addresses point at it.
+
+**The label lives only at display time.**  `buckets.v2.csv` `addr`
+column and `swaps.csv` `dest` column carry the canonical IP the BPF
+map uses.  The renderer applies `_label_for()` on read (looks up
+`aliases.labels.json`, mtime-based reload) and writes the label into
+`meta.json` and `bucket_<label>.json`.  Everything the browser sees
+-- dropdown, charts, tables -- reflects the label.
+
+Why this shape: putting the label into the CSV at collector-write
+time meant renaming a location required rewriting every historical
+row.  With the label applied on read, renaming a location is:
+
+    1. edit /etc/bpftune/aliases      (third column)
+    2. systemctl restart bpftune      (regenerates labels.json)
+    3. wait for the next renderer run (or run it manually)
+
+No CSV rewrite.  Historical rows always carry the canonical IP, so
+they render under the new name automatically.
+
+**One-time migration on 2026-09-26**: earlier in the session labels
+were briefly written into the CSV (the wrong design).  A one-time
+script rewrote every historical row whose `addr`/`dest` matched a
+label back to its canonical IP.  That was a single fixup, not a
+standing procedure.  Current collectors never write labels.
+
+Verified live on vps-3959: a socket to a Location-3 IP landed under
+canonical bucket `44.235.0.0`; the CSV `addr` column says `44.235.0.0`;
+the dropdown says `loc-3` (the current label for 44.235.0.0).
+
+### 0.4.79 -- MIN_BUCKET_ROWS 20 -> 5
+
+`aggregate_all` in `bpftune-render.py` had its own local
+`MIN_BUCKET_ROWS = 20`, shadowing the module-level constant that
+was already 5.  Effect: a bucket needed 20 collector rows before it
+appeared in the dropdown.  With a fresh host or a new location, that
+is a 20-minute wait before the bucket is visible.
+
+Lowered the local to 5.  A bucket now appears after ~5 minutes of
+collector rows.  No change to chart shape or noise floor -- 5 points
+is already a plot, and a single stray client producing 1-2 rows
+still gets dropped.
+
+Duplicate constant cleanup is still pending: `MIN_BUCKET_ROWS` is
+defined at three places in the same file (lines ~25, ~28, and the
+local inside `aggregate_all`).  The local is the one that matters;
+the two top-level definitions are dead.  Cosmetic; wants a
+follow-up pass.
+
+## 0.4.79 -- alias labels
 
 The optional third column on an alias rule is a display label.  The
 loader writes:
