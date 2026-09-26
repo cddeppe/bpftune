@@ -202,6 +202,16 @@ static __always_inline void bucket_key_alias_or_prefix(struct in6_addr *key)
                 return;
         }
         bucket_key_apply_prefix(key);
+        /* 0.4.79: second lookup, this time on the prefix-masked
+         * key.  A prefix-form entry in /etc/bpftune/aliases (e.g.
+         * "2603:c020:0:0:0:0:0:0 = 89.168.0.0") folds an entire
+         * /32 into one canonical bucket.  Exact-address entries
+         * still match first, so a specific override inside the
+         * range still works. */
+        a = bpf_map_lookup_elem(&dest_alias_map, key);
+        if (a) {
+                *key = *a;
+        }
 }
 
 static __always_inline int set_cong(struct bpf_sock_ops *ops,
