@@ -164,6 +164,33 @@ Verified live on vps-3959: a socket to a Location-3 IP landed under
 canonical bucket `44.235.0.0` and the CSV `addr` column shows
 `location-3`.
 
+### 0.4.79 -- streak counter batch bug
+
+`apply_truth_corrections` in `tcp_conn_tuner.c` incremented
+`bad_streak` and `null_streak` at most **once per reanchor
+pass**, regardless of how many truth-file lines for that
+(bucket, target) arrived in that pass.  On a busy bucket dozens
+of nulls could land between reanchor ticks and the counter only
+rose by 1.  Combined with the win-clears-both rule from 0.4.77,
+the visible effect was that every algorithm's streak counters
+sat at 0 almost all the time -- a single win between two rare
+non-zero samples was enough to reset them, and the samples were
+usually 0 or 1.
+
+Diagnosed with a synthetic test: write 5 null lines to
+`swapscore_truth.jsonl` in one go, wait 40s, check the map.
+Before the fix: `null_streak` went from 0 to 1.  After: 0 to 5.
+
+Fix: add `tb[i].loss[j]` / `tb[i].nnull[j]` (the batch counts
+built while parsing the file) instead of `++`, clamped at 255.
+
+Win semantics unchanged: a win still clears both streaks to
+zero.  Whether that is the right recovery rule is a design
+question separate from this bug.  Proposal on the table, not
+shipped: replace the win-resets-both with win-- on each (or one
+win clears nulls, two wins clear losses).  Decide after a few
+hours of watching the counters actually accumulate.
+
 ### 0.4.79 -- cgroup attach verify
 
 Observed for days: on a fast `systemctl restart`, the two BPF
