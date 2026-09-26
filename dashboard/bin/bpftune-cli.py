@@ -1044,10 +1044,10 @@ def data_recent_swaps(text, n=10):
             "outcome_sustained":  o3,
             "mt_alg":   mt_alg,
             "rb_alg":   rb_alg,
-            "dest":     _dest_str(row[9] if len(row) > 9 else None,
-                                   row[10] if len(row) > 10 else None),
-            "_bucket":  _bucket_of(row[9] if len(row) > 9 else None,
-                                    row[10] if len(row) > 10 else None),
+            "dest":     _label_for(_fold_v6(_dest_str(row[9] if len(row) > 9 else None,
+                                   row[10] if len(row) > 10 else None))),
+            "_bucket":  _label_for(_fold_v6(_bucket_of(row[9] if len(row) > 9 else None,
+                                    row[10] if len(row) > 10 else None))),
         })
     return rows[-n:]
 
