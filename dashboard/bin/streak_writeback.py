@@ -150,7 +150,7 @@ def writeback_streaks(swaps):
     try:
         with open(WB_THROTTLE_FILE,'r') as f: last_ts=float(f.read().strip() or 0)
     except (OSError,ValueError): pass
-    new_swaps=[s for s in swaps if s.get('outcome_sustained') and s.get('ts',0)>last_ts]
+    new_swaps=[s for s in swaps if s.get('outcome_sustained')]  # ALL sustained swaps, not just new ones
     if not new_swaps:
         try: os.utime(WB_THROTTLE_FILE,None)
         except OSError:
