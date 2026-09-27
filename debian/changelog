@@ -1,3 +1,13 @@
+bpftune (0.4.81) unstable; urgency=medium
+
+  * 0.4.81: streak re-enable + desperate simplify + adaptive flag
+    - Re-enable in-kernel streak updates for rejected swaps
+    - Simplify desperate formula (same math, cleaner code)
+    - Adaptive exploration flag (default OFF, compile-time)
+    - No swap behavior changes from 0.4.80
+
+ -- root <root@vps-3959>  Sun, 27 Sep 2026 17:39:15 +0200
+
  bpftune (0.4.80) unstable; urgency=medium
 
   * 0.4.80: fix div-by-zero + atomic increment + bounds check
