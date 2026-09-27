@@ -3398,3 +3398,82 @@ healthy but the map counts stop moving.
   and confirm the filename carries the new version.  Root fix when
   someone has time: a `debian/rules` guard that fails the build when
   the changelog version and the source disagree.  Non-negotiable.
+
+## SESSION 2026-09-27/28 -- 0.4.83 peak-rate, sustained writeback, dashboard UI
+
+### 0.4.83 — peak-rate swap scoring + IPv6 64-bit logging (main branch)
+
+**Peak-rate swap scoring:**
+- `score_pending_swap` and `score_pending_rejected` now use
+  `statep->post_swap_rate_max` (running max of sustained_bps since
+  the swap started) instead of `cur_rate` (single point sample)
+- `post_swap_rate_max` is a new `__u64` field in `conn_state`,
+  reset to 0 at swap start, max'd on each srate sample
+- Analysis on instance-20260905-0931 showed 68% of swaps would
+  change outcome (48/76 toward win) — the composite was catching
+  momentary dips (YouTube buffering, transient congestion) and
+  scoring them as null/loss.  Peak captures what the connection
+  CAN do under the algorithm.
+- Rationale: YouTube stuck at 1080p has low average but high peak
+  potential. Peak = what the connection CAN do. Low peak = algorithm
+  is throttling; high peak = algorithm is letting it breathe.
+
+**IPv6 64-bit logging:**
+- All 9 `bpf_printk` swap/freeze/estab lines now include
+  `dest6b=%u` (= `bpf_ntohl(ops->remote_ip6[1])`)
+- Unlocks /48 and /64 IPv6 mask support in the dashboard write-back
+- Previously only 32 bits of IPv6 were logged (remote_ip6[0]),
+  capping v6 mask at /32
+
+### Sustained → kernel streak write-back (dashboard branch)
+
+**New file: `dashboard/bin/streak_writeback.py`**
+- Recomputes `bad_streak` / `null_streak` per (remote_host, algorithm)
+  from AUTHORITATIVE sustained outcomes
+- Patches ONLY those 2 bytes per metric slot in the BPF
+  `remote_host` map (leaves swap_score, rate_ema, sockets_*,
+  metric_* untouched)
+- 16-byte IPv4-mapped IPv6 keys (::ffff:a.b.c.d), space-separated
+  hex args for bpftool
+- Auto-detects IPv4 mask (/8,/16,/24,/32) AND IPv6 mask
+  (/32,/48,/64,/128) from BPF map entries — works with any
+  configured prefix
+- Throttled to 5-min cadence; only processes new sustained swaps
+- Targeted per-host lookups (no map dump); ~10ms per host
+
+**Integration in `bpftune-cli.py`:**
+- `data_swap_outcomes` enriches swaps_list with `remote_host`
+  (from dest/dest6), `from_alg`, `to_alg`
+- Calls `writeback_streaks(swaps_list)` in try/except (never
+  breaks dashboard)
+- Memoize `_swaps_mets_srates` by `id(text)`: 5 calls/cycle → 1
+  saves ~0.6s per cycle (2.1s → 1.5s)
+
+**Self-correcting loop:**
+1. Kernel votes fast (peak-rate, provisional)
+2. Dashboard measures sustained (authoritative, 60-300s later)
+3. Write-back corrects the BPF streaks → leaderboard matches
+   recent swaps
+
+### Dashboard UI fixes (dashboard branch)
+
+- **Labels**: rate_ema → Rate EMA, swap_score → Swap Score,
+  bad_streak → Bad Streak (in chart headers, table headers, tooltips)
+- **Units**: Mbps → Mb/s in text renderer
+- **Proof leaderboard**: "sampled avg/max" → "sustained avg/max"
+  (data is from midsamp/srate, which IS sustained)
+- **Bar colors**: reordered to match column order
+  (proven max, sustained avg, sustained max)
+- **Time window**: SWAP OUTCOMES panel shows
+  "rolling 523 min · 150 swaps · newest 1m ago"
+  (log_window field in collect_all)
+- **Tunables**: read full journal (removed `-b` + `--since -24h`,
+  added `--grep "sysctl 'net."` for efficiency)
+- **render.py**: skip index.html write (symlink handles it)
+- **Symlink**: `/var/lib/bpftune/history/index.html` →
+  `/opt/bpftune-dashboard/bin/index.html` (eliminates copy step)
+
+### Fleet status
+- All 5 hosts on 0.4.83 (peak-rate + IPv6 64-bit)
+- All hosts have dashboard branch with writeback + UI fixes
+- vps-3959 has the symlink (other hosts use hourly render.py cron)
