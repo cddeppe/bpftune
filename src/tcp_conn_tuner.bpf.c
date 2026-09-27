@@ -93,11 +93,21 @@ static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
  * Percent-native so both endpoints are exact; that matters when
  * --exp=0 or --exp=100 is used for a controlled trial. */
 static __always_inline int
-epsilon_greedy_pct(__u32 greedy_state, __u32 num_states, __u32 pct)
+epsilon_greedy_pct(__u32 greedy_state, __u32 num_states, __u32 pct, __u32 confidence)
 {
 	__u32 r = bpf_get_prandom_u32();
 
-	if (pct < 100 && (r % 100) >= pct)
+#if ADAPTIVE_EXPLORE
+    /* 0.4.81: decrease exploration as confidence grows.
+     * Floor at ADAPTIVE_EXPLORE_FLOOR (5%). */
+    if (confidence > 0 && pct > ADAPTIVE_EXPLORE_FLOOR) {
+        __u32 decrease = confidence / ADAPTIVE_EXPLORE_DIV;
+        if (decrease > pct - ADAPTIVE_EXPLORE_FLOOR)
+            decrease = pct - ADAPTIVE_EXPLORE_FLOOR;
+        pct -= decrease;
+    }
+#endif
+    if (pct < 100 && (r % 100) >= pct)
 		return greedy_state;
 	r = bpf_get_prandom_u32();
 	return r % num_states;
