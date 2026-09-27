@@ -442,6 +442,27 @@
     .controls { gap: 10px; }
     .bigstats { grid-template-columns: 1fr; }
   }
+
+
+.loss-recovery { margin-top: 8px; }
+.loss-recovery.placeholder .lr-cell { border-style: dashed; opacity: 0.55; }
+.lr-header { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-style: italic; }
+.lr-cells { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+.lr-cell { padding: 4px 4px 3px; border: 1px solid var(--border-strong); border-radius: 2px; text-align: center; background: var(--subtle); }
+.lr-cell.rescued { border-color: var(--good); background: var(--good-dim); }
+.lr-cell.full    { border-color: var(--bad);  background: var(--bad-dim); }
+.lr-cell.open    { border-color: var(--border-strong); background: var(--subtle); }
+.lr-v { font-size: 16px; font-weight: bold; color: var(--fg); line-height: 1.1; }
+.lr-pct { font-size: 10px; color: var(--muted); line-height: 1.1; }
+.lr-k { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.2; }
+.lr-cap { font-size: 9px; color: var(--muted); margin-top: 3px; font-style: italic; text-align: center; }
+.lr-footer { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; font-size: 10px; line-height: 1.3; }
+.lr-footer .row { display: flex; justify-content: space-between; align-items: baseline; }
+.lr-footer .row.empty { visibility: hidden; }
+.lr-footer .k { color: var(--muted); }
+.lr-footer .v { color: var(--fg); font-variant-numeric: tabular-nums; }
+.lr-footer .v.dim { color: var(--muted); }
+
 </style>
 </head>
 <body>
@@ -961,42 +982,69 @@
       '</div>';
   }
 
-  function renderSwapOutcomes(payload) {
-    if (payload && payload.composite && payload.sustained) {
-      var c = payload.composite;
-      var s = payload.sustained;
-      var html =
-        '<div class="outcome-group">' +
-          '<div class="grp-k">composite metric</div>' + bigTriple(c) +
-          '<div class="kv" style="margin-top:6px">' +
-            '<div class="row"><span class="k">measurable</span>' +
-              '<span class="v">' + c.measurable + '</span></div>' +
-            '<div class="row"><span class="k">unmeasurable</span>' +
-              '<span class="v dim">' + c.unmeasurable + '</span></div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="outcome-group">' +
-          '<div class="grp-k">sustained (accurate)</div>' + bigTriple(s) +
-          '<div class="kv" style="margin-top:6px">' +
-            '<div class="row"><span class="k">measurable</span>' +
-              '<span class="v">' + s.measurable + '</span></div>' +
-            '<div class="row"><span class="k">unmeasurable</span>' +
-              '<span class="v dim">' + s.unmeasurable + '</span></div>' +
-          '</div>' +
-        '</div>';
-      setHTML("lv-swapout", html);
-      return;
+  function renderSwapOutcomes(payload, churn) {
+    var so = (payload && payload.sustained) ? payload.sustained
+              : (payload || {win:0,win_pct:0,null:0,null_pct:0,
+                             loss:0,loss_pct:0,measurable:0,unmeasurable:0,
+                             rescued:0, full_loss:0, open:0});
+    var ch = churn || {cookies:0, one:0, mid:0, many:0, max:0};
+    var rescued = so.rescued || 0;
+    var fullLoss = so.full_loss || 0;
+    var openLoss = so.open || 0;
+    var totalLoss = so.loss || 0;
+    function pct(n, d) { return d > 0 ? Math.round(n / d * 100) : 0; }
+    function cell(cls, val, p, k) {
+      return '<div class="lr-cell ' + cls + '">' +
+               '<div class="lr-v">' + val + '</div>' +
+               '<div class="lr-pct">' + p + '%</div>' +
+               '<div class="lr-k">' + k + '</div>' +
+             '</div>';
     }
-    var so = payload || {win:0,win_pct:0,null:0,null_pct:0,
-                         loss:0,loss_pct:0,measurable:0,unmeasurable:0};
-    setHTML("lv-swapout", bigTriple(so) +
-      '<div class="kv" style="margin-top:10px">' +
-        '<div class="row"><span class="k">measurable</span>' +
-          '<span class="v">' + so.measurable + '</span></div>' +
-        '<div class="row"><span class="k">unmeasurable</span>' +
-          '<span class="v dim">' + so.unmeasurable + '</span></div>' +
-      '</div>');
+    function frow(k, v, dim) {
+      return '<div class="row' + (dim ? ' dim' : '') + '"><span class="k">' + k + '</span>' +
+             '<span class="v' + (dim ? ' dim' : '') + '">' + v + '</span></div>';
+    }
+    var hasLossData = (rescued || fullLoss || openLoss) > 0;
+    var html = bigTriple(so);
+    if (hasLossData) {
+      html +=
+        '<div class="loss-recovery">' +
+          '<div class="lr-header">loss recovery \u2014 what happened to the ' + totalLoss + ' losses</div>' +
+          '<div class="lr-cells">' +
+            cell('rescued', rescued, pct(rescued, totalLoss), 'rescued') +
+            cell('full',   fullLoss, pct(fullLoss, totalLoss), 'full loss') +
+            cell('open',   openLoss, pct(openLoss, totalLoss), 'open') +
+          '</div>' +
+          '<div class="lr-cap">a later win on the same cookie closes a loss</div>' +
+        '</div>';
+    } else {
+      html +=
+        '<div class="loss-recovery placeholder">' +
+          '<div class="lr-header">loss recovery \u2014 awaiting server-side data</div>' +
+          '<div class="lr-cells">' +
+            cell('rescued ph', '\u2014', 0, 'rescued') +
+            cell('full   ph', '\u2014', 0, 'full loss') +
+            cell('open   ph', '\u2014', 0, 'open') +
+          '</div>' +
+          '<div class="lr-cap">apply bpftune-cli.py patch to populate</div>' +
+        '</div>';
+    }
+    html +=
+      '<div class="lr-footer">' +
+        frow('measurable', so.measurable || 0) +
+        frow('cookies swapped', ch.cookies || 0) +
+        frow('unmeasurable', so.unmeasurable || 0, true) +
+        frow('one-off', ch.one || 0) +
+        '<div class="row empty"></div>' +
+        frow('2-4x', ch.mid || 0) +
+        '<div class="row empty"></div>' +
+        frow('5x+', ch.many || 0) +
+        '<div class="row empty"></div>' +
+        frow('max per cookie', ch.max || 0) +
+      '</div>';
+    setHTML("lv-swapout", html);
   }
+
 
   function renderDivergence(rows) {
     if (!rows.length) {
@@ -1034,20 +1082,6 @@
         '</tr>';
     });
     setHTML("lv-div", html + '</tbody></table>');
-  }
-
-  function renderChurn(c) {
-    var rows = [
-      ["cookies swapped", c.cookies, "hi"],
-      ["one-off",         c.one,     ""],
-      ["2-4x",            c.mid,     ""],
-      ["5x+",             c.many,    ""],
-      ["max per cookie",  c.max,     ""],
-    ];
-    setHTML("lv-churn", rows.map(function (r) {
-      return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
-             '<span class="v ' + (r[2] || "") + '">' + r[1] + '</span></div>';
-    }).join(""));
   }
 
   function renderRecentProofs(rows) {
@@ -1099,9 +1133,8 @@
     renderMetric(doc.metric || []);
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
-    renderSwapOutcomes(doc.swap_outcomes || null);
+    renderSwapOutcomes(doc.swap_outcomes || null, doc.churn || {});
     renderDivergence(doc.divergence || []);
-    renderChurn(doc.churn || {});
     renderRecentProofs(doc.recent_proofs || []);
     renderRecentSwaps(doc.recent_swaps || []);
   }
@@ -1459,7 +1492,7 @@
   }
 
   function loadBucket(id) {
-    return j("data/bucket_" + id + ".json").then(function (doc) {
+    return j("data/bucket_" + id.replace(/:/g, "_") + ".json").then(function (doc) {
       state.bucketDoc = doc;
       renderBucket();
       renderNow();

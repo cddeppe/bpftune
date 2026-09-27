@@ -858,8 +858,62 @@ def _finalize_outcome(counts):
     }
 
 
+# === bpftune-swap-outcomes-redesign-v1 ===
+T_RESCUE_WINDOW_S = 3600
+
+
+def _add_loss_recovery(outcomes_dict, swaps):
+    """Mutates outcomes_dict to add rescued/full_loss/open + _pct fields."""
+    if not swaps:
+        for key in ('composite', 'srate', 'sustained'):
+            sub = outcomes_dict.get(key)
+            if isinstance(sub, dict) and 'loss' in sub:
+                sub.setdefault('rescued', 0)
+                sub.setdefault('full_loss', 0)
+                sub.setdefault('open', 0)
+                sub.setdefault('rescued_pct', 0.0)
+                sub.setdefault('full_loss_pct', 0.0)
+                sub.setdefault('open_pct', 0.0)
+        return outcomes_dict
+
+    swaps_sorted = sorted(swaps, key=lambda s: s.get('ts', 0))
+    last_ts = swaps_sorted[-1].get('ts', 0)
+    field_map = {'composite': 'outcome', 'srate': 'outcome_srate', 'sustained': 'outcome_sustained'}
+    for key, field in field_map.items():
+        sub = outcomes_dict.get(key)
+        if not isinstance(sub, dict) or 'loss' not in sub:
+            continue
+        total_loss = sub.get('loss', 0) or 0
+        if total_loss <= 0:
+            sub['rescued'] = 0; sub['full_loss'] = 0; sub['open'] = 0
+            sub['rescued_pct'] = 0.0; sub['full_loss_pct'] = 0.0; sub['open_pct'] = 0.0
+            continue
+        judged = [s for s in swaps_sorted if s.get(field) in ('win', 'null', 'loss')]
+        losses = [s for s in judged if s.get(field) == 'loss']
+        rescued = 0; full = 0; open_ = 0
+        for loss in losses:
+            ts = loss.get('ts', 0); cookie = loss.get('cookie'); found = False
+            for s in judged:
+                if s is loss: continue
+                s_ts = s.get('ts', 0)
+                if s_ts <= ts: continue
+                if s_ts - ts > T_RESCUE_WINDOW_S: break
+                if s.get('cookie') == cookie and s.get(field) == 'win':
+                    found = True; break
+            if found: rescued += 1
+            elif (last_ts - ts) > T_RESCUE_WINDOW_S: full += 1
+            else: open_ += 1
+        sub['rescued'] = rescued; sub['full_loss'] = full; sub['open'] = open_
+        sub['rescued_pct'] = round(rescued / total_loss * 100, 1)
+        sub['full_loss_pct'] = round(full / total_loss * 100, 1)
+        sub['open_pct'] = round(open_ / total_loss * 100, 1)
+    return outcomes_dict
+# === end bpftune-swap-outcomes-redesign-v1 ===
+
+
 def data_swap_outcomes(text):
     sw, met, srate = _swaps_mets_srates(text)
+    swaps_list = []
     c_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
     s_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
     sust_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
@@ -874,11 +928,18 @@ def data_swap_outcomes(text):
         o3 = _outcome_sustained(srate, c, ts)
         if o3 is None: sust_counts["skip"] += 1
         else: sust_counts[o3] += 1
-    return {
+        swaps_list.append({
+            'ts': ts,
+            'cookie': c,
+            'outcome': o,
+            'outcome_srate': o2,
+            'outcome_sustained': o3,
+        })
+    return _add_loss_recovery({
         "composite": _finalize_outcome(c_counts),
         "srate":     _finalize_outcome(s_counts),
         "sustained": _finalize_outcome(sust_counts),
-    }
+    }, swaps_list)
 
 
 def data_divergence(text):
