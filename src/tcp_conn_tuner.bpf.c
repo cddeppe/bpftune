@@ -70,7 +70,7 @@ static __always_inline struct remote_host *get_remote_host(struct in6_addr *key,
 	remote_host = bpf_map_lookup_elem(&remote_host_map, key);
 	if (remote_host) {
 		if (initial)
-			remote_host->instances++;
+			__sync_fetch_and_add(&remote_host->instances, 1);
 	} else {
 		/* Use per-CPU scratch to avoid a >512B stack temporary.
 		 * bpf_map_update_elem copies sizeof(*scratch) bytes from
@@ -435,7 +435,7 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
         if (cur_alg != tgt) {
                 ratio_q = 0;
         } else {
-                ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
+                ratio_q = pre ? (cur_rate * SWAP_SCORE_NEUTRAL) / pre : 0;
                 if (ratio_q > 1024) ratio_q = 1024;
         }
 
@@ -528,7 +528,7 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
         /* Force loss-class.  Cap at 230 (ratio <= 0.9) even if the
          * current rate happens to look high; the socket leaving the
          * target is the signal, not the momentary rate. */
-        ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre;
+        ratio_q = pre ? (cur_rate * SWAP_SCORE_NEUTRAL) / pre : 0;
         if (ratio_q > 230) ratio_q = 230;
 
         cur16 = rh->metrics[tgt].swap_score;
