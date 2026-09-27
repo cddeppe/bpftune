@@ -740,8 +740,10 @@ def main():
     # 0.4.76: the main() rewrite that added streaming aggregation
     # dropped this write; the renderer has been updating JSON for
     # weeks while index.html went stale.
-    with open(HIST + "/index.html", "w") as f:
-        f.write(INDEX_HTML)
+    # 0.4.83: index.html is a symlink to /opt/bpftune-dashboard/bin/index.html
+    # No need to write here — nginx serves the symlink directly.
+    # with open(HIST + "/index.html", "w") as f:
+    #     f.write(INDEX_HTML)
 
     globals()["_CLEANED"] = cleaned
     globals()["_EMITTED"] = len(docs)
