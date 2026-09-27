@@ -541,7 +541,9 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
          * current rate happens to look high; the socket leaving the
          * target is the signal, not the momentary rate. */
         ratio_q = pre ? (cur_rate * SWAP_SCORE_NEUTRAL) / pre : 0;
-        if (ratio_q > 230) ratio_q = 230;
+        /* 0.4.82: last-chance — use actual ratio if >=30s elapsed */
+        if ((now - statep->last_swap_at) < LAST_CHANCE_MIN_NS)
+                if (ratio_q > 230) ratio_q = 230;
 
         cur16 = rh->metrics[tgt].swap_score;
         cur32 = cur16 ? cur16 : SWAP_SCORE_NEUTRAL;
@@ -556,12 +558,20 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
         /* 0.4.76: score write DISABLED. */
         (void)cur32;
 
-        /* 0.4.82: rejected swap = loss. Clear null_streak too. */
-        if (rh->metrics[tgt].bad_streak < 255)
-                rh->metrics[tgt].bad_streak++;
-        rh->metrics[tgt].null_streak = 0;
+        /* 0.4.82: streak update based on actual outcome (if >=30s). */
+        if (ratio_q >= 282) {
+                rh->metrics[tgt].bad_streak = 0;
+                rh->metrics[tgt].null_streak = 0;
+        } else if (ratio_q <= 230) {
+                if (rh->metrics[tgt].bad_streak < 255)
+                        rh->metrics[tgt].bad_streak++;
+                rh->metrics[tgt].null_streak = 0;
+        } else {
+                if (rh->metrics[tgt].null_streak < 255)
+                        rh->metrics[tgt].null_streak++;
+        }
 
-        bpf_printk("swapscore-reject cookie=%llu tgt=%u ratio=%llu bad=%u",
+        bpf_printk("swapscore-reject cookie=%llu tgt=%u ratio=%llu bad=%u null=%u",
                    bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
                    (__u32)rh->metrics[tgt].bad_streak);
 }

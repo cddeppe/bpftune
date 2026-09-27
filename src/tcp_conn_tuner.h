@@ -292,6 +292,8 @@ struct remote_host {
  * The 0.4.65 attribution logic (cur_alg != tgt -> loss-class) is
  * unchanged; only the clock on the sample changed. */
 #define SWAP_OUTCOME_MIN_RNAL_NS (180ULL * 1000000000ULL)
+/* 0.4.82: last-chance measurement at socket close. */
+#define LAST_CHANCE_MIN_NS (30ULL * 1000000000ULL)
 
 /* 0.4.51: if a socket delivers under SLOW_VS_REF_PCT percent of the
  * bucket reference, it is stuck regardless of what the leader scores.
