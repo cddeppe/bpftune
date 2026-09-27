@@ -772,7 +772,8 @@ def _swaps_mets_srates(text):
                        r"bc=(\d+) ac=(\d+) d=(\d+)"
                        r"(?: mt=(\d+) rb=(\d+))?"
                        r"(?: dest=(\d+))?"
-                       r"(?: dest6=(\d+))?")
+                       r"(?: dest6=(\d+))?"
+                   r"(?: dest6b=(\d+))?")
     rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
     rx_sr = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
@@ -783,7 +784,7 @@ def _swaps_mets_srates(text):
             sw.append((float(m.group(1)), int(m.group(2)),
                        int(m.group(3)), int(m.group(4)),
                        int(m.group(5)), int(m.group(6)), m.group(7),
-                       m.group(8), m.group(9), m.group(10), m.group(11), line))
+                       m.group(8), m.group(9), m.group(10), m.group(11), m.group(12), line))
             continue
         v = rx_mt.search(line)
         if v:
@@ -941,13 +942,23 @@ def data_swap_outcomes(text):
         # Pad to a /32 IPv6 address.  Fall back to v4 (dest) if no v6.
         remote_host = None
         _dest6 = row[10] if len(row) > 10 else None
+        _dest6b = row[11] if len(row) > 11 else None
         if _dest6:
             try:
                 _n6 = int(_dest6)
                 if _n6 != 0:
                     _hi = (_n6 >> 16) & 0xFFFF
                     _lo = _n6 & 0xFFFF
-                    remote_host = "%x:%x::" % (_hi, _lo)
+                    if _dest6b:
+                        try:
+                            _n6b = int(_dest6b)
+                            _hi2 = (_n6b >> 16) & 0xFFFF
+                            _lo2 = _n6b & 0xFFFF
+                            remote_host = "%x:%x:%x:%x::" % (_hi, _lo, _hi2, _lo2)
+                        except (ValueError, TypeError):
+                            remote_host = "%x:%x::" % (_hi, _lo)
+                    else:
+                        remote_host = "%x:%x::" % (_hi, _lo)
             except (ValueError, TypeError):
                 pass
         if not remote_host:
