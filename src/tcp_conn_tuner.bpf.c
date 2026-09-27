@@ -1144,7 +1144,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
             bool margin_met = (remote_host->rate_best_v > 0 &&
                                statep->last_rate_bps > 0 &&
                                statep->last_rate_bps * 150 <
-                               remote_host->rate_best_v * 100000ULL);
+                               remote_host->rate_best_v * 100000ULL * 100);
             /* Post-freeze, "desperate" is judged relative to this
              * socket's own best_seen_metric rather than the bucket
              * leader.  A frozen socket that stays at ~best_seen (even
