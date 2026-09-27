@@ -627,7 +627,7 @@
     </section>
 
     <section class="c4">
-      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
+      <h3>recent swaps <span class="cnt">target + outcome</span> <span id="time-window-recent-swaps" class="cnt"></span></h3>
       <div id="lv-swaps"></div>
     </section>
 
@@ -653,7 +653,7 @@
     </section>
 
     <section class="c4">
-      <h3>swap outcomes <span class="cnt">sustained</span></h3>
+      <h3>swap outcomes <span class="cnt">sustained</span> <span id="time-window-outcomes" class="cnt"></span></h3>
       <div id="lv-swapout"></div>
       <div class="note">
         <b>sustained</b> = median srate in [t+60, t+300].
@@ -1271,7 +1271,18 @@
     setHTML("lv-swaps", html + '</div>');
   }
 
+  function renderLogWindow(doc) {
+    var lw = doc.log_window || {};
+    if (!lw.span_min) return;
+    var text = 'rolling ' + lw.span_min + ' min \u00b7 ' + lw.swap_count + ' swaps \u00b7 newest ' + lw.age_min + 'm ago';
+    ['time-window-outcomes', 'time-window-recent-swaps'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = text;
+    });
+  }
+
   function renderLiveState(doc) {
+    renderLogWindow(doc);
     if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
     renderBuild(doc.build || {});
     renderSystem(doc.system || {});
