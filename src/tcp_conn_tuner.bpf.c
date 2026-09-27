@@ -490,8 +490,20 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
          *   between  null  (no change)      -> null_streak++
          * A null isn't proof of failure but it isn't a win either --
          * three in a row and the target gets excluded. */
-        /* 0.4.77: streak updates DISABLED on the in-kernel side.
-         * The truth file now drives both swap_score and streaks. */
+        /* 0.4.82: re-enabled in-kernel streak updates. Truth file owns
+         * swap_score but was NOT updating streaks (all values were 0).
+         * Penalty multiplier 16/(16+bad*4+null*2) was always 1.0. */
+        if (ratio_q >= 282) {
+                rh->metrics[tgt].bad_streak = 0;
+                rh->metrics[tgt].null_streak = 0;
+        } else if (ratio_q <= 230) {
+                if (rh->metrics[tgt].bad_streak < 255)
+                        rh->metrics[tgt].bad_streak++;
+                rh->metrics[tgt].null_streak = 0;
+        } else {
+                if (rh->metrics[tgt].null_streak < 255)
+                        rh->metrics[tgt].null_streak++;
+        }
         bpf_printk("swapscore cookie=%llu tgt=%u ratio=%llu bad=%u null=%u",
                    bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
                    (__u32)rh->metrics[tgt].bad_streak,
@@ -544,9 +556,10 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
         /* 0.4.76: score write DISABLED. */
         (void)cur32;
 
-        /* 0.4.81: re-enabled streak update for rejected swaps. */
+        /* 0.4.82: rejected swap = loss. Clear null_streak too. */
         if (rh->metrics[tgt].bad_streak < 255)
                 rh->metrics[tgt].bad_streak++;
+        rh->metrics[tgt].null_streak = 0;
 
         bpf_printk("swapscore-reject cookie=%llu tgt=%u ratio=%llu bad=%u",
                    bpf_get_socket_cookie(ops), (__u32)tgt, ratio_q,
