@@ -986,14 +986,6 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         }
         if (best_alt != ~((__u64)0) && best_alt < m->metric_value)
             greedy = false;
-        /* 0.4.81: distance bonus — d=3 has the best historical
-         * outcome rate. Nudge selection toward d=3 when scores
-         * are close. */
-        if (swap_tgt != s) {
-            __u8 _d = (swap_tgt > s) ? (swap_tgt - s) : (s - swap_tgt);
-            if (_d == 3)
-                best_alt = best_alt * 110 / 100;  /* 10% bonus */
-        }
         mt_alt_i = best_alt_i;
         swap_tgt = best_alt_i;
         /* 0.4.56: score-weighted target is picked by userspace in the
@@ -1142,14 +1134,6 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                     }
                 }
             }
-            /* 0.4.81: don't start a new swap while a previous one is
-         * still pending and un-scored. Prevents wasted swaps where
-         * the intermediate algorithm gets blamed for a loss it
-         * didn't earn. */
-        if (statep->swap_target != 0xff &&
-            (now - statep->last_swap_at) < SWAP_OUTCOME_MIN_RNAL_NS)
-                return;
-
         /* 0.4.54: rate-based.  socket under 66% of leader. */
             bool margin_met = (remote_host->rate_best_v > 0 &&
                                statep->last_rate_bps > 0 &&
@@ -1179,7 +1163,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
              * for the new algorithm to settle, and the 2-bad-check
              * requirement above already prevents thrash. */
             __u64 _settle_ns = (s == ALG_BBR_INDEX || swap_tgt == ALG_BBR_INDEX) ? T_SETTLE_NS * 2 : T_SETTLE_NS;
-            bool settle_expired = (now >= statep->last_swap_at + _settle_ns);
+            bool settle_expired = (now >= statep->last_swap_at + T_SETTLE_NS);
 
             __u64 eff_ref = remote_host->max_rate_delivered;
             if (eff_ref < REF_FLOOR_BPS)
