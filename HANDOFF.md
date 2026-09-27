@@ -77,6 +77,18 @@ All dashboard files live at `dashboard/bin/` in the checkout.
 2. `git commit + push origin dashboard`
 3. On each host: `git pull` + `cp dashboard/bin/* to /opt/bpftune-dashboard/bin/` + run `render.py`
 
+### Tuner bug fixes (0.4.80, on main branch, commit f19be38)
+- **Division by zero** (HIGH): `ratio_q = (cur_rate * SWAP_SCORE_NEUTRAL) / pre`
+  crashes BPF if `pre_swap_rate` is 0 (cold start, app-limited).
+  Fix: `ratio_q = pre ? (cur_rate * SWAP_SCORE_NEUTRAL) / pre : 0;`
+  (2 occurrences: score_pending_swap ~line 438, rejected-swap ~line 531)
+- **Non-atomic increment** (LOW): `remote_host->instances++` races across CPUs.
+  Fix: `__sync_fetch_and_add(&remote_host->instances, 1);`
+- **Array bounds** (MEDIUM): current-alg index `s` was not masked with
+  `& (NUM_TCP_CONG_ALGS - 1)`. Added mask for defense-in-depth.
+- Built 0.4.80 on vps-3959 (amd64) + instance-20250225-1017 (arm64).
+- Both .debs shared via /mnt/backup/. All 5 hosts deployed + active.
+
 ### Lesson learned
 - **render.py had its own embedded template** — patches to `index.html` were
   silently ignored. render.py wrote its own template to the served location.
