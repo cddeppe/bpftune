@@ -320,6 +320,13 @@ struct remote_host {
  * MAX_SWAPS times, move it.  After a swap, suppress re-judgement
  * for T_SETTLE_NS: tcp_reinit_congestion_control resets cwnd and
  * ssthresh, so early samples on the new algorithm are a cold start. */
+
+/* 0.4.81: optional adaptive exploration. When enabled (set to 1),
+ * exploration percentage decreases as the bucket accumulates votes.
+ * Default 0 (off) — set to 1 and rebuild to enable. */
+#define ADAPTIVE_EXPLORE 0
+#define ADAPTIVE_EXPLORE_FLOOR 5
+#define ADAPTIVE_EXPLORE_DIV 4
 #define SWAP_MARGIN_PCT 150     /* last_metric >= best_alt * 150 / 100 fires */
 #define SWAP_BAD_FIRST      2   /* checkpoints before first swap */
 #define SWAP_BAD_LATER 2   /* checkpoints before subsequent swaps */
