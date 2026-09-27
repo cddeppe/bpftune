@@ -1,3 +1,15 @@
+bpftune (0.4.83) unstable; urgency=medium
+
+  * Peak-rate swap scoring: use post_swap_rate_max (running max of
+    sustained_bps since swap start) instead of composite point sample
+    in score_pending_swap/rejected. Analysis showed 68%% of swaps would
+    change outcome (48/76 toward win) -- composite was catching
+    momentary dips and scoring them as null/loss.
+  * IPv6 64-bit logging: add dest6b=%%u (remote_ip6[1]) to bpf_printk
+    lines for /48 and /64 mask support in dashboard write-back.
+
+ -- Christophe Deppe <cdeppe@gmail.com>  Sun, 27 Sep 2026 22:49:34 +0000
+
 bpftune (0.4.82) unstable; urgency=medium
 
   * 0.4.82: re-enable streak updates + last-chance measurement (30s)

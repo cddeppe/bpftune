@@ -133,6 +133,7 @@ struct conn_state {
 	/* 0.4.56: pending-swap scoring. */
 
 	__u64 pre_swap_rate;
+	__u64 post_swap_rate_max;
 
 	__u64 swap_target;
 
