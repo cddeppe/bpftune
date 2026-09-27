@@ -117,6 +117,26 @@ def _detect_mask(map_id):
         if _MASK_BITS_V6>32:
             print(f'[writeback] WARNING: v6 mask /{_MASK_BITS_V6} > /32 — BPF log only records 32 bits of dest6',file=sys.stderr)
 
+
+
+def _masked_ip(ip_str):
+    """Mask an IP to match the BPF map key (auto-detected prefix)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except (ValueError, TypeError):
+        return ip_str
+    if isinstance(ip, ipaddress.IPv4Address):
+        if _MASK_BITS_V4 < 32:
+            mask = (0xFFFFFFFF << (32 - _MASK_BITS_V4)) & 0xFFFFFFFF
+            return str(ipaddress.IPv4Address(int(ip) & mask))
+        return str(ip)
+    else:
+        if _MASK_BITS_V6 < 128:
+            mask = ((1 << _MASK_BITS_V6) - 1) << (128 - _MASK_BITS_V6)
+            return str(ipaddress.IPv6Address(int(ip) & mask))
+        return str(ip)
+
+
 def writeback_streaks(swaps):
     try:
         if os.path.exists(WB_THROTTLE_FILE):
@@ -139,7 +159,7 @@ def writeback_streaks(swaps):
         return
     by_host=defaultdict(list); skipped_no_ip=0
     for s in new_swaps:
-        rh=s.get('remote_host')
+        rh=_masked_ip(s.get('remote_host'))
         if not rh: skipped_no_ip+=1; continue
         by_host[rh].append(s)
     if skipped_no_ip: print(f'[writeback] {skipped_no_ip} new swaps skipped (no remote_host)',file=sys.stderr)
@@ -155,7 +175,7 @@ def writeback_streaks(swaps):
         new_algs=set(s.get('to_alg') for s in host_new_swaps if s.get('to_alg') is not None)
         patches=0
         for alg_idx in new_algs:
-            recent=sorted([s for s in swaps if s.get('remote_host')==host and s.get('to_alg')==alg_idx and s.get('outcome_sustained')],key=lambda x:x.get('ts',0))[-WRITEBACK_WINDOW:]
+            recent=sorted([s for s in swaps if _masked_ip(s.get('remote_host') or '')==host and s.get('to_alg')==alg_idx and s.get('outcome_sustained')],key=lambda x:x.get('ts',0))[-WRITEBACK_WINDOW:]
             if not recent: continue
             outcomes=[s.get('outcome_sustained') for s in recent]
             bad,null=_streaks_from_history(outcomes)
