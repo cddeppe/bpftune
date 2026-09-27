@@ -1,3 +1,9 @@
+bpftune (0.4.82) unstable; urgency=medium
+
+  * 0.4.82: re-enable streak updates + last-chance measurement (30s)
+
+ -- root <root@vps-3959>  Sun, 27 Sep 2026 19:03:50 +0200
+
 bpftune (0.4.81) unstable; urgency=medium
 
   * 0.4.81: streak re-enable + desperate simplify + adaptive flag
