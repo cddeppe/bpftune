@@ -937,17 +937,30 @@ def data_swap_outcomes(text):
         o3 = _outcome_sustained(srate, c, ts)
         if o3 is None: sust_counts["skip"] += 1
         else: sust_counts[o3] += 1
+        # Prefer v6 (dest6 = first 32 bits of IPv6 from the BPF log).
+        # Pad to a /32 IPv6 address.  Fall back to v4 (dest) if no v6.
         remote_host = None
-        _dest = row[9] if len(row) > 9 else None
-        if _dest:
+        _dest6 = row[10] if len(row) > 10 else None
+        if _dest6:
             try:
-                _n = int(_dest)
-                if _n != 0:
-                    remote_host = "%d.%d.%d.%d" % (
-                        (_n >> 24) & 0xff, (_n >> 16) & 0xff,
-                        (_n >> 8) & 0xff,  _n & 0xff)
+                _n6 = int(_dest6)
+                if _n6 != 0:
+                    _hi = (_n6 >> 16) & 0xFFFF
+                    _lo = _n6 & 0xFFFF
+                    remote_host = "%x:%x::" % (_hi, _lo)
             except (ValueError, TypeError):
                 pass
+        if not remote_host:
+            _dest = row[9] if len(row) > 9 else None
+            if _dest:
+                try:
+                    _n = int(_dest)
+                    if _n != 0:
+                        remote_host = "%d.%d.%d.%d" % (
+                            (_n >> 24) & 0xff, (_n >> 16) & 0xff,
+                            (_n >> 8) & 0xff,  _n & 0xff)
+                except (ValueError, TypeError):
+                    pass
         swaps_list.append({
             'ts': ts,
             'cookie': c,
