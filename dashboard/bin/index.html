@@ -54,6 +54,7 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html, body { max-width: 100vw; overflow-x: hidden; }
   body {
     background: var(--bg); color: var(--fg);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto,
@@ -105,6 +106,34 @@
   }
   .pill.flash { color: var(--accent); }
 
+  html[data-theme="dark"] {
+    --bg: #0f1115;
+    --fg: #e6e8ee;
+    --muted: #9aa0a6;
+    --muted-2: #6b7280;
+    --border: #24272e;
+    --border-strong: #2f333b;
+    --card-bg: #16181d;
+    --code-bg: #13151a;
+    --subtle: #1c1f25;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --accent: #6b8fef;
+    --accent-dim: #6b8fef22;
+    --good: #34d399;
+    --good-dim: #34d39922;
+    --bad: #f87171;
+    --bad-dim: #f8717122;
+    --warn: #fbbf24;
+    --warn-dim: #fbbf2422;
+  }
+  #theme-toggle {
+    position: fixed; top: 12px; right: 12px; z-index: 100;
+    background: var(--card-bg); border: 1px solid var(--border);
+    color: var(--fg); border-radius: 999px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+    font-family: var(--mono);
+  }
+
   .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
@@ -112,6 +141,7 @@
     box-shadow: var(--shadow);
     padding: 18px;
     margin-bottom: var(--gap);
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
   }
   .card > h2 {
     margin: 0 0 16px;
@@ -172,6 +202,10 @@
     display: grid;
     grid-template-columns: repeat(12, 1fr);
     gap: 14px;
+    /* 0.4.78.2: match the bottom spacing the .card stack uses
+     * between cards, so the first chart below the grid doesn't
+     * bump into the rate progression / swap outcomes row. */
+    margin-bottom: var(--gap);
   }
   .lv-grid > section {
     grid-column: span 12;
@@ -181,6 +215,7 @@
     box-shadow: var(--shadow);
     padding: 14px 16px;
     min-width: 0;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
   }
   @media (min-width: 900px) {
     .lv-grid > section.c6 { grid-column: span 6; }
@@ -224,6 +259,17 @@
   .kv .v.hi { color: var(--fg); font-weight: 500; }
   .kv .v.dim { color: var(--muted-2); }
 
+  .covbar {
+    display: inline-block; width: 80px; height: 6px;
+    background: var(--subtle); border-radius: 3px;
+    vertical-align: middle; margin-right: 6px; overflow: hidden;
+  }
+  .covbar > i { display: block; height: 100%; background: var(--good); }
+  /* 0.4.78.2: proof leaderboard reuses .covbar with per-series color */
+  .covbar.v-proven  > i { background: #59a14f; }
+  .covbar.v-avg     > i { background: #4e79a7; }
+  .covbar.v-sampled > i { background: #e15759; }
+
   table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.tbl th, table.tbl td {
     padding: 6px 4px; text-align: right;
@@ -246,18 +292,47 @@
   table.tbl td.name { color: var(--fg); font-weight: 500; }
   table.tbl td.dim { color: var(--muted); }
   table.tbl tr.pick td { background: var(--accent-dim); }
+  /* 0.4.78.2: position the pick badge absolutely so it cannot
+   * wrap or affect the row height.  The old inline ::after on
+   * td.name could wrap in the narrow c6 and grow the whole row,
+   * breaking the balance with the proof leaderboard next to it. */
+  table.tbl tr.pick td.name { position: relative; padding-right: 40px; }
   table.tbl tr.pick td.name::after {
-    content: " \25b8 pick";
+    content: "\25b8 pick";
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     color: var(--accent); font-size: 9.5px;
     text-transform: uppercase; letter-spacing: .05em;
-    margin-left: 6px; font-weight: 600;
+    font-weight: 600;
+    white-space: nowrap;
   }
   table.tbl tr.inactive td { opacity: .45; }
 
-  .proof-tbl td { padding-top: 4px; padding-bottom: 4px; vertical-align: middle; }
-  .proof-tbl td:nth-child(4),
-  .proof-tbl td:nth-child(5),
-  .proof-tbl td:nth-child(6) { width: 30%; min-width: 90px; }
+  /* 0.4.78.2: proof leaderboard
+   * - nowrap: keep the inline covbar and its value on the same
+   *   line instead of wrapping or overflowing.
+   * - smaller covbar specifically inside the proof table so the
+   *   three series fit and rows sit at the same padding as the
+   *   swap target leaderboard next to them.
+   * - the old 30%-width column rule overflowed when the bar and
+   *   number were placed side by side; auto layout handles it. */
+  /* 0.4.78.2: proof leaderboard: small covbar + number on one row.
+   * Right-aligned cell with a fixed-width number column so the
+   * bar's left edge is the same on every row regardless of the
+   * value width.  Same base padding as the swap leaderboard, so
+   * the two tables sit at the same rhythm side by side. */
+  .proof-tbl td { vertical-align: middle; white-space: nowrap; }
+  /* 0.4.78.2: number first, then bar.  Number sits in a fixed-
+   * width right-aligned slot; bar starts at the same x on every
+   * row, so its left edge aligns across the table. */
+  .proof-cell {
+    display: inline-flex; align-items: center; gap: 4px;
+    justify-content: flex-end; width: 100%;
+  }
+  .proof-cell .mono   { flex: 0 0 46px; text-align: right; }
+  .proof-cell .covbar { flex: 0 0 60px; margin-right: 0; }
   .bar-cell {
     position: relative;
     display: block;
@@ -298,6 +373,8 @@
   .sp.good { color: var(--warn); background: var(--warn-dim); }
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
+  .sp.pending { color: var(--warn); background: var(--warn-dim);
+                font-size: 9.5px; }
 
   .cell-good { color: var(--good); font-weight: 600; }
   .cell-bad  { color: var(--bad);  font-weight: 600; }
@@ -306,7 +383,7 @@
   .list { display: flex; flex-direction: column; }
   .list .item {
     display: grid;
-    grid-template-columns: 1fr auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 8px 12px;
     align-items: center;
     padding: 7px 0;
@@ -423,6 +500,16 @@
     height: 100% !important;
   }
 
+  @media (max-width: 800px) {
+    .lv-grid { gap: 10px; }
+    .lv-grid > section { padding: 10px 12px; }
+    .card { padding: 12px; }
+    table.tbl { font-size: 11.5px; }
+    table.tbl th, table.tbl td { padding: 4px 3px; }
+    .proof-cell .covbar { flex-basis: 40px; }
+    .proof-cell .mono   { flex-basis: 38px; font-size: 11px; }
+  }
+
   .footer {
     margin-top: 32px; padding-top: 16px;
     border-top: 1px solid var(--border);
@@ -466,6 +553,7 @@
 </style>
 </head>
 <body>
+<button id="theme-toggle" aria-label="toggle theme">◐</button>
 <div class="wrap">
 
   <header class="topbar">
@@ -525,24 +613,25 @@
     </section>
 
     <section class="c12">
-      <h3>top destination buckets</h3>
+      <h3>top destination buckets <span class="cnt">rate-board coverage &middot; last 24h</span></h3>
       <div id="lv-buckets"></div>
     </section>
 
-    <section class="c12">
+    <section class="c8">
       <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
-        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>,
-        <b>penalty</b> = <code>16 / (16 + bad&times;4 + null&times;2)</code>.
-        Penalty starts at 1.0 (no failures) and falls as bad/null streaks
-        grow, but is always positive &mdash; streaks are a multiplier, not
-        a gate. Sorted by score; the top row is what the picker would
-        choose right now.
+        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>.
+        Top row is what the picker would choose right now.
       </div>
     </section>
 
-    <section class="c12">
+    <section class="c4">
+      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
+      <div id="lv-swaps"></div>
+    </section>
+
+    <section class="c8">
       <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
@@ -550,9 +639,12 @@
         <b style="color:#4e79a7">sampled avg</b>,
         <b style="color:#59a14f">proven max</b>,
         <b style="color:#e15759">sampled max</b>.
-        Different populations &mdash; sampled avg may exceed proven max
-        on the same row, by design.
       </div>
+    </section>
+
+    <section class="c4">
+      <h3>recent proofs <span class="cnt">Mb/s</span></h3>
+      <div id="lv-proofs"></div>
     </section>
 
     <section class="c8">
@@ -561,71 +653,32 @@
     </section>
 
     <section class="c4">
-      <h3>swap outcomes</h3>
+      <h3>swap outcomes <span class="cnt">sustained</span></h3>
       <div id="lv-swapout"></div>
       <div class="note">
-        <b>composite</b> = met val= ratio. <b>sustained</b> = median srate
-        in [t+60, t+300] &mdash; excludes the cwnd-reset dip; this is
-        the accurate throughput measure.
-      </div>
-    </section>
-
-    <section class="c12">
-      <h3>divergence <span class="cnt">swap target: rate vs metric</span></h3>
-      <div id="lv-div"></div>
-    </section>
-
-    <section class="c6">
-      <h3>recent proofs</h3>
-      <div id="lv-proofs"></div>
-    </section>
-
-    <section class="c6">
-      <h3>cookie churn</h3>
-      <div class="kv" id="lv-churn"></div>
-    </section>
-
-    <section class="c12">
-      <h3>recent swaps <span class="cnt">composite vs sustained</span></h3>
-      <div id="lv-swaps"></div>
-    </section>
+        <b>sustained</b> = median srate in [t+60, t+300].
+      </div>    </section>
 
   </div>
 
   <section class="card">
     <h2><span class="dot"></span>rate_ema per algorithm &mdash; Mb/s</h2>
-    <div class="chart-box h-xl"><canvas id="rate"></canvas></div>
+    <div class="chart-box h-lg"><canvas id="rate"></canvas></div>
   </section>
 
   <section class="card">
     <h2><span class="dot"></span>swap_score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
-    <div class="chart-box h-xl"><canvas id="sscore"></canvas></div>
+    <div class="chart-box h-lg"><canvas id="sscore"></canvas></div>
   </section>
 
   <section class="card">
     <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
-    <div class="chart-box h-xl"><canvas id="streaks"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>divergence &mdash; composite win rate <span class="sub">95% Wilson CI</span></h2>
-    <div class="chart-box h-md"><canvas id="div"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>divergence &mdash; sustained win rate <span class="sub">median srate in [t+60, t+300] &middot; 95% Wilson CI</span></h2>
-    <div class="chart-box h-md"><canvas id="div_sustained"></canvas></div>
-    <div class="chart-note" id="div_sustained_note"></div>
+    <div class="chart-box h-lg"><canvas id="streaks"></canvas></div>
   </section>
 
   <section class="card">
     <h2><span class="dot"></span>swaps per bin</h2>
     <div class="chart-box h-sm"><canvas id="swaps"></canvas></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="dot"></span>rate-board coverage &mdash; last 24h</h2>
-    <div class="chart-box" id="fleetbox" style="height:500px"><canvas id="fleet"></canvas></div>
   </section>
 
   <div class="footer">
@@ -707,6 +760,18 @@
 
   function $(id) { return document.getElementById(id); }
   function setHTML(id, s) { var e = $(id); if (e) e.innerHTML = s; }
+  /* 0.4.79: monotonic-age label for recent swaps / proofs. */
+  var SERVER_NOW_MONO = 0;
+  function ageLabel(boot_ts) {
+    if (!boot_ts || !SERVER_NOW_MONO) return '';
+    var age = SERVER_NOW_MONO - boot_ts;
+    if (age < 0) return '';
+    if (age < 60)    return Math.round(age) + 's';
+    if (age < 3600)  return Math.round(age/60) + 'm';
+    if (age < 86400) return Math.round(age/3600) + 'h';
+    return Math.round(age/86400) + 'd';
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
@@ -825,15 +890,32 @@
   }
 
   function renderBuckets(rows) {
+    state.lastBucketRows = rows || [];
     if (!rows.length) {
       setHTML("lv-buckets", '<div class="placeholder">(no buckets)</div>');
       return;
     }
+    var cov = {};
+    var f = state.fleet || {};
+    var fb = f.buckets || [];
+    var fc = f.coverage_24h || [];
+    for (var i = 0; i < fb.length; i++) cov[fb[i]] = fc[i];
+
     var html = '<table class="tbl"><thead><tr>' +
       '<th>dest</th><th>instances</th><th>min rtt</th>' +
       '<th>ref rate</th><th>best alg</th><th>algs</th>' +
+      '<th style="width:24%">coverage · 24h</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
+      var v = cov[r.dest];
+      var cell;
+      if (v == null) {
+        cell = '<td class="mono dim">&ndash;</td>';
+      } else {
+        var pct = Math.max(0, Math.min(100, v));
+        cell = '<td class="mono"><span class="covbar"><i style="width:' +
+               pct.toFixed(0) + '%"></i></span>' + pct.toFixed(0) + '%</td>';
+      }
       html += '<tr>' +
         '<td class="mono name">' + esc(r.dest) + '</td>' +
         '<td class="mono">' + fmtN(r.inst) + '</td>' +
@@ -841,9 +923,39 @@
         '<td class="mono">' + r.ref_mbps.toFixed(1) + '</td>' +
         '<td>' + esc(r.best_alg) + '</td>' +
         '<td class="mono dim">' + r.n_alg + '</td>' +
+        cell +
         '</tr>';
     });
     setHTML("lv-buckets", html + '</tbody></table>');
+  }
+
+  function renderRecentSwapsForBucket() {
+    var by = state.recentSwapsByBucket;
+    if (!by) {
+      // fallback: pristine behaviour, unfiltered recent swaps
+      renderRecentSwaps((state.lastLiveSwaps) || []);
+      return;
+    }
+    var bs = $("bucket");
+    var addr = (bs && bs.value) ? bs.value : null;
+    if (!addr && state.meta && state.meta.default_bucket) {
+      addr = state.meta.default_bucket;
+    }
+    var rows = (addr && by[addr]) ? by[addr] : [];
+    renderRecentSwaps(rows);
+  }
+
+  function renderMetricForBucket() {
+    var bs = $("bucket");
+    var addr = (bs && bs.value) ? bs.value : null;
+    if (!addr && state.meta && state.meta.default_bucket) {
+      addr = state.meta.default_bucket;
+    }
+    var byB = state.metricByBucket || {};
+    var keys = Object.keys(byB);
+    var rows = (addr && byB[addr]) ? byB[addr]
+                                   : (keys.length ? byB[keys[0]] : []);
+    renderMetric(rows);
   }
 
   function renderMetric(rows) {
@@ -876,7 +988,9 @@
       if (rows[i].active) { picked = i; break; }
     }
     var html = '<table class="tbl"><thead><tr>' +
-      '<th>alg</th><th>rate_ema</th><th>swap_score</th>' +
+      '<th>alg</th><th>rate_ema<br>'
+        + '<span style="font-weight:400;text-transform:none;letter-spacing:0">Mb/s</span></th>'
+        + '<th>swap_score</th>' +
       '<th>penalty</th><th>score</th><th>metric</th>' +
       '<th>bad</th><th>null</th>' +
       '</tr></thead><tbody>';
@@ -888,7 +1002,12 @@
       var pen = (r.penalty == null) ? "-" : r.penalty.toFixed(3);
       html += '<tr' + trClass + '>' +
         '<td class="name">' + esc(r.alg) + '</td>' +
-        '<td class="mono">' + (r.rate_ema == null ? "-" : r.rate_ema) + '</td>' +
+        '<td class="mono">' +
+          (r.rate_ema == null ? "-"
+           : fmtRe(r.rate_ema)
+             + '<span class="dim" style="font-weight:400"> ('
+             + r.rate_ema + ')</span>') +
+        '</td>' +
         '<td class="mono ' + colorSwapScore(r.swap_score) + '">' +
           (r.swap_score == null ? "-" : r.swap_score) + '</td>' +
         '<td class="mono ' + colorPenalty(r.penalty) + '">' + pen + '</td>' +
@@ -901,7 +1020,11 @@
           (r.null_streak == null ? "-" : r.null_streak) + '</td>' +
         '</tr>';
     });
-    setHTML("lv-metric", html + '</tbody></table>');
+    setHTML("lv-metric", html + '</tbody></table>' +
+      '<div class="note" style="margin-top:8px">' +
+      'rate_ema is <b>Mb/s</b> in this table, matching the chart and NOW. ' +
+      'The raw 100&nbsp;KB/s value the picker uses is shown in parenthesis.' +
+      '</div>');
   }
 
   function renderProof(rows) {
@@ -916,21 +1039,25 @@
       });
     });
     function bar(v, cls) {
+      // 0.4.78.2: covbar + fixed-width number in a single flex row
+      // so the bar's left edge aligns across all rows.
       if (v == null) {
-        return '<div class="bar-cell ' + cls + '">' +
-               '<div class="bar-num">-</div></div>';
+        return '<span class="proof-cell">' +
+               '<span class="mono dim">-</span></span>';
       }
       var w = Math.max(2, Math.round(100 * v / peak));
-      return '<div class="bar-cell ' + cls + '">' +
-             '<div class="bar-fill" style="width:' + w + '%"></div>' +
-             '<div class="bar-num">' + v.toFixed(1) + '</div></div>';
+      return '<span class="proof-cell">' +
+             '<span class="mono">' + v.toFixed(1) + '</span>' +
+             '<span class="covbar ' + cls + '">' +
+             '<i style="width:' + w + '%"></i></span>' +
+             '</span>';
     }
     var html = '<table class="tbl proof-tbl"><thead><tr>' +
       '<th>alg</th>' +
       '<th>good</th><th>proved</th>' +
-      '<th style="text-align:left">proven max</th>' +
-      '<th style="text-align:left">sampled avg</th>' +
-      '<th style="text-align:left">sampled max</th>' +
+      '<th>proven max</th>' +
+      '<th>sampled avg</th>' +
+      '<th>sampled max</th>' +
       '<th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
@@ -1093,11 +1220,22 @@
     rows.slice().reverse().forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
-        '<span class="meta">' + r.mbps.toFixed(1) + ' Mb/s</span>' +
+        '<span class="meta">' + esc(shortAddr(r.dest)) +
+          ' &middot; ' + r.mbps.toFixed(1) + ' Mb/s' +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
         '<span class="sp ' + r.tier + '">' + r.tier + '</span>' +
         '</div>';
     });
     setHTML("lv-proofs", html + '</div>');
+  }
+
+  function shortAddr(a) {
+    a = a || "";
+    if (a.indexOf("v6:") === 0) return a;
+    var p = a.split(".");
+    if (p.length === 4) return p[0] + "." + p[1] + ".0.0";
+    return a;
   }
 
   function renderRecentSwaps(rows) {
@@ -1105,38 +1243,54 @@
       setHTML("lv-swaps", '<div class="placeholder">(none in tail)</div>');
       return;
     }
-    function pill(o) {
-      if (!o) return '<span class="sp dash">&hellip;</span>';
-      return '<span class="sp ' + o + '">' + o + '</span>';
-    }
     var html = '<div class="list">';
-    rows.slice().reverse().forEach(function (r) {
+    /* 0.4.79: rows arrive newest-first from the CLI.  Do NOT
+     * reverse here -- that was flipping to oldest-first, so the
+     * top of the panel showed hours-old swaps and looked
+     * current.  Fixed 2026-09-26. */
+    rows.forEach(function (r) {
+      /* 0.4.79: only outcome_sustained is final.  The composite
+       * outcome is provisional -- it may read null while the
+       * sustained window is still open.  Show "pending" until the
+       * collector has classified the swap on the sustained ruler
+       * (T+60..T+300 after the swap). */
+      var o = r.outcome_sustained || "";
+      var pill = o
+        ? '<span class="sp ' + o + '">' + o + '</span>'
+        : '<span class="sp pending">pending</span>';
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
-        '<span class="meta">d' + r.d + ' &middot; mt=' +
-          esc(r.mt_alg || "-") + ' rb=' + esc(r.rb_alg || "-") + '</span>' +
-        '<span class="pillcol"><span class="lbl">comp</span>' +
-          pill(r.outcome) + '</span>' +
-        '<span class="pillcol"><span class="lbl">sust</span>' +
-          pill(r.outcome_sustained) + '</span>' +
+        '<span class="meta">' + esc(shortAddr(r.dest)) +
+          ' &middot; d' + r.d +
+          (r.boot_ts ? ' &middot; ' + ageLabel(r.boot_ts) : '') +
+          '</span>' +
+        pill +
         '</div>';
     });
     setHTML("lv-swaps", html + '</div>');
   }
 
   function renderLiveState(doc) {
+    if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
     renderBuild(doc.build || {});
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);
     renderBuckets(doc.buckets || []);
-    renderMetric(doc.metric || []);
+    state.metricByBucket = doc.metric_by_bucket || {};
+    state.bucketLive = doc.bucket_live || {};
+    state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
+    renderMetricForBucket();
+    renderRecentSwapsForBucket();
+    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
+      renderBucket();   // refresh 1h chart from live data
+    }
     renderProof(doc.proof || []);
     renderRate(doc.rate || []);
     renderSwapOutcomes(doc.swap_outcomes || null, doc.churn || {});
-    renderDivergence(doc.divergence || []);
     renderRecentProofs(doc.recent_proofs || []);
-    renderRecentSwaps(doc.recent_swaps || []);
+    state.lastLiveSwaps = doc.recent_swaps || [];
+    renderRecentSwapsForBucket();
   }
 
   function liveRefresh() {
@@ -1188,7 +1342,7 @@
     }
   }
 
-  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null };
+  var state  = { meta: null, bucketDoc: null, swaps: null, fleet: null, metricByBucket: null, bucketLive: {}, recentSwapsByBucket: null };
   var charts = {};
 
   function mk(id, cfg) {
@@ -1258,14 +1412,29 @@
     var rng = $("range").value;
     var s = doc.series[rng];
     var ts = s.ts;
-
-    function makeSeries(prefix) {
-      return algs.map(function (a) {
-        return prefix + a;
-      }).filter(function (c) { return c in s; });
+    // 0.4.79: for the 1h range, prefer the CLI-provided ring
+    // (60s freshness) for all four series.  bucket_live now
+    // carries re_/ss_/bs_/ns_, so the same source serves the
+    // rate, score, and streak charts.  Other ranges still load
+    // the 15-minute renderer output on demand.
+    var bid = $("bucket") ? $("bucket").value : null;
+    if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
+      var lb = state.bucketLive[bid];
+      if (lb.ts && lb.ts.length) {
+        s = {};
+        for (var k in (lb.cols || {})) s[k] = lb.cols[k];
+        ts = lb.ts;
+      }
     }
 
-    var rateCols = makeSeries("re_");
+    function makeSeries(prefix, source) {
+      source = source || s;
+      return algs.map(function (a) {
+        return prefix + a;
+      }).filter(function (c) { return c in source; });
+    }
+
+    var rateCols = makeSeries("re_", s);
     mk("rate", {
       type: "line",
       data: {datasets: lineData(rateCols, s, ts, PALETTE, scaleRe, 0)},
@@ -1456,46 +1625,25 @@
   }
 
   function renderFleet() {
-    var f = state.fleet;
-    var n = (f && f.buckets) ? f.buckets.length : 0;
-    var box = document.getElementById("fleetbox");
-    if (box) {
-      box.style.height = Math.max(200, Math.min(800, n * 22 + 40)) + "px";
-    }
-    mk("fleet", {
-      type: "bar",
-      data: {
-        labels: f.buckets,
-        datasets: [{
-          label: "% bins with leader",
-          data: f.coverage_24h,
-          backgroundColor: "#59a14f",
-          borderColor: "#59a14f",
-          borderRadius: 2,
-          maxBarThickness: 12,
-        }],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        animation: false, indexAxis: "y",
-        layout: {padding: {top: 4, right: 16, bottom: 0, left: 0}},
-        scales: {
-          x: {min: 0, max: 100, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 6, padding: 6,
-                      callback: function (v) { return v + "%"; }}},
-          y: {grid: {display: false},
-              ticks: {font: {size: 10.5}, autoSkip: false, padding: 4}},
-        },
-        plugins: {legend: {display: false}},
-      },
-    });
+    /* 0.4.78.2: fleet.json no longer drives a separate chart.  Its
+     * coverage_24h feeds the new coverage column on the top-
+     * destination-buckets table.  refreshAll calls this right
+     * after assigning state.fleet, so re-render the buckets tail
+     * here and the column will fill in. */
+    if (state.lastBucketRows) renderBuckets(state.lastBucketRows);
   }
 
   function loadBucket(id) {
-    return j("data/bucket_" + id.replace(/:/g, "_") + ".json").then(function (doc) {
+    // 0.4.78.1: sanitize the same way the renderer did when it
+    // wrote the file -- bucket ids like "v6:XXXXXXXX" become
+    // "v6_XXXXXXXX" on disk.
+    var safe = (id || "").replace(/[^A-Za-z0-9._-]/g, "_");
+    return j("data/bucket_" + safe.replace(/:/g, "_") + ".json").then(function (doc) {
       state.bucketDoc = doc;
       renderBucket();
       renderNow();
+      renderRecentSwapsForBucket();
+      renderMetricForBucket();
     });
   }
 
@@ -1534,7 +1682,6 @@
 
       return loadBucket(bs.value);
     }).then(function () {
-      renderDivergenceCharts();
       renderSwaps();
       renderFleet();
     }).catch(function (e) {
@@ -1578,7 +1725,15 @@
                   ' (' + b.points + ')</option>';
         }
         bs.innerHTML = html;
-        bs.value = state.meta.default_bucket;
+        var saved_bucket = null;
+        try { saved_bucket = localStorage.getItem("bpftune.bucket"); } catch (e) {}
+        var still_there = false;
+        if (saved_bucket) {
+          for (var q = 0; q < state.meta.buckets.length; q++) {
+            if (state.meta.buckets[q].id === saved_bucket) { still_there = true; break; }
+          }
+        }
+        bs.value = still_there ? saved_bucket : state.meta.default_bucket;
 
         var rs = $("range");
         var rhtml = "";
@@ -1587,24 +1742,45 @@
                    state.meta.ranges[m] + '</option>';
         }
         rs.innerHTML = rhtml;
-        rs.value = "24h";
+        /* 0.4.79: default to 1h so the first paint reads the
+         * live ring (current.json, 60s) instead of loading a
+         * 260 KB bucket_*.json just to show the page.  Restore
+         * the user's last choice if there is one; historical
+         * ranges load on demand. */
+        var saved_range = null;
+        try { saved_range = localStorage.getItem("bpftune.range"); } catch (e) {}
+        rs.value = (saved_range && state.meta.ranges.indexOf(saved_range) >= 0)
+                   ? saved_range : "1h";
+        rs.onchange = function () {
+          try { localStorage.setItem("bpftune.range", rs.value); } catch (e) {}
+          renderBucket();
+        };
 
         var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                         .replace("T", " ").slice(0, 19) + "Z";
         status("updated " + relTime(state.meta.generated_ts));
         if (footgen) footgen.textContent = "rendered " + stamp;
 
-        bs.onchange = function () { loadBucket(bs.value); };
+        bs.onchange = function () {
+          try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
+          loadBucket(bs.value);
+          renderMetricForBucket();
+          renderRecentSwapsForBucket();
+        };
+        try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
         rs.onchange = function () {
           renderBucket();
-          renderDivergenceCharts();
           renderSwaps();
         };
 
-        return loadBucket(state.meta.default_bucket);
+        /* 0.4.79 fix: load the bucket the dropdown actually shows
+         * (bs.value), not meta's default.  Boot was setting bs.value
+         * to the saved bucket and then loading a different one, so
+         * the chart showed one bucket's data under another's name
+         * until the user re-selected. */
+        return loadBucket(bs.value);
       })
       .then(function () {
-        renderDivergenceCharts();
         renderSwaps();
         renderFleet();
       })
@@ -1614,6 +1790,28 @@
   }
 
   boot();
+
+  // 0.4.78.2: dark/light toggle.  Persists per-browser in
+  // localStorage; falls back to prefers-color-scheme.
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bpftune.theme"); } catch (e) {}
+    if (saved === "dark" || saved === "light") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+    var b = document.getElementById("theme-toggle");
+    if (!b) return;
+    b.addEventListener("click", function () {
+      var cur = document.documentElement.getAttribute("data-theme");
+      if (!cur) {
+        cur = window.matchMedia(
+          "(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      var next = cur === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("bpftune.theme", next); } catch (e) {}
+    });
+  })();
 })();
 </script>
 </body>
