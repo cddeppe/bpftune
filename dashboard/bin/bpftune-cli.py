@@ -758,7 +758,12 @@ def data_rate(text):
     return rows
 
 
+_SWMS_CACHE = {}
+
 def _swaps_mets_srates(text):
+    _key = id(text)
+    if _key in _SWMS_CACHE:
+        return _SWMS_CACHE[_key]
     sw = []
     met = defaultdict(list)
     srate = defaultdict(list)
@@ -787,7 +792,10 @@ def _swaps_mets_srates(text):
         s = rx_sr.search(line)
         if s:
             srate[int(s.group(2))].append((float(s.group(1)), int(s.group(4))))
-    return sw, met, srate
+    _result = (sw, met, srate)
+    _SWMS_CACHE.clear()
+    _SWMS_CACHE[_key] = _result
+    return _result
 
 
 def _outcome_composite(met, c, ts):
@@ -919,6 +927,7 @@ def data_swap_outcomes(text):
     sust_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
     for row in sw:
         ts, c = row[0], row[1]
+        fa, ta = row[2], row[3]
         o = _outcome_composite(met, c, ts)
         if o is None: c_counts["skip"] += 1
         else: c_counts[o] += 1
@@ -928,13 +937,32 @@ def data_swap_outcomes(text):
         o3 = _outcome_sustained(srate, c, ts)
         if o3 is None: sust_counts["skip"] += 1
         else: sust_counts[o3] += 1
+        remote_host = None
+        _dest = row[9] if len(row) > 9 else None
+        if _dest:
+            try:
+                _n = int(_dest)
+                if _n != 0:
+                    remote_host = "%d.%d.%d.%d" % (
+                        (_n >> 24) & 0xff, (_n >> 16) & 0xff,
+                        (_n >> 8) & 0xff,  _n & 0xff)
+            except (ValueError, TypeError):
+                pass
         swaps_list.append({
             'ts': ts,
             'cookie': c,
+            'from_alg':         fa,
+            'to_alg':           ta,
+            'remote_host':      remote_host,
             'outcome': o,
             'outcome_srate': o2,
             'outcome_sustained': o3,
         })
+    try:
+        from streak_writeback import writeback_streaks
+        writeback_streaks(swaps_list)
+    except Exception as e:
+        import sys; print(f'[writeback] {e}', file=sys.stderr)
     return _add_loss_recovery({
         "composite": _finalize_outcome(c_counts),
         "srate":     _finalize_outcome(s_counts),
