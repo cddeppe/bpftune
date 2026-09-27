@@ -1158,7 +1158,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
                                    statep->best_seen_metric * 200);
             bool desperate = (margin_met &&
                               statep->last_rate_bps * 4 <
-                              remote_host->rate_best_v * 100000ULL * 100 &&
+                              remote_host->rate_best_v * 100000ULL &&
                               (!statep->frozen || desperate_post));
 
             /* Settle window: fixed minimum gap between swaps on one
