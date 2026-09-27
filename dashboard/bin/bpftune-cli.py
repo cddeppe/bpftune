@@ -333,9 +333,9 @@ def data_system():
 
 
 def data_tunables():
-    j = sh_noshell(["journalctl", "-b", "-u", "bpftune",
+    j = sh_noshell(["journalctl", "-u", "bpftune",
                                         "--no-pager", "-q",
-                                        "--since", "-24h"])
+                                        "--grep", "sysctl 'net\\."])
     names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
     items = []
     for n in names:
@@ -1264,12 +1264,31 @@ def _uptime_now():
         return 0.0
 
 
+
+def _log_window(text):
+    """Time range of the log tail."""
+    sw, _, _ = _swaps_mets_srates(text)
+    if not sw:
+        return {"oldest_ts": 0, "newest_ts": 0, "span_min": 0, "swap_count": 0, "age_min": 0}
+    oldest = min(r[0] for r in sw); newest = max(r[0] for r in sw)
+    try:
+        with open('/proc/uptime') as f: uptime = float(f.read().split()[0])
+        now = time.time()
+        oldest_wall = int(now - uptime + oldest); newest_wall = int(now - uptime + newest)
+        age_min = round((now - newest_wall) / 60, 1)
+    except: oldest_wall = 0; newest_wall = 0; age_min = 0
+    return {"oldest_ts": oldest_wall, "newest_ts": newest_wall,
+            "span_min": round((newest - oldest) / 60, 1),
+            "swap_count": len(sw), "age_min": age_min}
+
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
     text    = tail_recent()
     return {
         "generated_ts":   int(time.time()),
+        "log_window":     _log_window(text),
         "now_mono":       _uptime_now(),
         "hostname":       os.uname().nodename,
         "build":          data_build(logpath),
@@ -1386,7 +1405,7 @@ def render_text(d):
     for row in _full("BPFTUNE-MANAGED TUNABLES", _tun_lines(d["tunables"])):
         print(row)
     print()
-    bk = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref_Mbps':>10}"
+    bk = [f"  {'dest':<16}{'inst':>6}{'rtt_us':>9}{'ref Mb/s':>10}"
           f"{'best_i':>10}{'n_alg':>7}"]
     for r in d["buckets"]:
         bk.append(f"  {r['dest']:<16}{r['inst']:>6}{r['rtt_us']:>9}"
@@ -1427,7 +1446,7 @@ def render_text(d):
     so_lines = _outcome_lines(d["swap_outcomes"]["composite"], "composite") + \
                _outcome_lines(d["swap_outcomes"]["sustained"],
                               "sustained (accurate)")
-    for row in _twocol("RATE PROGRESSION (client, Mbps)", rt,
+    for row in _twocol("RATE PROGRESSION (client, Mb/s)", rt,
                        "SWAP OUTCOMES", so_lines):
         print(row)
     print()
@@ -1459,7 +1478,7 @@ def render_text(d):
         f"    5x+               {ch['many']}",
         f"    max per cookie    {ch['max']}",
     ]
-    rp = [f"  {r['alg']:<9} {r['mbps']:>7.1f} Mbps   {r['tier']}"
+    rp = [f"  {r['alg']:<9} {r['mbps']:>7.1f} Mb/s   {r['tier']}"
           for r in d["recent_proofs"]] or ["  (none)"]
     for row in _twocol("COOKIE CHURN", ch_lines,
                        "RECENT PROOF EVENTS", rp):

@@ -590,7 +590,7 @@
         <span class="v mono" id="n_rmem">-</span></div>
     </div>
     <div class="rates">
-      <span class="k">rate_ema</span>
+      <span class="k">Rate EMA</span>
       <span class="v" id="n_rates">-</span>
     </div>
   </section>
@@ -621,7 +621,7 @@
       <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
-        <b>score</b> = <code>rate_ema &times; swap_score / 256 &times; penalty</code>.
+        <b>score</b> = <code>Rate EMA &times; Swap Score / 256 &times; penalty</code>.
         Top row is what the picker would choose right now.
       </div>
     </section>
@@ -636,9 +636,9 @@
       <div id="lv-proof"></div>
       <div class="note">
         bar colors:
-        <b style="color:#4e79a7">sampled avg</b>,
         <b style="color:#59a14f">proven max</b>,
-        <b style="color:#e15759">sampled max</b>.
+        <b style="color:#4e79a7">sustained avg</b>,
+        <b style="color:#e15759">sustained max</b>.
       </div>
     </section>
 
@@ -662,17 +662,17 @@
   </div>
 
   <section class="card">
-    <h2><span class="dot"></span>rate_ema per algorithm &mdash; Mb/s</h2>
+    <h2><span class="dot"></span>Rate EMA per algorithm &mdash; Mb/s</h2>
     <div class="chart-box h-lg"><canvas id="rate"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>swap_score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
+    <h2><span class="dot"></span>Swap Score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
     <div class="chart-box h-lg"><canvas id="sscore"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>bad_streak / null_streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
+    <h2><span class="dot"></span>Bad Streak / Null Streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
     <div class="chart-box h-lg"><canvas id="streaks"></canvas></div>
   </section>
 
@@ -988,9 +988,9 @@
       if (rows[i].active) { picked = i; break; }
     }
     var html = '<table class="tbl"><thead><tr>' +
-      '<th>alg</th><th>rate_ema<br>'
+      '<th>alg</th><th>Rate EMA<br>'
         + '<span style="font-weight:400;text-transform:none;letter-spacing:0">Mb/s</span></th>'
-        + '<th>swap_score</th>' +
+        + '<th>Swap Score</th>' +
       '<th>penalty</th><th>score</th><th>metric</th>' +
       '<th>bad</th><th>null</th>' +
       '</tr></thead><tbody>';
@@ -1022,7 +1022,7 @@
     });
     setHTML("lv-metric", html + '</tbody></table>' +
       '<div class="note" style="margin-top:8px">' +
-      'rate_ema is <b>Mb/s</b> in this table, matching the chart and NOW. ' +
+      'Rate EMA is <b>Mb/s</b> in this table, matching the chart and NOW. ' +
       'The raw 100&nbsp;KB/s value the picker uses is shown in parenthesis.' +
       '</div>');
   }
@@ -1056,8 +1056,8 @@
       '<th>alg</th>' +
       '<th>good</th><th>proved</th>' +
       '<th>proven max</th>' +
-      '<th>sampled avg</th>' +
-      '<th>sampled max</th>' +
+      '<th>sustained avg</th>' +
+      '<th>sustained max</th>' +
       '<th>n</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
