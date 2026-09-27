@@ -1,3 +1,12 @@
+ bpftune (0.4.80) unstable; urgency=medium
+
+  * 0.4.80: fix div-by-zero + atomic increment + bounds check
+    - Division by zero: pre_swap_rate can be 0 (cold start)
+    - Non-atomic increment: instances++ → __sync_fetch_and_add
+    - Array bounds: ensure current alg index is masked
+
+ -- root <root@vps-3959>  Sun, 27 Sep 2026 16:12:05 +0200
+
 bpftune (0.4.80) unstable; urgency=medium
 
   * 0.4.80: fix div-by-zero + atomic increment + bounds check
