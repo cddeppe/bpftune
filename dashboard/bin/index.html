@@ -2038,6 +2038,7 @@ function _populateBucketSelect(desiredBucket) {
   bs.add(new Option('All Buckets', 'all'), 0);
   bs.value = stillThere ? desiredBucket : 'all';
   if (window.__current_doc) _reFilterPanels();
+  return bs.value;
 }
 
   function refreshAll() {
@@ -2051,14 +2052,14 @@ function _populateBucketSelect(desiredBucket) {
       state.swaps = results[1];
       state.fleet = results[2];
 
-      _populateBucketSelect(keep);
+      var finalBucket = _populateBucketSelect(keep);
 
       var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                       .replace("T", " ").slice(0, 19) + "Z";
       if (footgen) footgen.textContent = "rendered " + stamp;
       status("updated " + relTime(state.meta.generated_ts));
 
-      return loadBucket(bs.value);
+      return loadBucket(finalBucket);
     }).then(function () {
       renderSwaps();
       renderFleet();
