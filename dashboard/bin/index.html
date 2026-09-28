@@ -1893,6 +1893,59 @@
     });
   })();
 })();
+
+  /* ---- Label Editor Modal ---- */
+  function openLabelEditor() {
+    fetch('/api/labels').then(function(r) { return r.json(); }).then(function(d) {
+      renderLabelTable(d.labels || {});
+      document.getElementById('label-modal').style.display = 'flex';
+    }).catch(function() { alert('Could not load labels'); });
+  }
+  function closeLabelEditor() {
+    document.getElementById('label-modal').style.display = 'none';
+  }
+  function renderLabelTable(labels) {
+    var html = '';
+    Object.keys(labels).sort().forEach(function(ip) {
+      html += '<tr><td>' + esc(ip) + '</td>' +
+        '<td><input type="text" value="' + esc(labels[ip]) + '" data-ip="' + esc(ip) + '" class="label-edit-input"></td>' +
+        '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
+    });
+    document.getElementById('label-rows').innerHTML = html;
+  }
+  function saveLabel(ip, label) {
+    fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip: ip, label: label})})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) { renderLabelTable(d.labels); if (window.__liveFetch) window.__liveFetch(); }
+      });
+  }
+  function deleteLabel(ip) {
+    fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip: ip, label: ''})})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) { renderLabelTable(d.labels); if (window.__liveFetch) window.__liveFetch(); }
+      });
+  }
+  function addLabel() {
+    var ip = document.getElementById('new-ip').value.trim();
+    var label = document.getElementById('new-label').value.trim();
+    if (!ip) return;
+    saveLabel(ip, label);
+    document.getElementById('new-ip').value = '';
+    document.getElementById('new-label').value = '';
+  }
+  document.addEventListener('blur', function(e) {
+    if (e.target && e.target.classList && e.target.classList.contains('label-edit-input')) {
+      saveLabel(e.target.getAttribute('data-ip'), e.target.value.trim());
+    }
+  }, true);
+  document.addEventListener('click', function(e) {
+    if (e.target && e.target.id === 'label-modal') closeLabelEditor();
+  });
+
 </script>
 
 <!-- Label Editor Modal -->
