@@ -1894,31 +1894,39 @@
   })();
 })();
 
-  /* ---- Label Editor Modal ---- */
+  /* ---- Label Editor Modal (self-contained, no IIFE deps) ---- */
+  function _le_esc(s) { return String(s==null?'':s).replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
   function openLabelEditor() {
     fetch('/api/labels').then(function(r) { return r.json(); }).then(function(d) {
-      renderLabelTable(d.labels || {});
+      var labels = d.labels || {};
+      var html = '';
+      Object.keys(labels).sort().forEach(function(ip) {
+        html += '<tr><td>' + _le_esc(ip) + '</td>' +
+          '<td><input type="text" value="' + _le_esc(labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
+          '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
+      });
+      document.getElementById('label-rows').innerHTML = html;
       document.getElementById('label-modal').style.display = 'flex';
-    }).catch(function() { alert('Could not load labels'); });
+    }).catch(function(err) { alert('Error loading labels: ' + err); });
   }
   function closeLabelEditor() {
     document.getElementById('label-modal').style.display = 'none';
-  }
-  function renderLabelTable(labels) {
-    var html = '';
-    Object.keys(labels).sort().forEach(function(ip) {
-      html += '<tr><td>' + esc(ip) + '</td>' +
-        '<td><input type="text" value="' + esc(labels[ip]) + '" data-ip="' + esc(ip) + '" class="label-edit-input"></td>' +
-        '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
-    });
-    document.getElementById('label-rows').innerHTML = html;
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ip: ip, label: label})})
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (d.ok) { renderLabelTable(d.labels); if (window.__liveFetch) window.__liveFetch(); }
+        if (d.ok) {
+          var html = '';
+          Object.keys(d.labels).sort().forEach(function(ip) {
+            html += '<tr><td>' + _le_esc(ip) + '</td>' +
+              '<td><input type="text" value="' + _le_esc(d.labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
+              '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
+          });
+          document.getElementById('label-rows').innerHTML = html;
+          if (window.__liveFetch) window.__liveFetch();
+        }
       });
   }
   function deleteLabel(ip) {
@@ -1926,7 +1934,16 @@
       body: JSON.stringify({ip: ip, label: ''})})
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (d.ok) { renderLabelTable(d.labels); if (window.__liveFetch) window.__liveFetch(); }
+        if (d.ok) {
+          var html = '';
+          Object.keys(d.labels).sort().forEach(function(ip) {
+            html += '<tr><td>' + _le_esc(ip) + '</td>' +
+              '<td><input type="text" value="' + _le_esc(d.labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
+              '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
+          });
+          document.getElementById('label-rows').innerHTML = html;
+          if (window.__liveFetch) window.__liveFetch();
+        }
       });
   }
   function addLabel() {
@@ -1945,7 +1962,6 @@
   document.addEventListener('click', function(e) {
     if (e.target && e.target.id === 'label-modal') closeLabelEditor();
   });
-
 </script>
 
 <!-- Label Editor Modal -->
