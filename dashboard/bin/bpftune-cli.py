@@ -51,7 +51,7 @@ _LABELS_HOLDER = {'val': None, 'mtime': None}
 def _load_labels():
     """0.4.79: /var/lib/bpftune/aliases.labels.json {canonical_ip: label}."""
     import json as _json
-    return _mtime_cache("/var/lib/bpftune/aliases.labels.json",
+    return _mtime_cache(LABELS_JSON_PATH,
                        _LABELS_HOLDER,
                        lambda f: _json.load(f))
 
@@ -100,7 +100,7 @@ def _load_fold():
             key = "v6:" + (groups[0].zfill(4) + groups[1].zfill(4)).lower()
             out[key] = to
         return out
-    return _mtime_cache("/etc/bpftune/aliases", _FOLD_HOLDER, _loader)
+    return _mtime_cache(ALIASES_FILE_PATH, _FOLD_HOLDER, _loader)
 
 
 def _fold_v6(addr):
@@ -134,7 +134,7 @@ def _load_aliases_labels():
                 except (ValueError, TypeError):
                     d[to_ip] = label
         return d
-    return _mtime_cache("/etc/bpftune/aliases", _ALIASES_LABEL_HOLDER, _loader)
+    return _mtime_cache(ALIASES_FILE_PATH, _ALIASES_LABEL_HOLDER, _loader)
 
 
 def _normalize_ip(ip_str):
@@ -172,19 +172,56 @@ def _label_for(addr):
     return addr
 
 
+# ---- Configuration constants ----
+# All tunable values and file paths live here.  Edit this block to adjust
+# without hunting through the file.  Constants keep the same names they
+# had before consolidation (so all references still work).
+
+# Congestion control algorithm names (index = alg number from BPF)
 CONGS = ["cubic","bbr","htcp","dctcp","scalable","vegas","veno","westwood",
          "reno","illinois","yeah","lp","bic","highspeed","hybla","nv"]
+
+# BPF log tail size (bytes) — how much of the log to parse each collect cycle
 LOG_TAIL_BYTES = 2_000_000
+
+# Bytes/sec to Mb/s conversion (1 MB = 1,000,000 bytes = 8 Mbits)
 BPS_TO_MBPS = 1_000_000.0 / 8.0
 
+# Sustained-outcome measurement window (seconds after swap)
+SUSTAINED_LO_S = 60.0    # start of the sustained measurement window
+SUSTAINED_HI_S = 300.0   # end of the sustained measurement window
+
+# Leaderboard trust floor — minimum votes before an alg is considered
+# (must match tcp_conn_tuner.h MIN_LEADER_TRUST)
+MIN_LEADER_TRUST = 10
+
+# Live leaders panel sizing
+LIVE_TOP_N       = 6     # top-N algs to show per bucket
+LIVE_MAX_BUCKETS = 8     # max buckets to include in live_leaders
+
+# Bucket history CSV + live chart timing
+BUCKET_HISTORY_CSV = "/var/lib/bpftune/history/buckets.v2.csv"
+LIVE_CHART_MIN      = 65   # 65 min x 60s = 65 pts per series; covers 1h with margin
+LIVE_CHART_WIDTH_S  = 60   # bin width for live chart aggregation
+
+# Config file paths (consumed by _load_labels / _load_fold / _load_aliases_labels)
+LABELS_JSON_PATH  = "/var/lib/bpftune/aliases.labels.json"
+ALIASES_FILE_PATH = "/etc/bpftune/aliases"
+
+# Known tunables to always show (even if not yet seen in journal)
+KNOWN_TUNABLES = [
+    "net.core.netdev_budget",
+    "net.core.netdev_budget_usecs",
+    "net.ipv4.tcp_rmem",
+    "net.ipv4.tcp_wmem",
+]
+
+# Text renderer box-drawing characters
 RULE   = "\u2500"
 DRULE  = "\u2550"
 ARROW  = "\u25b8"
 VBAR   = "\u2502"
 MIDDOT = "\u00b7"
-
-SUSTAINED_LO_S = 60.0
-SUSTAINED_HI_S = 300.0
 
 
 # ---- TypedDict schema: the contract between bpftune-cli.py and index.html ----
@@ -721,12 +758,6 @@ def data_system() -> SystemInfo:
     return out
 
 
-KNOWN_TUNABLES = [
-    "net.core.netdev_budget",
-    "net.core.netdev_budget_usecs",
-    "net.ipv4.tcp_rmem",
-    "net.ipv4.tcp_wmem",
-]
 
 
 def data_tunables() -> List[TunableGroup]:
@@ -951,9 +982,6 @@ def data_metric_by_bucket(hosts) -> Dict[str, List[MetricRow]]:
     return out
 
 
-BUCKET_HISTORY_CSV = "/var/lib/bpftune/history/buckets.v2.csv"
-LIVE_CHART_MIN      = 65   # 65 min x 60s = 65 pts per series; covers 1h with margin
-LIVE_CHART_WIDTH_S  = 60
 
 
 def data_bucket_live():
@@ -1633,9 +1661,6 @@ def data_recent_proofs(text, n=16) -> List[RecentProof]:
     return out
 
 
-MIN_LEADER_TRUST = 10   # matches tcp_conn_tuner.h
-LIVE_TOP_N       = 6
-LIVE_MAX_BUCKETS = 8
 
 
 def data_live_leaders(hosts) -> List[LiveLeader]:
