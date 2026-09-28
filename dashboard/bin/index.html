@@ -1490,28 +1490,22 @@
     setT("n_inst", fmtN(L.instances));
     setT("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
     setT("n_rtt",  fmtRTT(L.min_rtt));
-    setT("n_best", L.best_alg || "-");
-    setT("n_rmem", fmtBytes(L.tcp_rmem_max));
-    // Streak/penalty from metric data — match L.best_alg
+    // Metric data — lookup BEFORE n_best so we show the picker's choice
     var _byB = state.metricByBucket || {};
     var _rows = (bid && _byB[bid]) ? _byB[bid] : [];
-    if (_rows.length) {
-      // Find the row matching the best algorithm (L.best_alg)
-      var _bestAlg = L.best_alg || "";
-      var _best = null;
-      for (var _i = 0; _i < _rows.length; _i++) {
-        if (_rows[_i].alg === _bestAlg) { _best = _rows[_i]; break; }
-      }
-      if (!_best) _best = _rows[0];  // fallback to first
-      var _bad = _best.bad || 0;
-      var _nul = _best.null || 0;
-      var _ss = _best.swap_score || 256;
+    var _picker = (_rows.length) ? _rows[0] : null;
+    // Show picker's choice (top of leaderboard) as best algorithm
+    setT("n_best", _picker ? _picker.alg : (L.best_alg || "-"));
+    setT("n_rmem", fmtBytes(L.tcp_rmem_max));
+    // Streak/penalty for the picker's choice
+    if (_picker) {
+      var _bad = _picker.bad || 0;
+      var _nul = _picker.null || 0;
       var _pen = 16 + _bad * 4 + _nul * 2;
       var _st = (16/_pen).toFixed(3);
       if (_bad > 0) _st += " b=" + _bad;
       if (_nul > 0) _st += " n=" + _nul;
       setT("n_streak", _st);
-      // Try multiple field names for count
       var _totalSwaps = 0, _algCount = 0;
       _rows.forEach(function(r) {
         var _c = r.count || r.metric_count || r.cnt || r.metric || 0;
