@@ -254,6 +254,31 @@ def _pick_canonical(ips, bpf_stats):
     return max(ips, key=score)
 
 
+def reimport_labels_from_aliases():
+    """Re-import ALL IPs (from + to) from /etc/bpftune/aliases into labels.json.
+
+    bpftune regenerates labels.json on startup with ONLY canonical (to) IPs.
+    This enriches it with all the from-IPs so the modal shows every IP.
+    Idempotent: safe to call multiple times.
+    """
+    labels = load_labels()
+    rules = load_aliases_rules()
+    added = 0
+    for r in rules:
+        label = r.get("label", "")
+        if not label:
+            continue
+        if labels.get(r["from"]) != label:
+            labels[r["from"]] = label
+            added += 1
+        if labels.get(r["to"]) != label:
+            labels[r["to"]] = label
+            added += 1
+    if added > 0:
+        save_labels(labels)
+    return added
+
+
 def auto_fold():
     """Line-by-line edit. Only manage IPs in labels with >1 IP.
     Single-IP-label IPs are treated as FOREIGN (preserved)."""
