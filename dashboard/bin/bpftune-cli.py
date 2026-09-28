@@ -1029,40 +1029,9 @@ def data_swap_outcomes(text):
         o3 = _outcome_sustained(srate, c, ts)
         if o3 is None: sust_counts["skip"] += 1
         else: sust_counts[o3] += 1
-        # Prefer v6 (dest6 = first 32 bits of IPv6 from the BPF log).
-        # Pad to a /32 IPv6 address.  Fall back to v4 (dest) if no v6.
-        remote_host = None
-        _dest6 = row[10] if len(row) > 10 else None
-        _dest6b = row[11] if len(row) > 11 else None
-        if _dest6:
-            try:
-                _n6 = int(_dest6)
-                if _n6 != 0:
-                    _hi = (_n6 >> 16) & 0xFFFF
-                    _lo = _n6 & 0xFFFF
-                    if _dest6b:
-                        try:
-                            _n6b = int(_dest6b)
-                            _hi2 = (_n6b >> 16) & 0xFFFF
-                            _lo2 = _n6b & 0xFFFF
-                            remote_host = "%x:%x:%x:%x::" % (_hi, _lo, _hi2, _lo2)
-                        except (ValueError, TypeError):
-                            remote_host = "%x:%x::" % (_hi, _lo)
-                    else:
-                        remote_host = "%x:%x::" % (_hi, _lo)
-            except (ValueError, TypeError):
-                pass
-        if not remote_host:
-            _dest = row[9] if len(row) > 9 else None
-            if _dest:
-                try:
-                    _n = int(_dest)
-                    if _n != 0:
-                        remote_host = "%d.%d.%d.%d" % (
-                            (_n >> 24) & 0xff, (_n >> 16) & 0xff,
-                            (_n >> 8) & 0xff,  _n & 0xff)
-                except (ValueError, TypeError):
-                    pass
+        # Destination extraction shared with _run_writeback_and_get_swaps()
+        # via _extract_dest(row) so the two paths cannot drift apart.
+        remote_host = _extract_dest(row)
         swaps_list.append({
             'ts': ts,
             'cookie': c,
@@ -1211,6 +1180,55 @@ def _dest_ip(s):
         return socket.inet_ntoa(struct.pack(">I", n & 0xFFFFFFFF))
     except Exception:
         return ""
+
+
+def _extract_dest(row):
+    """Extract remote_host from a parsed swap row tuple.
+
+    Prefers IPv6 when present (dest6 + dest6b), padding to a /32 or /64
+    compressed-v6 form.  Falls back to IPv4 (dest) when no v6 is recorded.
+    Returns None when no destination is present in the row.
+
+    Row layout (matches the rx_sw regex in _swaps_mets_srates):
+        row[9]  = dest   (str|int|None) - IPv4 as a 32-bit decimal
+        row[10] = dest6  (str|int|None) - first 32 bits of IPv6  (0.4.79+)
+        row[11] = dest6b (str|int|None) - second 32 bits of IPv6 (0.4.83+)
+
+    Used by both data_swap_outcomes() and _run_writeback_and_get_swaps()
+    so the two paths can never drift apart again (the writeback path
+    previously dropped dest6b, silently truncating every IPv6 dest
+    that had nonzero upper 32 bits).
+    """
+    _dest6  = row[10] if len(row) > 10 else None
+    _dest6b = row[11] if len(row) > 11 else None
+    if _dest6:
+        try:
+            _n6 = int(_dest6)
+            if _n6 != 0:
+                _hi = (_n6 >> 16) & 0xFFFF
+                _lo = _n6 & 0xFFFF
+                if _dest6b:
+                    try:
+                        _n6b = int(_dest6b)
+                        _hi2 = (_n6b >> 16) & 0xFFFF
+                        _lo2 = _n6b & 0xFFFF
+                        return "%x:%x:%x:%x::" % (_hi, _lo, _hi2, _lo2)
+                    except (ValueError, TypeError):
+                        return "%x:%x::" % (_hi, _lo)
+                return "%x:%x::" % (_hi, _lo)
+        except (ValueError, TypeError):
+            pass
+    _dest = row[9] if len(row) > 9 else None
+    if _dest:
+        try:
+            _n = int(_dest)
+            if _n != 0:
+                return "%d.%d.%d.%d" % (
+                    (_n >> 24) & 0xff, (_n >> 16) & 0xff,
+                    (_n >> 8) & 0xff,  _n & 0xff)
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 _SWAP_DEST_RX = re.compile(
@@ -1393,22 +1411,8 @@ def _run_writeback_and_get_swaps(text):
         o = _outcome_composite(met, c, ts)
         o2 = _outcome_srate(srate, c, ts)
         o3 = _outcome_sustained(srate, c, ts)
-        remote_host = None
-        _dest6 = row[10] if len(row) > 10 else None
-        if _dest6:
-            try:
-                _n6 = int(_dest6)
-                if _n6 != 0:
-                    remote_host = "%x:%x::" % ((_n6>>16)&0xFFFF, _n6&0xFFFF)
-            except: pass
-        if not remote_host:
-            _dest = row[9] if len(row) > 9 else None
-            if _dest:
-                try:
-                    _n = int(_dest)
-                    if _n != 0:
-                        remote_host = "%d.%d.%d.%d" % ((_n>>24)&0xff,(_n>>16)&0xff,(_n>>8)&0xff,_n&0xff)
-                except: pass
+        # Shared with data_swap_outcomes() via _extract_dest(row).
+        remote_host = _extract_dest(row)
         swaps_list.append({'ts':ts,'cookie':c,'from_alg':fa,'to_alg':ta,
                           'remote_host':remote_host,'outcome':o,
                           'outcome_srate':o2,'outcome_sustained':o3})
@@ -1528,6 +1532,36 @@ def _rate_samples_with_dest(text):
     return out
 
 def collect_all():
+    """Build the full dashboard state dict consumed by index.html.
+
+    Single entry point for all dashboard data.  Returns a dict with keys:
+      generated_ts:int, log_window:dict{oldest_ts,newest_ts,span_min,swap_count,age_min},
+      bucket_ips:dict{bucket_str:[ip_str,...]}, now_mono:float, hostname:str,
+      build:dict{version,dash_version,service,uptime_min,started_utc,log_path},
+      system:dict{kernel,default_cc,cpu_count,load_1/5/15,procs_running,procs_total,
+                  host_uptime_s,mem_total_bytes,mem_avail_bytes,mem_used_bytes,mem_used_pct},
+      tunables:list[{group,items:[{key,value}]}],
+      buckets:list[{dest,inst,rtt_us,ref_mbps,best_alg,n_alg}] (top 8),
+      metric:list[{alg,metric,votes,alive,rate_ema,swap_score,penalty,score,bad_streak,null_streak,active}],
+      metric_by_bucket:dict{bucket_str:[same as metric]},
+      bucket_live:dict{bucket_str:{ts:[int],cols:{col:[[ts,val],...]}}},
+      live_leaders:list[{dest,inst,top:[{alg,weighted,rate_ema,swap_score,bad,null,count}]}],
+      proof:list[{alg,good,proved,proven_max,sampled_avg,sampled_max,samples}],
+      rate:list[{thr,n,mean,min,max}],
+      swap_outcomes:dict{composite,srate,sustained (each a _finalize_outcome dict
+                        with measurable,unmeasurable,win,win_pct,null,null_pct,loss,
+                        loss_pct,rescued,full_loss,open,*_pct), swaps_list:[{dest,outcome,outcome_sustained,cookie,ts}]},
+      divergence:list[{category,measured,win_pct,null_pct,loss_pct,..._srate,..._sustained,...}],
+      churn:dict{cookies,one,mid,many,max},
+      recent_swaps:list[{boot_ts,from_alg,to_alg,d,outcome,outcome_srate,outcome_sustained,mt_alg,rb_alg,dest,_bucket}],
+      recent_swaps_by_bucket:dict{bucket_str:[same as recent_swaps]} (up to 16/bucket),
+      recent_proofs:list[{boot_ts,alg,mbps,tier,dest}],
+      proofs_raw:list[{alg,dest,rate,tier}],
+      rate_raw:list[{dest,thr,srate}].
+
+    Side effect: calls _run_writeback_and_get_swaps(text) before reading
+    the BPF map, so streak corrections are visible to the leaderboard.
+    """
     logpath = find_log()
     hosts   = read_map()
     text    = tail_recent()
