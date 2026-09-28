@@ -1549,7 +1549,11 @@
       var _st = (16/_pen).toFixed(3);
       if (_bad > 0) _st += " b=" + _bad;
       if (_nul > 0) _st += " n=" + _nul;
-      setT("n_streak", _st);
+      // TEMP DEBUG: show matching info
+      var _dbg = "bid=" + bid + " | labels=" + JSON.stringify(window.__labels||{}) + " | buckets=";
+      (_live.buckets || []).forEach(function(b) { _dbg += b.dest + ":" + b.ref_mbps + " "; });
+      _dbg += " | _bkt=" + (_bkt ? _bkt.dest + ":" + _bkt.ref_mbps : "NULL");
+      setT("n_streak", _dbg);
       setT("n_swaps", _top.count ? fmtN(_top.count) : "-");
       setT("n_algs2", "-");
     } else {
