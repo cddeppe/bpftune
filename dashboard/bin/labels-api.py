@@ -111,6 +111,24 @@ class H(BaseHTTPRequestHandler):
         except: self._json(400,{"error":"invalid JSON"}); return
         labels=load_labels()
         groups=parse_aliases()
+        # Group mode: {"ips": [...], "label": "..."}
+        if "ips" in req and isinstance(req["ips"],list):
+            label=req.get("label","").strip()
+            ips=req["ips"]
+            for ip in ips:
+                if not label:
+                    labels.pop(ip,None)
+                    remove_alias_line(ip)
+                else:
+                    labels[ip]=label
+                    masked=mask_ip(ip)
+                    if masked!=ip and masked not in labels: labels[masked]=label
+                    remove_alias_line(ip)
+                    add_alias_line(ip,masked,label)
+            save_labels(labels)
+            groups=parse_aliases()
+            self._json(200,{"ok":True,"labels":labels,"groups":groups}); return
+        # Single IP mode
         ip=req.get("ip","").strip()
         label=req.get("label","").strip()
         if not ip: self._json(400,{"error":"ip required"}); return
