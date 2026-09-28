@@ -3,33 +3,15 @@
 labels-api.py - IP label/group editor API for the bpftune dashboard.
 Port 8081. nginx proxies /api/labels here.
 
-AUTO-FOLD BEHAVIOR (v2 - line-by-line, preserves formatting)
+AUTO-FOLD v3: only manage IPs in labels with >1 IP.
 
-  Every POST/DELETE triggers auto_fold(). For each label currently on >1
-  IP, pick a canonical and fold the others into it:
+  IPs in labels.json that are the SOLE member of their label are treated
+  as FOREIGN — their rules are preserved, never deleted.  Only IPs that
+  are part of a label with >1 IP are "managed" (auto-folded).
 
-    canonical pick:  (1) most BPF remote_host instances (live data wins)
-                     (2) tiebreak: v6 wins over v4
-                     (3) tiebreak: broader mask (more trailing zero bytes)
-
-  The aliases file is edited LINE BY LINE - we never rewrite the whole
-  file. This preserves comments, blank lines, section headers, and
-  column alignment for rules we don't touch.
-
-  Per-line action:
-    MANAGED rule (from-IP is in labels.json):
-      - in desired set: maybe replace `to` (one line edited)
-      - not in desired set: DELETE (line skipped)
-    FOREIGN rule (from-IP NOT in labels.json):
-      - if `to` is a managed IP being folded (transitive): edit `to` in
-        place via line.replace() - the rest of the line is untouched
-      - else: KEEP verbatim
-  New managed rules (not already in file): APPEND at the end under a
-  '# auto-fold managed rules' section.
-
-  The BPF aliases map (dest_alias_map) is updated live via bpftool - no
-  bpftune restart needed. Stale remote_host buckets (swap_count==0) are
-  deleted so the dropdown cleans up immediately.
+  This prevents auto_fold from deleting manually-added fold rules for
+  IPs that happen to be in labels.json but don't need folding (because
+  their label only has 1 IP).
 """
 import json
 import os
@@ -82,7 +64,6 @@ def save_labels(labels):
 
 
 def parse_aliases_rules(text):
-    """Parse 'FROM = TO [label]' rules. Returns list of dicts."""
     rules = []
     for ln in text.splitlines():
         s = ln.strip()
@@ -109,9 +90,6 @@ def load_aliases_rules():
         return []
 
 
-# ---------------------------------------------------------------------------
-# BPF map helpers
-# ---------------------------------------------------------------------------
 def _bpftool_map_id(name_substr):
     try:
         out = subprocess.check_output(["bpftool", "map", "show"], text=True)
@@ -127,9 +105,6 @@ def _bpftool_map_id(name_substr):
 
 
 def ip_to_bpf_hex(ip_str):
-    """Convert IP string to 16-byte hex for BPF in6_addr keys/values.
-    IPv4 -> v4-mapped-v6 form (::ffff:a.b.c.d).
-    IPv6 -> 16-byte packed form."""
     try:
         ip = ipaddress.ip_address(ip_str)
     except (ValueError, TypeError):
@@ -177,7 +152,6 @@ def bpf_aliases_delete(from_ip):
 
 
 def bpf_remote_host_stats():
-    """Return dict: ip_str -> {instances, swaps} for each BPF remote_host bucket."""
     mid = _bpftool_map_id(BPF_REMOTE_HOST_MAP_NAME)
     if mid is None:
         return {}
@@ -252,11 +226,6 @@ def bpf_remote_host_delete(ip_str):
 
 
 def _pick_canonical(ips, bpf_stats):
-    """Pick the canonical IP from a list.  Rules (in order):
-       1. most BPF instances (live data wins)
-       2. tiebreak: v6 over v4
-       3. tiebreak: broader mask (more trailing zero bytes)
-    """
     def score(ip):
         is_v6 = ":" in ip
         try:
@@ -270,33 +239,23 @@ def _pick_canonical(ips, bpf_stats):
     return max(ips, key=score)
 
 
-# ---------------------------------------------------------------------------
-# AUTO-FOLD - line-by-line edit, preserves formatting
-# ---------------------------------------------------------------------------
 def auto_fold():
-    """Line-by-line edit of /etc/bpftune/aliases.
-
-    PRESERVES: comments, blank lines, column alignment for rules we
-    don't need to change.
-
-    MODIFIES in place: foreign rules whose `to` is a managed IP being
-    folded (transitive - only `to` changes, rest of line preserved).
-
-    DELETES: managed rules whose `from` is no longer desired (e.g.
-    self-folds after canonical re-point).
-
-    REPLACES: managed rules whose `to` changed.
-
-    APPENDS: new managed rules at the end under a managed-rules section.
-    """
+    """Line-by-line edit. Only manage IPs in labels with >1 IP.
+    Single-IP-label IPs are treated as FOREIGN (preserved)."""
     labels = load_labels()
     bpf_stats = bpf_remote_host_stats()
-
-    managed_ips = set(labels.keys())
 
     by_label = defaultdict(list)
     for ip, lbl in labels.items():
         by_label[lbl].append(ip)
+
+    # KEY FIX: only treat IPs as "managed" if they're part of a label
+    # with >1 IP.  Single-IP-label IPs are FOREIGN (preserved).
+    managed_ips_for_fold = set()
+    for label, ips in by_label.items():
+        if not label or len(ips) < 2:
+            continue
+        managed_ips_for_fold.update(ips)
 
     desired_managed_rules = []
     managed_canonicals = {}
@@ -367,7 +326,8 @@ def auto_fold():
             new_lines.append(line)
             continue
 
-        if from_ip in managed_ips:
+        # KEY FIX: use managed_ips_for_fold, NOT managed_ips
+        if from_ip in managed_ips_for_fold:
             if from_ip in desired_by_from:
                 desired = desired_by_from[from_ip]
                 if to_ip != desired["to"]:
@@ -382,6 +342,7 @@ def auto_fold():
                 bpf_aliases_delete(from_ip)
                 removed_folds.append(from_ip)
         else:
+            # FOREIGN or single-IP-managed: PRESERVE
             if to_ip in managed_canonicals:
                 new_to = managed_canonicals[to_ip]
                 if new_to != to_ip:
@@ -426,8 +387,7 @@ def auto_fold():
             except OSError: pass
             raise
         sys.stderr.write(
-            "[auto-fold] %s: %d lines -> %d lines "
-            "(managed: %d desired, %d removed, %d appended)\n" %
+            "[auto-fold] %s: %d -> %d lines (managed_fold: %d, removed: %d, appended: %d)\n" %
             (ALIASES_FILE, len(original_text.splitlines()), len(new_lines),
              len(desired_managed_rules), len(removed_folds),
              len(new_rules_to_add))
@@ -439,9 +399,6 @@ def auto_fold():
     return results
 
 
-# ---------------------------------------------------------------------------
-# HTTP handler
-# ---------------------------------------------------------------------------
 class LabelsHandler(BaseHTTPRequestHandler):
     def _send_json(self, code, data):
         body = json.dumps(data).encode()
