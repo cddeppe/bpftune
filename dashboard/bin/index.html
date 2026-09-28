@@ -167,6 +167,7 @@
     letter-spacing: 0; font-family: var(--mono); font-size: 11px;
   }
 
+  .now-panel-stats { grid-template-columns: repeat(4, 1fr) !important; }
   .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -595,7 +596,7 @@
       <span class="sub" id="nowbucket">-</span>
       <span class="right" id="nowupdated"></span>
     </h2>
-    <div class="stats">
+    <div class="stats now-panel-stats">
       <div class="stat"><span class="k">instances</span>
         <span class="v mono" id="n_inst">-</span></div>
       <div class="stat"><span class="k">rate-best</span>
