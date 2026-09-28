@@ -1490,29 +1490,34 @@
     setT("n_inst", fmtN(L.instances));
     setT("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
     setT("n_rtt",  fmtRTT(L.min_rtt));
-    // Metric data — lookup BEFORE n_best so we show the picker's choice
-    var _byB = state.metricByBucket || {};
-    var _rows = (bid && _byB[bid]) ? _byB[bid] : [];
-    var _picker = (_rows.length) ? _rows[0] : null;
-    // Show picker's choice (top of leaderboard) as best algorithm
-    setT("n_best", _picker ? _picker.alg : (L.best_alg || "-"));
+    // Use doc.live_leaders (same source as the swap target leaderboard)
+    var _ll = (window.__current_doc && window.__current_doc.live_leaders) || [];
+    var _top = null;
+    for (var _i = 0; _i < _ll.length; _i++) {
+      if (_ll[_i].dest === bid || (_ll[_i].dest === ((window.__labels||{})[bid]))) {
+        _top = (_ll[_i].top || [])[0] || null; break;
+      }
+    }
+    // Fallback: use metricByBucket if live_leaders doesn't have this bucket
+    if (!_top) {
+      var _byB = state.metricByBucket || {};
+      var _rows2 = (bid && _byB[bid]) ? _byB[bid] : [];
+      _top = _rows2[0] || null;
+    }
+    // Show picker's choice as best algorithm
+    setT("n_best", _top ? _top.alg : (L.best_alg || "-"));
     setT("n_rmem", fmtBytes(L.tcp_rmem_max));
-    // Streak/penalty for the picker's choice
-    if (_picker) {
-      var _bad = _picker.bad || 0;
-      var _nul = _picker.null || 0;
+    // Streak/penalty (from live_leaders — has correct bad/null fields)
+    if (_top) {
+      var _bad = _top.bad || 0;
+      var _nul = _top.null || 0;
       var _pen = 16 + _bad * 4 + _nul * 2;
       var _st = (16/_pen).toFixed(3);
       if (_bad > 0) _st += " b=" + _bad;
       if (_nul > 0) _st += " n=" + _nul;
       setT("n_streak", _st);
-      var _totalSwaps = 0, _algCount = 0;
-      _rows.forEach(function(r) {
-        var _c = r.count || r.metric_count || r.cnt || r.metric || 0;
-        if (_c > 0) { _totalSwaps += _c; _algCount++; }
-      });
-      setT("n_swaps", fmtN(_totalSwaps));
-      setT("n_algs2", _algCount + "/16");
+      setT("n_swaps", _top.count ? fmtN(_top.count) : "-");
+      setT("n_algs2", "-");
     } else {
       setT("n_streak", "-");
       setT("n_swaps", "-");
