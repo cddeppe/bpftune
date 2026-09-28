@@ -35,6 +35,27 @@ def _safe(fn, default, label):
 
 
 
+def collect_all_incremental(offsets=None):
+    """Like collect_all() but reads only new log lines since last call.
+
+    In daemon mode, the collector holds the offsets dict in memory
+    and passes it each cycle.  First call (empty offsets) reads the
+    full tail so the first cycle has data.
+
+    The _swaps_mets_srates cache is cleared each call because the
+    text changes (new lines appended) — but we only parse the NEW
+    lines, not the full 2MB.
+    """
+    logpath = find_log()
+    hosts   = read_map()
+    text, _new_offsets = tail_incremental(offsets)
+    # Clear the _swaps_mets_srates cache — text changed
+    bpftune_log._SWMS_CACHE = {}
+    _run_writeback_and_get_swaps(text)
+    hosts   = read_map()
+    return _build_result(logpath, text, hosts)
+
+
 def collect_all() -> CollectAllResult:
     """Build the full dashboard state dict consumed by index.html.
 
@@ -73,6 +94,11 @@ def collect_all() -> CollectAllResult:
     _run_writeback_and_get_swaps(text)
     # Re-read the map (to get corrected streaks)
     hosts   = read_map()
+    return _build_result(logpath, text, hosts)
+
+
+def _build_result(logpath, text, hosts):
+    """Build the collect_all() return dict. Shared by collect_all and collect_all_incremental."""
     return {
         "generated_ts":   int(time.time()),
         "log_window":     _safe(lambda: _log_window(text), {"oldest_ts":0,"newest_ts":0,"span_min":0,"swap_count":0,"age_min":0}, "log_window"),
