@@ -945,6 +945,7 @@ def main():
 
 class SSEHandler(BaseHTTPRequestHandler):
     """HTTP handler for SSE push + in-memory current.json."""
+    protocol_version = "HTTP/1.1"  # required for SSE streaming
     def do_GET(self):
         if self.path == "/sse":
             self.send_response(200)
