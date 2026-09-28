@@ -1507,8 +1507,10 @@
       var _nul = _best.null || 0;
       var _ss = _best.swap_score || 256;
       var _pen = 16 + _bad * 4 + _nul * 2;
-      setT("n_streak", _best.alg + " pen=" + (16/_pen).toFixed(3) +
-        " (b=" + _bad + " n=" + _nul + ")");
+      var _st = (16/_pen).toFixed(3);
+      if (_bad > 0) _st += " b=" + _bad;
+      if (_nul > 0) _st += " n=" + _nul;
+      setT("n_streak", _st);
       // Try multiple field names for count
       var _totalSwaps = 0, _algCount = 0;
       _rows.forEach(function(r) {
