@@ -19,30 +19,40 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-_LABELS_CACHE = None
-_LABELS_MTIME = None
+def _mtime_cache(path, cache_holder, loader):
+    """mtime-based file cache: returns loader(open(path).read()) cached
+    until the file's mtime changes.  Returns {} if the file is missing
+    or the loader raises.
+
+    Consolidates the _load_labels / _load_fold / _load_aliases_labels
+    cache pattern (each had ~20 lines of duplicated mtime logic).
+    """
+    try:
+        m = os.path.getmtime(path)
+    except OSError:
+        cache_holder['val'] = {}
+        cache_holder['mtime'] = None
+        return cache_holder['val']
+    if cache_holder['val'] is not None and cache_holder['mtime'] == m:
+        return cache_holder['val']
+    try:
+        with open(path) as f:
+            d = loader(f)
+        cache_holder['val'] = d if isinstance(d, dict) else {}
+    except Exception:
+        cache_holder['val'] = {}
+    cache_holder['mtime'] = m
+    return cache_holder['val']
+
+
+_LABELS_HOLDER = {'val': None, 'mtime': None}
 
 def _load_labels():
     """0.4.79: /var/lib/bpftune/aliases.labels.json {canonical_ip: label}."""
-    global _LABELS_CACHE, _LABELS_MTIME
-    import os as _os, json as _json
-    path = "/var/lib/bpftune/aliases.labels.json"
-    try:
-        m = _os.path.getmtime(path)
-    except OSError:
-        _LABELS_CACHE = {}
-        _LABELS_MTIME = None
-        return _LABELS_CACHE
-    if _LABELS_CACHE is not None and _LABELS_MTIME == m:
-        return _LABELS_CACHE
-    try:
-        with open(path) as f:
-            d = _json.load(f)
-        _LABELS_CACHE = d if isinstance(d, dict) else {}
-    except Exception:
-        _LABELS_CACHE = {}
-    _LABELS_MTIME = m
-    return _LABELS_CACHE
+    import json as _json
+    return _mtime_cache("/var/lib/bpftune/aliases.labels.json",
+                       _LABELS_HOLDER,
+                       lambda f: _json.load(f))
 
 
 
@@ -58,54 +68,38 @@ def _canon_bucket(addr):
     return addr
 
 
-_FOLD_CACHE = None
-_FOLD_MTIME = None
+_FOLD_HOLDER = {'val': None, 'mtime': None}
 
 def _load_fold():
     """0.4.79: {"v6:XXXXXXXX": "canonical"} from /32-form entries in
     /etc/bpftune/aliases.  Line form:
         2603:c020:0:0:0:0:0:0 = 89.168.0.0 [label]
     Only lines where groups 2..7 are all zero are treated as /32 folds."""
-    global _FOLD_CACHE, _FOLD_MTIME
-    import os as _os
-    path = "/etc/bpftune/aliases"
-    try:
-        m = _os.path.getmtime(path)
-    except OSError:
-        _FOLD_CACHE = {}
-        _FOLD_MTIME = None
-        return _FOLD_CACHE
-    if _FOLD_CACHE is not None and _FOLD_MTIME == m:
-        return _FOLD_CACHE
-    out = {}
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                lhs, rhs = line.split("=", 1)
-                lhs = lhs.strip()
-                bits = rhs.strip().split()
-                if not bits:
-                    continue
-                to = bits[0]
-                if "." not in to:
-                    continue
-                if ":" not in lhs:
-                    continue
-                groups = lhs.split(":")
-                if len(groups) != 8:
-                    continue
-                if not all(g in ("0", "0000", "") for g in groups[2:]):
-                    continue
-                key = "v6:" + (groups[0].zfill(4) + groups[1].zfill(4)).lower()
-                out[key] = to
-    except Exception:
+    def _loader(f):
         out = {}
-    _FOLD_CACHE = out
-    _FOLD_MTIME = m
-    return out
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            lhs, rhs = line.split("=", 1)
+            lhs = lhs.strip()
+            bits = rhs.strip().split()
+            if not bits:
+                continue
+            to = bits[0]
+            if "." not in to:
+                continue
+            if ":" not in lhs:
+                continue
+            groups = lhs.split(":")
+            if len(groups) != 8:
+                continue
+            if not all(g in ("0", "0000", "") for g in groups[2:]):
+                continue
+            key = "v6:" + (groups[0].zfill(4) + groups[1].zfill(4)).lower()
+            out[key] = to
+        return out
+    return _mtime_cache("/etc/bpftune/aliases", _FOLD_HOLDER, _loader)
 
 
 def _fold_v6(addr):
@@ -116,46 +110,30 @@ def _fold_v6(addr):
     return _load_fold().get(addr, addr)
 
 
-_ALIASES_LABEL_CACHE = None
-_ALIASES_LABEL_MTIME = None
+_ALIASES_LABEL_HOLDER = {'val': None, 'mtime': None}
 
 def _load_aliases_labels():
     """Load {to_ip: label} from /etc/bpftune/aliases, with mtime cache.
     Fallback for _label_for() when labels.json hasn't been enriched yet."""
-    global _ALIASES_LABEL_CACHE, _ALIASES_LABEL_MTIME
-    import os as _os
-    path = "/etc/bpftune/aliases"
-    try:
-        m = _os.path.getmtime(path)
-    except OSError:
-        _ALIASES_LABEL_CACHE = {}
-        _ALIASES_LABEL_MTIME = None
-        return _ALIASES_LABEL_CACHE
-    if _ALIASES_LABEL_CACHE is not None and _ALIASES_LABEL_MTIME == m:
-        return _ALIASES_LABEL_CACHE
-    d = {}
-    try:
-        with open(path) as f:
-            for line in f:
-                s = line.strip()
-                if not s or s.startswith("#") or "=" not in s:
-                    continue
-                lhs, rhs = s.split("=", 1)
-                rest = rhs.strip().split()
-                if not rest:
-                    continue
-                to_ip = rest[0]
-                label = rest[1] if len(rest) > 1 else ""
-                if label:
-                    try:
-                        d[str(ipaddress.ip_address(to_ip))] = label
-                    except (ValueError, TypeError):
-                        d[to_ip] = label
-    except OSError:
+    def _loader(f):
         d = {}
-    _ALIASES_LABEL_CACHE = d
-    _ALIASES_LABEL_MTIME = m
-    return d
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            lhs, rhs = s.split("=", 1)
+            rest = rhs.strip().split()
+            if not rest:
+                continue
+            to_ip = rest[0]
+            label = rest[1] if len(rest) > 1 else ""
+            if label:
+                try:
+                    d[str(ipaddress.ip_address(to_ip))] = label
+                except (ValueError, TypeError):
+                    d[to_ip] = label
+        return d
+    return _mtime_cache("/etc/bpftune/aliases", _ALIASES_LABEL_HOLDER, _loader)
 
 
 def _normalize_ip(ip_str):
@@ -166,14 +144,26 @@ def _normalize_ip(ip_str):
 
 
 def _label_for(addr):
+    """Resolve an address to a human-readable label.
+
+    Chain: fold v6 /32 -> v4 if declared in aliases, collapse to
+    /16 (v4) or /32 (v6), normalize, then look up in labels.json
+    (normalized), falling back to aliases labels.  Returns the
+    normalized addr if no label found."""
     if not addr:
         return addr
     addr = _fold_v6(addr)
     addr = _canon_bucket(addr)
     addr = _normalize_ip(addr)
     labels = _load_labels()
+    # Direct hit on the normalized addr (fast path).
+    if addr in labels:
+        return labels[addr]
+    # Slow path: some labels.json keys are not normalized.
+    # Normalize each key once and check.  (Older code did this every
+    # call; now it's a fallback after the fast path.)
     for k, v in labels.items():
-        if k == addr or _normalize_ip(k) == addr:
+        if _normalize_ip(k) == addr:
             return v
     alias_labels = _load_aliases_labels()
     if addr in alias_labels:
