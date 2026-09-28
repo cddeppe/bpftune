@@ -115,12 +115,57 @@ def _fold_v6(addr):
     return _load_fold().get(addr, addr)
 
 
+_ALIASES_LABEL_CACHE = None
+_ALIASES_LABEL_MTIME = None
+
+def _load_aliases_labels():
+    """Load {to_ip: label} from /etc/bpftune/aliases, with mtime cache.
+    Fallback for _label_for() when labels.json hasn't been enriched yet."""
+    global _ALIASES_LABEL_CACHE, _ALIASES_LABEL_MTIME
+    import os as _os
+    path = "/etc/bpftune/aliases"
+    try:
+        m = _os.path.getmtime(path)
+    except OSError:
+        _ALIASES_LABEL_CACHE = {}
+        _ALIASES_LABEL_MTIME = None
+        return _ALIASES_LABEL_CACHE
+    if _ALIASES_LABEL_CACHE is not None and _ALIASES_LABEL_MTIME == m:
+        return _ALIASES_LABEL_CACHE
+    d = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                lhs, rhs = s.split("=", 1)
+                rest = rhs.strip().split()
+                if not rest:
+                    continue
+                to_ip = rest[0]
+                label = rest[1] if len(rest) > 1 else ""
+                if label:
+                    d[to_ip] = label
+    except OSError:
+        d = {}
+    _ALIASES_LABEL_CACHE = d
+    _ALIASES_LABEL_MTIME = m
+    return d
+
+
 def _label_for(addr):
     if not addr:
         return addr
     addr = _fold_v6(addr)
     addr = _canon_bucket(addr)
-    return _load_labels().get(addr, addr)
+    labels = _load_labels()
+    if addr in labels:
+        return labels[addr]
+    alias_labels = _load_aliases_labels()
+    if addr in alias_labels:
+        return alias_labels[addr]
+    return addr
 
 
 CONGS = ["cubic","bbr","htcp","dctcp","scalable","vegas","veno","westwood",
@@ -261,9 +306,8 @@ def data_build(logpath):
     if m:
         started = m.group(1)[11:19]
         try:
-            t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
-            uptime_min = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
+            t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            uptime_min = int((datetime.now() - t).total_seconds() // 60)
         except Exception:
             pass
     return {
@@ -332,19 +376,33 @@ def data_system():
     return out
 
 
+KNOWN_TUNABLES = [
+    "net.core.netdev_budget",
+    "net.core.netdev_budget_usecs",
+    "net.ipv4.tcp_rmem",
+    "net.ipv4.tcp_wmem",
+]
+
+
 def data_tunables():
     j = sh_noshell(["journalctl", "-u", "bpftune",
                                         "--no-pager", "-q",
                                         "--grep", "sysctl 'net\\."])
     names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
+    # Add known tunables that might not be in the journal
+    for kt in KNOWN_TUNABLES:
+        if kt not in names:
+            names.append(kt)
+    names = sorted(names)
     items = []
     for n in names:
+        # Suppress tcp_allowed_congestion_control (always shows "15 algorithms")
+        if "allowed_congestion_control" in n:
+            continue
         v = sh_noshell(["sysctl", "-n", n]).strip()
         if not v:
             continue
         short = n[4:]
-        if "allowed_congestion_control" in n:
-            v = "%d algorithms" % len(v.split())
         items.append({"key": short, "value": v})
 
     def gkey(short):
