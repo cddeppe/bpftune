@@ -1434,6 +1434,77 @@
     });
   }
 
+  function _filterByBucket(doc, bucketLabel) {
+    if (bucketLabel === 'all' || !bucketLabel) return doc;
+    var f = JSON.parse(JSON.stringify(doc));
+    // Filter swap outcomes from swaps_list
+    if (f.swap_outcomes && f.swap_outcomes.swaps_list) {
+      var swaps = f.swap_outcomes.swaps_list.filter(function(s) {
+        return s.dest === bucketLabel;
+      });
+      var c = {win: 0, null: 0, loss: 0, skip: 0};
+      swaps.forEach(function(s) {
+        var o = s.outcome_sustained;
+        if (o === null || o === undefined) c.skip++;
+        else c[o] = (c[o] || 0) + 1;
+      });
+      var total = c.win + c.null + c.loss;
+      f.swap_outcomes.sustained = {
+        win: c.win, null: c.null, loss: c.loss,
+        measurable: total, unmeasurable: c.skip,
+        win_pct: total ? Math.round(c.win/total*100) : 0,
+        null_pct: total ? Math.round(c.null/total*100) : 0,
+        loss_pct: total ? Math.round(c.loss/total*100) : 0,
+      };
+    }
+    // Filter recent proofs
+    if (f.recent_proofs) {
+      f.recent_proofs = f.recent_proofs.filter(function(p) {
+        return p.dest === bucketLabel;
+      });
+    }
+    // Re-aggregate proof leaderboard from proofs_raw
+    if (f.proofs_raw) {
+      var fp = f.proofs_raw.filter(function(p) { return p.dest === bucketLabel; });
+      var byAlg = {};
+      fp.forEach(function(p) {
+        if (!byAlg[p.alg]) byAlg[p.alg] = {good:0, proved:0, pmax:0, sum:0, n:0, smax:0};
+        if (p.tier === 'good') byAlg[p.alg].good++;
+        if (p.tier === 'proved') byAlg[p.alg].proved++;
+        if (p.tier === 'proved' && p.rate > byAlg[p.alg].pmax) byAlg[p.alg].pmax = p.rate;
+        byAlg[p.alg].sum += p.rate;
+        byAlg[p.alg].n++;
+        if (p.rate > byAlg[p.alg].smax) byAlg[p.alg].smax = p.rate;
+      });
+      f.proof = Object.keys(byAlg).map(function(alg) {
+        var a = byAlg[alg];
+        return {alg:alg, good:a.good, proved:a.proved,
+          proven_max: a.pmax || null,
+          sampled_avg: a.n ? Math.round(a.sum/a.n*10)/10 : null,
+          sampled_max: a.smax || null,
+          samples: a.n || null};
+      }).sort(function(a,b) { return (b.proven_max||0) - (a.proven_max||0); });
+    }
+    // Re-aggregate rate progression from rate_raw
+    if (f.rate_raw) {
+      var fr = f.rate_raw.filter(function(r) { return r.dest === bucketLabel; });
+      var byThr = {};
+      fr.forEach(function(r) {
+        if (!byThr[r.thr]) byThr[r.thr] = [];
+        byThr[r.thr].push(r.srate);
+      });
+      f.rate = Object.keys(byThr).map(function(thr) {
+        var vs = byThr[thr];
+        var BPS = 125000;
+        return {thr: parseInt(thr), n: vs.length,
+          mean: Math.round(vs.reduce(function(a,b){return a+b},0)/vs.length/BPS*10)/10,
+          min: Math.round(Math.min.apply(null,vs)/BPS*10)/10,
+          max: Math.round(Math.max.apply(null,vs)/BPS*10)/10};
+      }).sort(function(a,b) { return a.thr - b.thr; });
+    }
+    return f;
+  }
+
   function renderLiveState(doc) {
     window.__current_doc = doc;
     renderLogWindow(doc);
@@ -1441,7 +1512,15 @@
     renderBuild(doc.build || {});
     renderSystem(doc.system || {});
     renderTunables(doc.tunables || []);
+    var _bs = $('bucket');
+    var _prevVal = _bs ? _bs.value : null;
     renderBuckets(doc.buckets || []);
+    // Add "All Buckets" option at top if not present
+    _bs = $('bucket');
+    if (_bs && _bs.options.length > 0 && _bs.options[0].value !== 'all') {
+      _bs.add(new Option('All Buckets', 'all'), 0);
+    }
+    if (_bs && _prevVal) { _bs.value = _prevVal; }
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
@@ -1450,10 +1529,19 @@
     if ($("range") && $("range").value === "1h" && state.bucketDoc) {
       renderBucket();   // refresh 1h chart from live data
     }
-    renderProof(doc.proof || []);
-    renderRate(doc.rate || []);
-    renderSwapOutcomes(doc.swap_outcomes || null, doc.churn || {});
-    renderRecentProofs(doc.recent_proofs || []);
+    // Per-bucket filtering
+    var _bid = $('bucket') ? $('bucket').value : 'all';
+    var _blabel = 'all';
+    if (_bid !== 'all') {
+      var _bs2 = $('bucket');
+      _blabel = (window.__labels && window.__labels[_bid]) ||
+        (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
+    }
+    var _fdoc = _bid === 'all' ? doc : _filterByBucket(doc, _blabel);
+    renderProof(_fdoc.proof || []);
+    renderRate(_fdoc.rate || []);
+    renderSwapOutcomes(_fdoc.swap_outcomes || null, _fdoc.churn || {});
+    renderRecentProofs(_fdoc.recent_proofs || []);
     state.lastLiveSwaps = doc.recent_swaps || [];
     renderRecentSwapsForBucket();
     // Fetch labels + update dropdown option text + shortAddr lookups

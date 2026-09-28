@@ -1078,11 +1078,19 @@ def data_swap_outcomes(text):
         writeback_streaks(swaps_list)
     except Exception as e:
         import sys; print(f'[writeback] {e}', file=sys.stderr)
-    return _add_loss_recovery({
+    _result = _add_loss_recovery({
         "composite": _finalize_outcome(c_counts),
         "srate":     _finalize_outcome(s_counts),
         "sustained": _finalize_outcome(sust_counts),
     }, swaps_list)
+    _result["swaps_list"] = [
+        {"dest": _label_for(s.get("remote_host")) if s.get("remote_host") else None,
+         "outcome": s.get("outcome"),
+         "outcome_sustained": s.get("outcome_sustained"),
+         "cookie": s.get("cookie"), "ts": s.get("ts")}
+        for s in swaps_list
+    ]
+    return _result
 
 
 def data_divergence(text):
@@ -1452,6 +1460,52 @@ def data_bucket_ips(text):
     return buckets
 
 
+
+def _proofs_with_dest(text):
+    """Per-proof data with labeled dest for client-side bucket filtering."""
+    cdest = _cookie_dest_map(text)
+    out = []
+    for line in text.splitlines():
+        if "proof cookie=" not in line:
+            continue
+        m = re.search(r"proof cookie=(\d+) alg=(\d+) rate=(\d+) tier=(\d+)", line)
+        if not m:
+            continue
+        c = m.group(1)
+        a = int(m.group(2))
+        v4, v6 = cdest.get(c, (None, None))
+        dest = _label_for(v4 or v6) if (v4 or v6) else None
+        out.append({
+            "alg":  CONGS[a] if a < 16 else "alg%d" % a,
+            "dest": dest,
+            "rate": round(int(m.group(3)) / BPS_TO_MBPS, 1),
+            "tier": "proved" if m.group(4) == "2" else "good",
+        })
+    return out
+
+
+def _rate_samples_with_dest(text):
+    """Per-rate-sample with labeled dest for client-side bucket filtering."""
+    cdest = _cookie_dest_map(text)
+    out = []
+    for line in text.splitlines():
+        if "midsamp" not in line:
+            continue
+        mt = re.search(r"thr=(\d+)", line)
+        ms = re.search(r"srate=(\d+)", line)
+        mc = re.search(r"cookie=(\d+)", line)
+        if not (mt and ms and mc):
+            continue
+        c = mc.group(1)
+        v4, v6 = cdest.get(c, (None, None))
+        dest = _label_for(v4 or v6) if (v4 or v6) else None
+        out.append({
+            "dest":  dest,
+            "thr":   int(mt.group(1)),
+            "srate": int(ms.group(1)),
+        })
+    return out
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
@@ -1482,6 +1536,8 @@ def collect_all():
         "recent_swaps":   data_recent_swaps(text),
         "recent_swaps_by_bucket": data_recent_swaps_by_bucket(text),
         "recent_proofs":  data_recent_proofs(text),
+        "proofs_raw":     _proofs_with_dest(text),
+        "rate_raw":       _rate_samples_with_dest(text),
     }
 
 
