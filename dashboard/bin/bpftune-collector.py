@@ -40,7 +40,15 @@ lost (at most 300 seconds of unresolved swaps).
 """
 import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
 import importlib.util
+import threading, hashlib
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+
+# SSE server state — _last_result holds the latest collect_all() output.
+# The collection loop writes to it (under _result_lock) after each cycle.
+# The SSE server reads it to push updates to connected browsers.
+_last_result = None
+_result_lock = threading.Lock()
 
 
 _LABELS_CACHE = None
@@ -927,8 +935,74 @@ def main():
     flush_csv_buffers()
     _live_flush()
     doc = run_cli_snapshot(map_raw)
+    if doc:
+        with _result_lock:
+            global _last_result
+            _last_result = doc
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
+
+
+class SSEHandler(BaseHTTPRequestHandler):
+    """HTTP handler for SSE push + in-memory current.json."""
+    def do_GET(self):
+        if self.path == "/sse":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            # Send current data immediately
+            with _result_lock:
+                data = _last_result
+            last_hash = ""
+            if data:
+                payload = json.dumps(data, separators=(",", ":"))
+                last_hash = hashlib.md5(payload.encode()).hexdigest()
+                try:
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+            # Poll for changes every 1s, push when _last_result changes
+            while True:
+                time.sleep(1)
+                with _result_lock:
+                    data = _last_result
+                if not data:
+                    continue
+                payload = json.dumps(data, separators=(",", ":"))
+                h = hashlib.md5(payload.encode()).hexdigest()
+                if h != last_hash:
+                    last_hash = h
+                    try:
+                        self.wfile.write(f"data: {payload}\n\n".encode())
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+        elif self.path == "/current.json":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with _result_lock:
+                data = _last_result
+            self.wfile.write(json.dumps(data or {}, separators=(",", ":")).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, fmt, *args):
+        pass  # quiet — don't spam stderr per request
+
+
+def _start_sse_server(port=8082):
+    """Start the SSE HTTP server in a background thread."""
+    try:
+        server = HTTPServer(("127.0.0.1", port), SSEHandler)
+        server.serve_forever()
+    except Exception as e:
+        print("collector: SSE server failed: %s" % e, file=sys.stderr)
 
 
 def _daemon_loop():
@@ -942,6 +1016,10 @@ def _daemon_loop():
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     print("collector: daemon mode started (60s interval)", file=sys.stderr)
+    # Start SSE server in background thread (port 8082, localhost only)
+    sse_thread = threading.Thread(target=_start_sse_server, daemon=True)
+    sse_thread.start()
+    print("collector: SSE server started on port 8082", file=sys.stderr)
     while _running[0]:
         try:
             main()
