@@ -165,6 +165,8 @@ def bpf_aliases_delete(from_ip):
 
 
 def bpf_remote_host_stats():
+    """Return dict: ip_str -> {instances, swaps} for each BPF remote_host bucket.
+    Handles both JSON format (kernels with btf) and plain-text format."""
     mid = _bpftool_map_id(BPF_REMOTE_HOST_MAP_NAME)
     if mid is None:
         return {}
@@ -175,7 +177,40 @@ def bpf_remote_host_stats():
         )
     except subprocess.CalledProcessError:
         return {}
+
     stats = {}
+
+    # Try JSON format first (kernels with btf output JSON)
+    if out.lstrip().startswith("["):
+        try:
+            data = json.loads(out)
+            for entry in data:
+                try:
+                    kb = bytes(entry["key"]["in6_u"]["u6_addr8"])
+                    v = entry.get("value", {})
+                    instances = v.get("instances", 0)
+                    # swap_count might be under different field names; try several
+                    swaps = (v.get("swap_count_total") or
+                             v.get("swap_count") or
+                             v.get("swaps") or 0)
+                    if len(kb) == 16:
+                        if (kb[0:10] == b'\x00' * 10) and (kb[10:12] == b'\xff\xff'):
+                            ip = ".".join(str(x) for x in kb[12:16])
+                        else:
+                            ip = str(ipaddress.IPv6Address(kb))
+                    elif len(kb) == 4:
+                        ip = ".".join(str(x) for x in kb)
+                    else:
+                        continue
+                    stats[ip] = {"instances": instances, "swaps": swaps}
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if stats:
+                return stats
+        except json.JSONDecodeError:
+            pass
+
+    # Plain-text format (kernels without btf)
     blocks = out.split("\n\n")
     for blk in blocks:
         key_hex = None
@@ -220,6 +255,7 @@ def bpf_remote_host_stats():
             swaps = int.from_bytes(vb[32:40], "little")
             stats[ip] = {"instances": instances, "swaps": swaps}
     return stats
+
 
 
 def bpf_remote_host_delete(ip_str):
