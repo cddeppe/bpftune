@@ -2136,17 +2136,13 @@
 
   function _le_toggle(label) {
     var rows = document.querySelectorAll('.le-ips-' + label);
-    var expanded = false;
+    if (rows.length === 0) return;
+    var isHidden = rows[0].style.display === 'none';
     for (var i = 0; i < rows.length; i++) {
-      if (rows[i].style.display === 'none' || rows[i].style.display === '') {
-        rows[i].style.display = '';
-        expanded = true;
-      } else {
-        rows[i].style.display = 'none';
-      }
+      rows[i].style.display = isHidden ? '' : 'none';
     }
     var btn = document.getElementById('le-btn-' + label);
-    if (btn) btn.textContent = expanded ? 'hide' : 'show';
+    if (btn) btn.textContent = isHidden ? 'hide' : 'show';
   }
   function _le_del_ip(ip) {
     if (!confirm('Remove ' + ip + '?')) return;
