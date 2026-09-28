@@ -1041,7 +1041,15 @@ def _log_window(text) -> LogWindow:
     try:
         with open('/proc/uptime') as f: uptime = float(f.read().split()[0])
         now = time.time()
-        oldest_wall = int(now - uptime + oldest); newest_wall = int(now - uptime + newest)
+        oldest_wall = int(now - uptime + oldest)
+        if newest > uptime:
+            try:
+                import os as _os
+                newest_wall = int(_os.path.getmtime("/var/log/bpftune-met-live.log"))
+            except (OSError, ValueError):
+                newest_wall = int(now)
+        else:
+            newest_wall = int(now - uptime + newest)
         age_min = round((now - newest_wall) / 60, 1)
     except: oldest_wall = 0; newest_wall = 0; age_min = 0
     return {"oldest_ts": oldest_wall, "newest_ts": newest_wall,
