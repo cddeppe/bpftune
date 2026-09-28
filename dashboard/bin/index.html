@@ -374,6 +374,7 @@
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
   .sp.pending { color: var(--warn); background: var(--warn-dim);
+  .sp.unmeasured { color: var(--muted); background: var(--subtle); font-style: italic; }
                 font-size: 9.5px; }
 
   .cell-good { color: var(--good); font-weight: 600; }
@@ -1257,7 +1258,16 @@
       var o = r.outcome_sustained || "";
       var pill = o
         ? '<span class="sp ' + o + '">' + o + '</span>'
-        : '<span class="sp pending">pending</span>';
+        : (function() {
+            var age = (r.boot_ts && SERVER_NOW_MONO) ? (SERVER_NOW_MONO - r.boot_ts) : 0;
+            var comp = r.outcome || '?';
+            var cl = comp === 'win' ? 'W' : comp === 'loss' ? 'L' : (comp === 'null' ? 'N' : '?');
+            if (age < 60) {
+              return '<span class="sp pending">pending (' + cl + ')</span>';
+            } else {
+              return '<span class="sp unmeasured">unmeasured (' + cl + ')</span>';
+            }
+          })();
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
           '<span class="arrow">&rarr;</span>' + esc(r.to_alg) + '</span>' +
