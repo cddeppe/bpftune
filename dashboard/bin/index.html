@@ -1894,57 +1894,67 @@
   })();
 })();
 
-  /* ---- Label Editor Modal (self-contained, no IIFE deps) ---- */
+  /* ---- Label Editor Modal (grouped, self-contained) ---- */
   function _le_esc(s) { return String(s==null?'':s).replace(/[&<>"']/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
   function openLabelEditor() {
     fetch('/api/labels').then(function(r) { return r.json(); }).then(function(d) {
-      var labels = d.labels || {};
-      var html = '';
-      Object.keys(labels).sort().forEach(function(ip) {
-        html += '<tr><td>' + _le_esc(ip) + '</td>' +
-          '<td><input type="text" value="' + _le_esc(labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
-          '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
-      });
-      document.getElementById('label-rows').innerHTML = html;
+      _le_render(d.labels || {});
       document.getElementById('label-modal').style.display = 'flex';
-    }).catch(function(err) { alert('Error loading labels: ' + err); });
+    }).catch(function(err) { alert('Error: ' + err); });
   }
   function closeLabelEditor() {
     document.getElementById('label-modal').style.display = 'none';
+  }
+  function _le_render(labels) {
+    // Group IPs by label
+    var groups = {};
+    Object.keys(labels).forEach(function(ip) {
+      var label = labels[ip];
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(ip);
+    });
+    // Render
+    var html = '';
+    Object.keys(groups).sort().forEach(function(label) {
+      var ips = groups[label];
+      var count = ips.length;
+      var ipText = count > 1 ? (count + ' IPs') : ips[0];
+      html += '<tr><td><b>' + _le_esc(label) + '</b></td>' +
+        '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
+        (count > 1 ? ' <button onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
+        '</td>' +
+        '<td><button onclick="_le_del_group(\'' + _le_esc(label) + '\',' + JSON.stringify(ips).replace(/"/g,'&quot;') + ')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
+      // Show individual IPs for multi-IP groups (hidden by default)
+      if (count > 1) {
+        html += '<tr id="le-' + _le_esc(label) + '" style="display:none"><td colspan="3" style="padding-left:24px">';
+        ips.forEach(function(ip) { html += '<div>' + _le_esc(ip) + '</div>'; });
+        html += '</td></tr>';
+      }
+    });
+    document.getElementById('label-rows').innerHTML = html;
+  }
+  function _le_toggle(label) {
+    var el = document.getElementById('le-' + label);
+    if (el) el.style.display = (el.style.display === 'none') ? '' : 'none';
+  }
+  function _le_del_group(label, ips) {
+    if (!confirm('Delete all IPs for ' + label + '?')) return;
+    ips.forEach(function(ip) {
+      fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ip: ip, label: ''})});
+    });
+    setTimeout(function() {
+      fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
+        _le_render(d.labels||{});
+        if (window.__liveFetch) window.__liveFetch();
+      });
+    }, 200);
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ip: ip, label: label})})
       .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok) {
-          var html = '';
-          Object.keys(d.labels).sort().forEach(function(ip) {
-            html += '<tr><td>' + _le_esc(ip) + '</td>' +
-              '<td><input type="text" value="' + _le_esc(d.labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
-              '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
-          });
-          document.getElementById('label-rows').innerHTML = html;
-          if (window.__liveFetch) window.__liveFetch();
-        }
-      });
-  }
-  function deleteLabel(ip) {
-    fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ip: ip, label: ''})})
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok) {
-          var html = '';
-          Object.keys(d.labels).sort().forEach(function(ip) {
-            html += '<tr><td>' + _le_esc(ip) + '</td>' +
-              '<td><input type="text" value="' + _le_esc(d.labels[ip]) + '" data-ip="' + _le_esc(ip) + '" class="label-edit-input" style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
-              '<td><button onclick="deleteLabel(\'' + ip + '\')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
-          });
-          document.getElementById('label-rows').innerHTML = html;
-          if (window.__liveFetch) window.__liveFetch();
-        }
-      });
+      .then(function(d) { if (d.ok) { _le_render(d.labels); if (window.__liveFetch) window.__liveFetch(); } });
   }
   function addLabel() {
     var ip = document.getElementById('new-ip').value.trim();

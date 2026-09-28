@@ -39,6 +39,33 @@ def save_aliases(lines):
         for l in lines: f.write(l+"\n")
     os.chmod(tmp,0o644); os.rename(tmp,ALIASES_FILE)
 
+
+def auto_mask(ip_str, labels):
+    """Auto-mask an IP to match the format of existing labels.
+    If existing labels are /16 (e.g. 82.43.0.0), mask to /16.
+    If /24, mask to /24.  Default /16."""
+    import ipaddress
+    # Detect mask from existing labels
+    mask_bits = 16  # default
+    for existing_ip in labels:
+        parts = existing_ip.split('.')
+        if len(parts) == 4:
+            if parts[2] != '0' and parts[3] == '0':
+                mask_bits = 24
+                break
+            elif parts[2] == '0' and parts[3] == '0':
+                mask_bits = 16
+    # Apply mask
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        if isinstance(ip, ipaddress.IPv4Address):
+            mask = (0xFFFFFFFF << (32 - mask_bits)) & 0xFFFFFFFF
+            return str(ipaddress.IPv4Address(int(ip) & mask)), mask_bits
+    except:
+        pass
+    return ip_str, mask_bits
+
+
 class H(BaseHTTPRequestHandler):
     def _json(self,code,data):
         b=json.dumps(data).encode()
@@ -68,6 +95,8 @@ class H(BaseHTTPRequestHandler):
             if not label:
                 for ip in ips: labels.pop(ip,None)
             else:
+                ips=[auto_mask(ip,labels)[0] for ip in ips]  # auto-mask all
+            else:
                 for ip in ips: labels[ip]=label
             save_labels(labels)
             aliases=load_aliases()
@@ -78,6 +107,7 @@ class H(BaseHTTPRequestHandler):
         # Single IP mode
         ip=req.get("ip","").strip(); label=req.get("label","").strip()
         if not ip: self._json(400,{"error":"ip required"}); return
+        ip,mb=auto_mask(ip,labels)  # auto-mask to match existing format
         if not label: labels.pop(ip,None)
         else: labels[ip]=label
         save_labels(labels)
