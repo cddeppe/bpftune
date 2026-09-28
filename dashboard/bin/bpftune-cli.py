@@ -299,6 +299,7 @@ def read_map():
 def data_build(logpath):
     v = sh("dpkg-query -W -f='${Version}' bpftune").strip() or "?"
     a = sh("systemctl is-active bpftune").strip() or "?"
+    dash_v = sh("cd /root/bpftune && git rev-parse --short HEAD 2>/dev/null").strip() or "?"
     ts = sh("systemctl show bpftune -p ActiveEnterTimestamp --value").strip()
     uptime_min = None
     started = ""
@@ -311,8 +312,9 @@ def data_build(logpath):
         except Exception:
             pass
     return {
-        "version":     v,
-        "service":     a,
+        "version":      v,
+        "dash_version": dash_v,
+        "service":      a,
         "uptime_min":  uptime_min,
         "started_utc": started,
         "log_path":    str(logpath) if logpath else None,
@@ -1549,6 +1551,8 @@ def render_text(d):
     if b["uptime_min"] is not None:
         h, m = divmod(b["uptime_min"], 60)
         lines.append(f"uptime     {h}h {m}m   (started {b['started_utc']} UTC)")
+    if b.get("dash_version"):
+        lines[0] = lines[0] + f"   dashboard {b['dash_version']}"
     lines.append(f"log        {b['log_path'] or '(not found)'}")
     log_lines = lines
 
