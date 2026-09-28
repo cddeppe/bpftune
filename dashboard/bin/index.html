@@ -1501,8 +1501,9 @@
     var _bidLabel = (window.__labels && window.__labels[bid]) || _dropdownLabel || bid;
     // Find this bucket in doc.buckets (for instances, ref_rate, min_rtt, best_alg)
     var _bkt = null;
+    var _bidDisplay = shortAddr(bid);
     (_live.buckets || []).forEach(function(b) {
-      if (b.dest === bid || b.dest === _bidLabel) _bkt = b;
+      if (b.dest === bid || b.dest === _bidDisplay || b.dest === _bidLabel) _bkt = b;
     });
     var L = {
       instances: _bkt ? _bkt.inst : null,
