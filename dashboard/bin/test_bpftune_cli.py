@@ -6,6 +6,7 @@ Tests the most-patched functions per the cleanup brief:
   - _extract_dest() (the v6 dest6b truncation fix)
   - _parse_plain_map() (the plain-text bpftool fallback)
   - _swaps_mets_srates() + data_swap_outcomes() (the data pipeline)
+  - collect_all() integration (full pipeline, 23-key schema check)
 
 Run:
     python3 /opt/bpftune-dashboard/bin/test_bpftune_cli.py
@@ -299,6 +300,168 @@ class TestDataPipeline(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["alg"], "bbr")
         self.assertEqual(rows[0]["proved"], 1)
+
+
+class TestCollectAllIntegration(unittest.TestCase):
+    """Integration test: full pipeline from mock BPF log + map -> collect_all() JSON.
+
+    Mocks the I/O boundaries (find_log, tail_recent, read_map,
+    _run_writeback_and_get_swaps, data_build, data_system, data_tunables)
+    so the test is hermetic and fast.  The pure-data functions (data_proof,
+    data_swap_outcomes, etc.) run against the mock log text for real.
+
+    Verifies:
+      1. collect_all() returns a dict with all 23 expected keys
+      2. Each key has the correct top-level type (list/dict/int/str/float)
+      3. The TypedDict schema fields are present where applicable
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = _load_cli()
+
+    def setUp(self):
+        self._orig_find_log = self.cli.find_log
+        self._orig_tail = self.cli.tail_recent
+        self._orig_read_map = self.cli.read_map
+        self._orig_wb = self.cli._run_writeback_and_get_swaps
+        self._orig_build = self.cli.data_build
+        self._orig_system = self.cli.data_system
+        self._orig_tunables = self.cli.data_tunables
+        import json, tempfile
+        mock_map = [{"formatted": {"key": {"in6_u": {"u6_addr8": [0]*10 + [255,255] + [10,0,0,1]}}, "value": {"instances": 5, "min_rtt": 1000, "max_rate_delivered": 50000, "best_i": 1, "metrics": [{"metric_count": 15, "rate_ema": 100000, "swap_score": 256, "bad_streak": 0, "null_streak": 0}]}}}]
+        self._map_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        json.dump(mock_map, self._map_file)
+        self._map_file.close()
+        self._orig_env = os.environ.get("BPFTUNE_MAP_DUMP_JSON")
+        os.environ["BPFTUNE_MAP_DUMP_JSON"] = self._map_file.name
+        self.cli.find_log = lambda: "/tmp/mock_bpf.log"
+        self.cli.tail_recent = lambda budget=2000000: MOCK_LOG
+        self.cli.read_map = lambda: self._orig_read_map()
+        self.cli._run_writeback_and_get_swaps = lambda text: []
+        self.cli.data_build = lambda logpath: {"version": "0.4.84", "dash_version": "test", "service": "active", "uptime_min": 100, "started_utc": "12:00:00", "log_path": logpath}
+        self.cli.data_system = lambda: {"kernel": "test", "default_cc": "cubic", "cpu_count": 2}
+        self.cli.data_tunables = lambda: [{"group": "ipv4.tcp", "items": [{"key": "tcp_rmem", "value": "4096 131072 931104"}]}]
+        self.cli._SWMS_CACHE = {}
+
+    def tearDown(self):
+        self.cli.find_log = self._orig_find_log
+        self.cli.tail_recent = self._orig_tail
+        self.cli.read_map = self._orig_read_map
+        self.cli._run_writeback_and_get_swaps = self._orig_wb
+        self.cli.data_build = self._orig_build
+        self.cli.data_system = self._orig_system
+        self.cli.data_tunables = self._orig_tunables
+        if self._orig_env is None:
+            os.environ.pop("BPFTUNE_MAP_DUMP_JSON", None)
+        else:
+            os.environ["BPFTUNE_MAP_DUMP_JSON"] = self._orig_env
+        os.unlink(self._map_file.name)
+
+    def test_collect_all_returns_all_23_keys(self):
+        result = self.cli.collect_all()
+        expected_keys = {"generated_ts","log_window","bucket_ips","now_mono","hostname","build","system","tunables","buckets","metric","metric_by_bucket","bucket_live","live_leaders","proof","rate","swap_outcomes","divergence","churn","recent_swaps","recent_swaps_by_bucket","recent_proofs","proofs_raw","rate_raw"}
+        self.assertEqual(set(result.keys()), expected_keys)
+
+    def test_generated_ts_is_int(self):
+        self.assertIsInstance(self.cli.collect_all()["generated_ts"], int)
+
+    def test_hostname_is_str(self):
+        self.assertIsInstance(self.cli.collect_all()["hostname"], str)
+
+    def test_now_mono_is_float(self):
+        self.assertIsInstance(self.cli.collect_all()["now_mono"], float)
+
+    def test_log_window_has_expected_fields(self):
+        lw = self.cli.collect_all()["log_window"]
+        for f in ("oldest_ts","newest_ts","span_min","swap_count","age_min"):
+            self.assertIn(f, lw)
+
+    def test_build_has_expected_fields(self):
+        b = self.cli.collect_all()["build"]
+        for f in ("version","dash_version","service","uptime_min","started_utc","log_path"):
+            self.assertIn(f, b)
+
+    def test_system_has_expected_fields(self):
+        s = self.cli.collect_all()["system"]
+        for f in ("kernel","default_cc","cpu_count"):
+            self.assertIn(f, s)
+
+    def test_tunables_is_list_of_groups(self):
+        t = self.cli.collect_all()["tunables"]
+        self.assertIsInstance(t, list)
+        if t:
+            self.assertIn("group", t[0])
+            self.assertIn("items", t[0])
+
+    def test_buckets_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["buckets"], list)
+
+    def test_metric_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["metric"], list)
+
+    def test_metric_by_bucket_is_dict(self):
+        self.assertIsInstance(self.cli.collect_all()["metric_by_bucket"], dict)
+
+    def test_bucket_live_is_dict(self):
+        self.assertIsInstance(self.cli.collect_all()["bucket_live"], dict)
+
+    def test_live_leaders_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["live_leaders"], list)
+
+    def test_proof_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["proof"], list)
+
+    def test_rate_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["rate"], list)
+
+    def test_swap_outcomes_has_three_scales(self):
+        so = self.cli.collect_all()["swap_outcomes"]
+        for s in ("composite","srate","sustained"):
+            self.assertIn(s, so)
+        self.assertIn("swaps_list", so)
+
+    def test_churn_has_expected_fields(self):
+        ch = self.cli.collect_all()["churn"]
+        for f in ("cookies","one","mid","many","max"):
+            self.assertIn(f, ch)
+
+    def test_recent_swaps_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["recent_swaps"], list)
+
+    def test_recent_swaps_by_bucket_is_dict(self):
+        self.assertIsInstance(self.cli.collect_all()["recent_swaps_by_bucket"], dict)
+
+    def test_recent_proofs_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["recent_proofs"], list)
+
+    def test_proofs_raw_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["proofs_raw"], list)
+
+    def test_rate_raw_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["rate_raw"], list)
+
+    def test_bucket_ips_is_dict(self):
+        self.assertIsInstance(self.cli.collect_all()["bucket_ips"], dict)
+
+    def test_divergence_is_list(self):
+        self.assertIsInstance(self.cli.collect_all()["divergence"], list)
+
+    def test_json_serializable(self):
+        import json
+        result = self.cli.collect_all()
+        json_str = json.dumps(result)
+        round_tripped = json.loads(json_str)
+        self.assertEqual(set(round_tripped.keys()), set(result.keys()))
+
+    def test_proof_data_flows_through(self):
+        result = self.cli.collect_all()
+        self.assertEqual(len(result["proof"]), 1)
+        self.assertEqual(result["proof"][0]["alg"], "bbr")
+
+    def test_swap_outcomes_data_flows_through(self):
+        result = self.cli.collect_all()
+        self.assertEqual(len(result["swap_outcomes"]["swaps_list"]), 3)
 
 
 if __name__ == "__main__":
