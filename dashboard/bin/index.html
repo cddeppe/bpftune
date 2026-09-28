@@ -765,38 +765,20 @@
   /* ---- Bucket IPs (individual IPs inside masked buckets) ---- */
   var _bucketIps = null;
   var _allLabels = [];
+
   function loadBucketIps() {
-    // Read bucket_ips from current.json (already fetched by the dashboard)
-    var d = window.__current_doc || {};
-    var buckets = d.bucket_ips || {};
-    var labels = (d.swap_outcomes && d.swap_outcomes.labels) || {};
-    // Also try the labels API for the full labels + groups
-    fetch('/api/labels').then(function(r) { return r.json(); }).then(function(ld) {
-      var allLabels = {};
-      Object.keys(ld.groups || {}).forEach(function(label) {
-        allLabels[label] = { to_ip: ld.groups[label].to_ip, ips: ld.groups[label].from_ips.slice() };
-      });
-      Object.keys(ld.labels || {}).forEach(function(ip) {
-        var label = ld.labels[ip];
-        if (!allLabels[label]) allLabels[label] = { to_ip: ip, ips: [] };
-        if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
-      });
-      // Merge bucket_ips (individual IPs from the log) into the groups
-      Object.keys(buckets).forEach(function(masked) {
-        var label = ld.labels ? (ld.labels[masked] || masked) : masked;
-        if (!allLabels[label]) allLabels[label] = { to_ip: masked, ips: buckets[masked] };
-        else {
-          buckets[masked].forEach(function(ip) {
-            if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
-          });
-        }
-      });
-      _allLabels = Object.keys(allLabels).sort();
-      renderBucketIps(buckets, ld.labels || {});
+    fetch('current.json', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(doc) {
+      var buckets = doc.bucket_ips || {};
+      fetch('/api/labels').then(function(r) { return r.json(); }).then(function(ld) {
+        var labels = ld.labels || {};
+        _allLabels = Object.keys(labels).map(function(ip) { return labels[ip]; }).filter(function(l,i,a){ return a.indexOf(l)===i; }).sort();
+        renderBucketIps(buckets, labels);
+      }).catch(function() { renderBucketIps(buckets, {}); });
     }).catch(function() {
-      renderBucketIps(buckets, {});
+      document.getElementById('bucket-ips-list').innerHTML = '<div style="font-size:11px;color:var(--muted)">Could not fetch current.json</div>';
     });
   }
+
   function renderBucketIps(buckets, labels) {
     var html = '';
     Object.keys(buckets).sort(function(a,b) { return (labels[b]||b).localeCompare(labels[a]||a); }).forEach(function(masked) {
@@ -2079,19 +2061,7 @@
   /* ---- Bucket IPs (individual IPs inside masked buckets) ---- */
   var _bucketIps = null;
   var _allLabels = [];
-  function loadBucketIps() {
-    fetch('/api/bucket-ips').then(function(r) { return r.json(); }).then(function(d) {
-      _bucketIps = d;
-      // Build label list for the move dropdown
-      fetch('/api/labels').then(function(r) { return r.json(); }).then(function(ld) {
-        _allLabels = Object.keys(ld.labels || {}).map(function(ip) { return ld.labels[ip]; });
-        _allLabels = _allLabels.filter(function(l, i, a) { return a.indexOf(l) === i; }).sort();
-        renderBucketIps(d, ld.labels || {});
-      });
-    }).catch(function() {
-      document.getElementById('bucket-ips-list').innerHTML = '<div class="placeholder" style="font-size:11px;color:var(--bad)">Could not load bucket IPs</div>';
-    });
-  }
+
   function renderBucketIps(buckets, labels) {
     var html = '';
     Object.keys(buckets).sort(function(a,b) { return (labels[b]||b).localeCompare(labels[a]||a); }).forEach(function(masked) {
