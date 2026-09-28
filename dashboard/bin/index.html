@@ -556,6 +556,17 @@
   .ip-label:hover { color: var(--good); }
   .ip-edit { font-size: 11px; border: 1px solid var(--muted); padding: 0 4px; border-radius: 3px; outline: none; background: var(--bg, #fff); color: var(--text, #000); }
 
+
+  .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .modal { background: var(--bg, #fff); border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--subtle); }
+  .modal-header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .modal-body { padding: 12px 16px; }
+  #label-table th, #label-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--subtle); font-size: 11px; }
+  #label-table input { font-size: 11px; border: 1px solid var(--muted); padding: 2px 6px; border-radius: 3px; width: 100%; box-sizing: border-box; }
+  #btn-labels { font-size: 11px; padding: 4px 12px; border: 1px solid var(--muted); border-radius: 4px; cursor: pointer; background: var(--good-dim); color: var(--good); }
+  #btn-labels:hover { background: var(--good); color: #fff; }
+
 </style>
 </head>
 <body>
@@ -570,6 +581,9 @@
       </label>
       <label class="control">range
         <select id="range"></select>
+      </label>
+      <label class="control">
+        <button type="button" id="btn-labels" onclick="openLabelEditor()">Edit Labels</button>
       </label>
       <span id="gen" class="pill">initial</span>
     </div>
@@ -1880,5 +1894,29 @@
   })();
 })();
 </script>
+
+<!-- Label Editor Modal -->
+<div id="label-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Edit IP Labels</h2>
+      <button type="button" onclick="closeLabelEditor()" style="font-size:18px;background:none;border:none;cursor:pointer;color:var(--muted)">&times;</button>
+    </div>
+    <div class="modal-body">
+      <table id="label-table" style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="text-align:left;padding:6px 8px">IP</th><th style="text-align:left;padding:6px 8px">Label</th><th></th></tr></thead>
+        <tbody id="label-rows"></tbody>
+      </table>
+      <div class="label-add" style="display:flex;gap:8px;margin-top:12px">
+        <input type="text" id="new-ip" placeholder="IP (e.g. 82.43.0.0)" style="flex:1;font-size:11px;border:1px solid var(--muted);padding:4px 8px;border-radius:3px">
+        <input type="text" id="new-label" placeholder="Label (e.g. home)" style="flex:1;font-size:11px;border:1px solid var(--muted);padding:4px 8px;border-radius:3px">
+        <button type="button" onclick="addLabel()" style="font-size:11px;padding:4px 12px;border:1px solid var(--muted);border-radius:3px;cursor:pointer;background:var(--good-dim)">Add</button>
+      </div>
+      <div style="margin-top:16px;font-size:11px;color:var(--muted)">
+        Tip: to group IPs, use the same label for multiple IPs.
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
