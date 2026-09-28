@@ -613,12 +613,38 @@
         else c[o] = (c[o] || 0) + 1;
       });
       var total = c.win + c.null + c.loss;
+      // Compute loss recovery from filtered swaps
+      var losses = swaps.filter(function(s) { return s.outcome_sustained === 'loss'; });
+      losses.sort(function(a, b) { return (a.ts || 0) - (b.ts || 0); });
+      var lastTs = swaps.length ? Math.max.apply(null, swaps.map(function(s) { return s.ts || 0; })) : 0;
+      var rescued = 0, fullLoss = 0, openLoss = 0;
+      var WINDOW = 3600;
+      losses.forEach(function(loss) {
+        var lossTs = loss.ts || 0;
+        var found = false;
+        for (var i = 0; i < swaps.length; i++) {
+          var s = swaps[i];
+          if (s === loss) continue;
+          var sTs = s.ts || 0;
+          if (sTs <= lossTs) continue;
+          if (sTs - lossTs > WINDOW) break;
+          if (s.cookie === loss.cookie && s.outcome_sustained === 'win') { found = true; break; }
+        }
+        if (found) rescued++;
+        else if ((lastTs - lossTs) > WINDOW) fullLoss++;
+        else openLoss++;
+      });
+      var totalLoss = c.loss;
       f.swap_outcomes.sustained = {
         win: c.win, null: c.null, loss: c.loss,
         measurable: total, unmeasurable: c.skip,
         win_pct: total ? Math.round(c.win/total*100) : 0,
         null_pct: total ? Math.round(c.null/total*100) : 0,
         loss_pct: total ? Math.round(c.loss/total*100) : 0,
+        rescued: rescued, full_loss: fullLoss, open: openLoss,
+        rescued_pct: totalLoss ? Math.round(rescued/totalLoss*100) : 0,
+        full_loss_pct: totalLoss ? Math.round(fullLoss/totalLoss*100) : 0,
+        open_pct: totalLoss ? Math.round(openLoss/totalLoss*100) : 0,
       };
     }
     // Filter recent proofs
