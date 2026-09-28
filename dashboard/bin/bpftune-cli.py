@@ -252,6 +252,95 @@ def tail_recent(budget=LOG_TAIL_BYTES):
     return "".join(reversed(chunks))
 
 
+def _parse_plain_map(out):
+    """Parse the plain-text (non-JSON) bpftool map dump format.
+
+    Older bpftool versions (or bpftool built without BTF support)
+    emit a table like:
+
+        [{
+            key:
+            00 00 00 00 00 00 00 00 00 00 ff ff 0a 00 00 01
+            value:
+            instances 5  min_rtt 1000  max_rate_delivered 50000  ...
+        }]
+
+    Returns a list of (instances:int, value:dict) tuples, or [] if
+    no entries parsed.  The key is decoded from the 16-byte hex block
+    the same way read_map() decodes u6_addr8 in JSON format."""
+    entries = []
+    # Split on record boundaries.  Each record starts at '{' on its own line
+    # (possibly '{{' for the outer array wrapper) and ends at '}'.
+    # We scan line-by-line and track depth.
+    depth = 0
+    in_key = False
+    in_value = False
+    key_bytes = []
+    value_text = []
+    for line in out.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith('{') and depth == 0:
+            depth = 1
+            in_key = in_value = False
+            key_bytes = []
+            value_text = []
+            continue
+        if s == '}' and depth > 0:
+            # End of a record — emit if we have a value dict
+            if value_text:
+                v = {}
+                # Parse "field value  field value ..." pairs from value_text
+                toks = ' '.join(value_text).split()
+                i = 0
+                while i + 1 < len(toks):
+                    name = toks[i]
+                    val = toks[i + 1]
+                    try:
+                        # numeric fields stored as int
+                        v[name] = int(val)
+                    except (ValueError, TypeError):
+                        v[name] = val
+                    i += 2
+                if v:
+                    inst = int(v.get('instances', 0) or 0)
+                    # Decode the key bytes (16 bytes = IPv4-mapped IPv6)
+                    if len(key_bytes) == 16:
+                        b = key_bytes
+                        if b[10] == 0xff and b[11] == 0xff:
+                            addr = '.'.join(str(x) for x in b[12:16])
+                        else:
+                            v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+                            addr = 'v6:%08x' % v6 if v6 else '0.0.0.0'
+                    else:
+                        addr = '?'
+                    entries.append((inst, addr, v))
+            depth = 0
+            in_key = in_value = False
+            key_bytes = []
+            value_text = []
+            continue
+        if s.startswith('key:'):
+            in_key = True
+            in_value = False
+            continue
+        if s.startswith('value:'):
+            in_value = True
+            in_key = False
+            continue
+        if in_key:
+            # hex bytes: "00 00 00 00 00 00 00 00 00 00 ff ff 0a 00 00 01"
+            for tok in s.split():
+                try:
+                    key_bytes.append(int(tok, 16))
+                except (ValueError, TypeError):
+                    pass
+        elif in_value:
+            value_text.append(s)
+    return entries
+
+
 def read_map():
     cached = os.environ.get("BPFTUNE_MAP_DUMP_JSON")
     if cached and os.path.exists(cached):
@@ -262,33 +351,45 @@ def read_map():
             out = ""
     else:
         out = sh("bpftool --json map dump name remote_host_map 2>/dev/null")
+    # Try JSON first (modern bpftool with BTF).
+    data = None
     try:
         data = json.loads(out)
     except Exception:
-        return None
-    if not isinstance(data, list):
-        return None
-    entries = []
-    for e in data:
-        if not isinstance(e, dict):
-            continue
-        fmt = e.get("formatted") or {}
-        v = fmt.get("value"); k = fmt.get("key") or {}
-        if not isinstance(v, dict):
-            continue
-        try:
-            inst = int(v.get("instances", 0))
-        except Exception:
-            continue
-        addr = "?"
-        b = k.get("in6_u", {}).get("u6_addr8")
-        if isinstance(b, list) and len(b) == 16:
-            if b[10] == 0xff and b[11] == 0xff:
-                addr = ".".join(str(x) for x in b[12:16])
-            else:
-                v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
-                addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
-        entries.append((inst, _label_for(addr), v))
+        pass  # falls through to plain-text parser
+    if isinstance(data, list):
+        entries = []
+        for e in data:
+            if not isinstance(e, dict):
+                continue
+            fmt = e.get("formatted") or {}
+            v = fmt.get("value"); k = fmt.get("key") or {}
+            if not isinstance(v, dict):
+                continue
+            try:
+                inst = int(v.get("instances", 0))
+            except Exception:
+                continue
+            addr = "?"
+            b = k.get("in6_u", {}).get("u6_addr8")
+            if isinstance(b, list) and len(b) == 16:
+                if b[10] == 0xff and b[11] == 0xff:
+                    addr = ".".join(str(x) for x in b[12:16])
+                else:
+                    v6 = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+                    addr = "v6:%08x" % v6 if v6 else "0.0.0.0"
+            entries.append((inst, _label_for(addr), v))
+    else:
+        # JSON failed (empty output or parse error).  Fall back to
+        # plain-text bpftool format (older bpftool, no BTF).
+        if not out and not cached:
+            out = sh("bpftool map dump name remote_host_map 2>/dev/null")
+        plain_entries = _parse_plain_map(out)
+        entries = [(inst, _label_for(addr), v) for inst, addr, v in plain_entries]
+        if not entries:
+            import sys
+            print("[read_map] no entries (json failed, plain parse empty)", file=sys.stderr)
+            return None
     # 0.4.79: two map keys can decode to the same final label
     # (an exact-alias entry and a prefix-fold entry for the same
     # physical location).  Merge by final addr -- sum instances,
