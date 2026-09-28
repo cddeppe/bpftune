@@ -1531,6 +1531,20 @@ def _rate_samples_with_dest(text):
         })
     return out
 
+def _safe(fn, default, label):
+    """Run fn(); on exception, log to stderr and return default.
+
+    Keeps one bad panel from taking down the whole dashboard: if
+    data_metric(hosts) throws because the BPF map returned malformed
+    data, that panel renders empty but the other 20 still work."""
+    try:
+        return fn()
+    except Exception as e:
+        import sys
+        print(f"[collect_all] {label}: {e}", file=sys.stderr)
+        return default
+
+
 def collect_all():
     """Build the full dashboard state dict consumed by index.html.
 
@@ -1571,28 +1585,28 @@ def collect_all():
     hosts   = read_map()
     return {
         "generated_ts":   int(time.time()),
-        "log_window":     _log_window(text),
-        "bucket_ips":     data_bucket_ips(text),
+        "log_window":     _safe(lambda: _log_window(text), {"oldest_ts":0,"newest_ts":0,"span_min":0,"swap_count":0,"age_min":0}, "log_window"),
+        "bucket_ips":     _safe(lambda: data_bucket_ips(text), {}, "bucket_ips"),
         "now_mono":       _uptime_now(),
         "hostname":       os.uname().nodename,
-        "build":          data_build(logpath),
-        "system":         data_system(),
-        "tunables":       data_tunables(),
-        "buckets":        data_buckets(hosts),
-        "metric":         data_metric(hosts),
-        "metric_by_bucket": data_metric_by_bucket(hosts),
-        "bucket_live":      data_bucket_live(),
-        "live_leaders":   data_live_leaders(hosts),
-        "proof":          data_proof(text),
-        "rate":           data_rate(text),
-        "swap_outcomes":  data_swap_outcomes(text),
-        "divergence":     data_divergence(text),
-        "churn":          data_churn(text),
-        "recent_swaps":   data_recent_swaps(text),
-        "recent_swaps_by_bucket": data_recent_swaps_by_bucket(text),
-        "recent_proofs":  data_recent_proofs(text),
-        "proofs_raw":     _proofs_with_dest(text),
-        "rate_raw":       _rate_samples_with_dest(text),
+        "build":          _safe(lambda: data_build(logpath), {"version":"?","dash_version":"?","service":"?","uptime_min":None,"started_utc":"","log_path":None}, "build"),
+        "system":         _safe(data_system, {}, "system"),
+        "tunables":       _safe(data_tunables, [], "tunables"),
+        "buckets":        _safe(lambda: data_buckets(hosts), [], "buckets"),
+        "metric":         _safe(lambda: data_metric(hosts), [], "metric"),
+        "metric_by_bucket": _safe(lambda: data_metric_by_bucket(hosts), {}, "metric_by_bucket"),
+        "bucket_live":      _safe(data_bucket_live, {}, "bucket_live"),
+        "live_leaders":   _safe(lambda: data_live_leaders(hosts), [], "live_leaders"),
+        "proof":          _safe(lambda: data_proof(text), [], "proof"),
+        "rate":           _safe(lambda: data_rate(text), [], "rate"),
+        "swap_outcomes":  _safe(lambda: data_swap_outcomes(text), {"composite":{"measurable":0,"unmeasurable":0,"win":0,"win_pct":0,"null":0,"null_pct":0,"loss":0,"loss_pct":0},"srate":{"measurable":0,"unmeasurable":0,"win":0,"win_pct":0,"null":0,"null_pct":0,"loss":0,"loss_pct":0},"sustained":{"measurable":0,"unmeasurable":0,"win":0,"win_pct":0,"null":0,"null_pct":0,"loss":0,"loss_pct":0},"swaps_list":[]}, "swap_outcomes"),
+        "divergence":     _safe(lambda: data_divergence(text), [], "divergence"),
+        "churn":          _safe(lambda: data_churn(text), {"cookies":0,"one":0,"mid":0,"many":0,"max":0}, "churn"),
+        "recent_swaps":   _safe(lambda: data_recent_swaps(text), [], "recent_swaps"),
+        "recent_swaps_by_bucket": _safe(lambda: data_recent_swaps_by_bucket(text), {}, "recent_swaps_by_bucket"),
+        "recent_proofs":  _safe(lambda: data_recent_proofs(text), [], "recent_proofs"),
+        "proofs_raw":     _safe(lambda: _proofs_with_dest(text), [], "proofs_raw"),
+        "rate_raw":       _safe(lambda: _rate_samples_with_dest(text), [], "rate_raw"),
     }
 
 
