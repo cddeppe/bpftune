@@ -1321,6 +1321,24 @@ def _run_writeback_and_get_swaps(text):
     return swaps_list
 
 
+
+def data_bucket_ips(text):
+    """Extract all dest IPs from the log, group by /16 mask."""
+    import re, ipaddress
+    buckets = {}
+    for line in text.splitlines():
+        m = re.search(r'dest=(\d+)', line)
+        if not m: continue
+        n = int(m.group(1))
+        if n == 0: continue
+        full = "%d.%d.%d.%d" % ((n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+        try:
+            masked = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(full)) & 0xFFFF0000))
+        except: continue
+        if masked not in buckets: buckets[masked] = []
+        if full not in buckets[masked]: buckets[masked].append(full)
+    return buckets
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
@@ -1332,6 +1350,7 @@ def collect_all():
     return {
         "generated_ts":   int(time.time()),
         "log_window":     _log_window(text),
+        "bucket_ips":     data_bucket_ips(text),
         "now_mono":       _uptime_now(),
         "hostname":       os.uname().nodename,
         "build":          data_build(logpath),
