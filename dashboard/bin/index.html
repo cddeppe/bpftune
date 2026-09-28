@@ -606,8 +606,6 @@
         <span class="v" id="n_best">-</span></div>
       <div class="stat"><span class="k">rate-best</span>
         <span class="v mono" id="n_rbest">-</span></div>
-      <div class="stat"><span class="k">tcp_rmem max</span>
-        <span class="v mono" id="n_rmem">-</span></div>
       <div class="stat"><span class="k">streak</span>
         <span class="v mono" id="n_streak">-</span></div>
       <div class="stat"><span class="k">swap count</span>
@@ -1522,7 +1520,7 @@
     });
     var setT = function (id, s) { var e = $(id); if (e) e.textContent = s; };
     setT("n_inst", fmtN(L.instances));
-    setT("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
+    setT("n_ref",  (L.ref_rate != null ? L.ref_rate.toFixed(1) : "0.0") + " Mb/s");
     setT("n_rtt",  fmtRTT(L.min_rtt));
     // Use doc.live_leaders (same source as the swap target leaderboard)
     var _ll = (window.__current_doc && window.__current_doc.live_leaders) || [];
@@ -1540,7 +1538,6 @@
     }
     // Show picker's choice as best algorithm
     setT("n_best", _top ? _top.alg : (L.best_alg || "-"));
-    setT("n_rmem", fmtBytes(L.tcp_rmem_max));
     // Streak/penalty (from live_leaders — has correct bad/null fields)
     if (_top) {
       var _bad = _top.bad || 0;
@@ -1549,11 +1546,10 @@
       var _st = (16/_pen).toFixed(3);
       if (_bad > 0) _st += " b=" + _bad;
       if (_nul > 0) _st += " n=" + _nul;
-      // TEMP DEBUG: show matching info
-      var _dbg = "bid=" + bid + " | labels=" + JSON.stringify(window.__labels||{}) + " | buckets=";
-      (_live.buckets || []).forEach(function(b) { _dbg += b.dest + ":" + b.ref_mbps + " "; });
-      _dbg += " | _bkt=" + (_bkt ? _bkt.dest + ":" + _bkt.ref_mbps : "NULL");
-      setT("n_streak", _dbg);
+      var _st = (16/_pen).toFixed(3);
+      if (_bad > 0) _st += " b=" + _bad;
+      if (_nul > 0) _st += " n=" + _nul;
+      setT("n_streak", _st);
       setT("n_swaps", _top.count ? fmtN(_top.count) : "-");
       setT("n_algs2", "-");
     } else {
