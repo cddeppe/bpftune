@@ -1323,21 +1323,43 @@ def _run_writeback_and_get_swaps(text):
 
 
 def data_bucket_ips(text):
-    """Extract all dest IPs from the log, group by /16 mask."""
+    """Extract all dest IPs (v4 + v6) from the log, group by /16 (v4) or /32 (v6)."""
     import re, ipaddress
     buckets = {}
     for line in text.splitlines():
+        # IPv4: dest=<int>
         m = re.search(r'dest=(\d+)', line)
-        if not m: continue
-        n = int(m.group(1))
-        if n == 0: continue
-        full = "%d.%d.%d.%d" % ((n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
-        try:
-            masked = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(full)) & 0xFFFF0000))
-        except: continue
-        if masked not in buckets: buckets[masked] = []
-        if full not in buckets[masked]: buckets[masked].append(full)
+        if m:
+            n = int(m.group(1))
+            if n != 0:
+                full = "%d.%d.%d.%d" % ((n>>24)&0xff,(n>>16)&0xff,(n>>8)&0xff,n&0xff)
+                try:
+                    masked = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(full)) & 0xFFFF0000))
+                except: continue
+                if masked not in buckets: buckets[masked] = []
+                if full not in buckets[masked]: buckets[masked].append(full)
+        # IPv6: dest6=<int> (first 32 bits) + dest6b=<int> (second 32 bits, 0.4.83)
+        m6 = re.search(r'dest6=(\d+)', line)
+        if m6:
+            n6 = int(m6.group(1))
+            if n6 != 0:
+                hi = (n6 >> 16) & 0xFFFF
+                lo = n6 & 0xFFFF
+                # /32 masked key (first 32 bits, zero-padded)
+                masked_v6 = "%x:%x::" % (hi, lo)
+                # Full address: include dest6b if present (64 bits)
+                full_v6 = masked_v6
+                m6b = re.search(r'dest6b=(\d+)', line)
+                if m6b:
+                    n6b = int(m6b.group(1))
+                    if n6b != 0:
+                        hi2 = (n6b >> 16) & 0xFFFF
+                        lo2 = n6b & 0xFFFF
+                        full_v6 = "%x:%x:%x:%x::" % (hi, lo, hi2, lo2)
+                if masked_v6 not in buckets: buckets[masked_v6] = []
+                if full_v6 not in buckets[masked_v6]: buckets[masked_v6].append(full_v6)
     return buckets
+
 
 def collect_all():
     logpath = find_log()
