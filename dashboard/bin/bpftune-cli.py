@@ -12,7 +12,8 @@ Three outcome scales are reported:
                immediate cwnd-reset dip after a swap; this is the
                accurate throughput measure. Higher is better.
 """
-import argparse, csv, io, json, os, re, socket, struct, subprocess, sys, time
+import argparse
+import ipaddress, csv, io, json, os, re, socket, struct, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,8 +25,7 @@ _LABELS_MTIME = None
 def _load_labels():
     """0.4.79: /var/lib/bpftune/aliases.labels.json {canonical_ip: label}."""
     global _LABELS_CACHE, _LABELS_MTIME
-    import os
-import ipaddress as _os, json as _json
+    import os as _os, json as _json
     path = "/var/lib/bpftune/aliases.labels.json"
     try:
         m = _os.path.getmtime(path)
@@ -159,8 +159,6 @@ def _load_aliases_labels():
 
 
 def _normalize_ip(ip_str):
-    """Normalize IP to canonical form for dict lookup.
-    Ensures '2603:c020::' and '2603:c020:0:0:0:0:0:0' both match."""
     try:
         return str(ipaddress.ip_address(ip_str))
     except (ValueError, TypeError):
@@ -173,12 +171,10 @@ def _label_for(addr):
     addr = _fold_v6(addr)
     addr = _canon_bucket(addr)
     addr = _normalize_ip(addr)
-    # Check labels.json (normalize keys for matching)
     labels = _load_labels()
     for k, v in labels.items():
         if k == addr or _normalize_ip(k) == addr:
             return v
-    # Check aliases (keys already normalized at load time)
     alias_labels = _load_aliases_labels()
     if addr in alias_labels:
         return alias_labels[addr]
