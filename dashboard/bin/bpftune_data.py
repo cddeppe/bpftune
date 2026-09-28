@@ -960,3 +960,30 @@ def _rate_samples_with_dest(text):
         })
     return out
 
+
+def _run_writeback_and_get_swaps(text):
+    """Run the writeback BEFORE the leaderboard reads the BPF map.
+    Returns the swaps_list for data_swap_outcomes to reuse."""
+    sw, met, srate = _swaps_mets_srates(text)
+    swaps_list = []
+    for row in sw:
+        ts, c = row[0], row[1]
+        fa, ta = row[2], row[3]
+        o = _outcome_composite(met, c, ts)
+        o2 = _outcome_srate(srate, c, ts)
+        o3 = _outcome_sustained(srate, c, ts)
+        # Shared with data_swap_outcomes() via _extract_dest(row).
+        remote_host = _extract_dest(row)
+        swaps_list.append({'ts':ts,'cookie':c,'from_alg':fa,'to_alg':ta,
+                          'remote_host':remote_host,'outcome':o,
+                          'outcome_srate':o2,'outcome_sustained':o3})
+    try:
+        from streak_writeback import writeback_streaks
+        writeback_streaks(swaps_list)
+    except Exception as e:
+        import sys; print(f'[writeback] {e}', file=sys.stderr)
+    return swaps_list
+
+
+
+
