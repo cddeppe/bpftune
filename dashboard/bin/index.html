@@ -374,6 +374,8 @@
   .sp.proved { color: var(--good); background: var(--good-dim); }
   .sp.dash { color: var(--muted-2); background: var(--subtle); }
   .sp.pending { color: var(--warn); background: var(--warn-dim);
+  .sp.wait { color: var(--warn); background: var(--warn-dim); }
+  .sp.void { color: var(--muted); background: var(--subtle); font-style: italic; }
   .sp.unmeasured { color: var(--muted); background: var(--subtle); font-style: italic; }
                 font-size: 9.5px; }
 
@@ -1260,13 +1262,8 @@
         ? '<span class="sp ' + o + '">' + o + '</span>'
         : (function() {
             var age = (r.boot_ts && SERVER_NOW_MONO) ? (SERVER_NOW_MONO - r.boot_ts) : 0;
-            var comp = r.outcome || '?';
-            var cl = comp === 'win' ? 'W' : comp === 'loss' ? 'L' : (comp === 'null' ? 'N' : '?');
-            if (age < 60) {
-              return '<span class="sp pending">pending (' + cl + ')</span>';
-            } else {
-              return '<span class="sp unmeasured">unmeasured (' + cl + ')</span>';
-            }
+            if (age < 60) return '<span class="sp wait">wait</span>';
+            return '<span class="sp void">void</span>';
           })();
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.from_alg) +
