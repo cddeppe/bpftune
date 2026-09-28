@@ -41,7 +41,7 @@ lost (at most 300 seconds of unresolved swaps).
 import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
 import importlib.util
 import threading, hashlib
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 # SSE server state — _last_result holds the latest collect_all() output.
@@ -999,7 +999,7 @@ class SSEHandler(BaseHTTPRequestHandler):
 def _start_sse_server(port=8082):
     """Start the SSE HTTP server in a background thread."""
     try:
-        server = HTTPServer(("127.0.0.1", port), SSEHandler)
+        server = ThreadingHTTPServer(("127.0.0.1", port), SSEHandler)
         server.serve_forever()
     except Exception as e:
         print("collector: SSE server failed: %s" % e, file=sys.stderr)
