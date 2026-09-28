@@ -1536,55 +1536,43 @@
     }
   }
 
-  function renderLiveState(doc) {
-    window.__current_doc = doc;
-    _safeRender('log_window', function() { renderLogWindow(doc); });
-    if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
-    _safeRender('build', function() { renderBuild(doc.build || {}); });
-    _safeRender('system', function() { renderSystem(doc.system || {}); });
-    _safeRender('tunables', function() { renderTunables(doc.tunables || []); });
+  function _syncBucketDropdown(doc) {
     var _bs = $('bucket');
     var _prevVal = _bs ? _bs.value : null;
     _safeRender('buckets', function() { renderBuckets(doc.buckets || []); });
-    // Add "All Buckets" option at top if not present
     _bs = $('bucket');
     if (_bs && _bs.options.length > 0 && _bs.options[0].value !== 'all') {
       _bs.add(new Option('All Buckets', 'all'), 0);
     }
     if (_bs && _prevVal) { _bs.value = _prevVal; }
     else if (_bs) { _bs.value = 'all'; }
-    // Hook dropdown change to instantly re-filter all panels
     if (_bs && !_bs._refilterHooked) {
       _bs.addEventListener('change', _reFilterPanels);
       _bs._refilterHooked = true;
     }
-    state.metricByBucket = doc.metric_by_bucket || {};
-    state.bucketLive = doc.bucket_live || {};
-    state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
-    _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
-    _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
-    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
-      _safeRender('bucket_chart', function() { renderBucket(); });
-    }
-    // Per-bucket filtering
+  }
+
+  function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
-    var _blabel = 'all';
-    if (_bid !== 'all') {
-      var _bs2 = $('bucket');
-      _blabel = (window.__labels && window.__labels[_bid]) ||
-        (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
-    }
-    var _fdoc = _bid === 'all' ? doc : _filterByBucket(doc, _blabel);
+    if (_bid === 'all') return {bid: 'all', label: 'all'};
+    var _bs2 = $('bucket');
+    var _blabel = (window.__labels && window.__labels[_bid]) ||
+      (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
+    return {bid: _bid, label: _blabel};
+  }
+
+  function _renderFilteredPanels(doc) {
+    var bk = _currentBucketLabel();
+    var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label);
     _safeRender('proof', function() { renderProof(_fdoc.proof || []); });
     _safeRender('rate', function() { renderRate(_fdoc.rate || []); });
     _safeRender('swap_outcomes', function() { renderSwapOutcomes(_fdoc.swap_outcomes || null, _fdoc.churn || {}); });
     _safeRender('recent_proofs', function() { renderRecentProofs(_fdoc.recent_proofs || []); });
-    state.lastLiveSwaps = doc.recent_swaps || [];
-    renderRecentSwapsForBucket();
-    // Fetch labels + update dropdown option text + shortAddr lookups
+  }
+
+  function _fetchAndApplyLabels() {
     fetch('/api/labels', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(ld) {
       window.__labels = ld.labels || {};
-      // Update bucket dropdown to show labels
       var bs = $('bucket');
       if (bs && bs.options) {
         for (var i = 0; i < bs.options.length; i++) {
@@ -1604,6 +1592,28 @@
         }
       }
     }).catch(function() {});
+  }
+
+  function renderLiveState(doc) {
+    window.__current_doc = doc;
+    _safeRender('log_window', function() { renderLogWindow(doc); });
+    if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
+    _safeRender('build', function() { renderBuild(doc.build || {}); });
+    _safeRender('system', function() { renderSystem(doc.system || {}); });
+    _safeRender('tunables', function() { renderTunables(doc.tunables || []); });
+    _syncBucketDropdown(doc);
+    state.metricByBucket = doc.metric_by_bucket || {};
+    state.bucketLive = doc.bucket_live || {};
+    state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
+    _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
+    _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
+    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
+      _safeRender('bucket_chart', function() { renderBucket(); });
+    }
+    _renderFilteredPanels(doc);
+    state.lastLiveSwaps = doc.recent_swaps || [];
+    renderRecentSwapsForBucket();
+    _fetchAndApplyLabels();
   }
 
   function liveRefresh() {
