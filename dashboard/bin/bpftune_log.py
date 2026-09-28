@@ -799,32 +799,34 @@ def _swaps_mets_srates(text):
     sw = []
     met = defaultdict(list)
     srate = defaultdict(list)
-    rx_sw = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
-                       r"swap cookie=(\d+) from=(\d+) to=(\d+) "
-                       r"bc=(\d+) ac=(\d+) d=(\d+)"
-                       r"(?: mt=(\d+) rb=(\d+))?"
-                       r"(?: dest=(\d+))?"
-                       r"(?: dest6=(\d+))?"
-                   r"(?: dest6b=(\d+))?")
-    rx_mt = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
-                       r"met cookie=(\d+) rport=(\d+) alg=(\d+) segs=(\d+) val=(\d+)")
-    rx_sr = re.compile(r"(\d+\.\d+): bpf_trace_printk: "
-                       r"srate cookie=(\d+) alg=(\d+) srate=(\d+)")
+    # Named capture groups make the parsing self-documenting and
+    # robust to format changes (m.group("cookie") vs m.group(2)).
+    rx_sw = re.compile(r"(?P<ts>\d+\.\d+): bpf_trace_printk: "
+                       r"swap cookie=(?P<cookie>\d+) from=(?P<from>\d+) to=(?P<to>\d+) "
+                       r"bc=(?P<bc>\d+) ac=(?P<ac>\d+) d=(?P<d>\d+)"
+                       r"(?: mt=(?P<mt>\d+) rb=(?P<rb>\d+))?"
+                       r"(?: dest=(?P<dest>\d+))?"
+                       r"(?: dest6=(?P<dest6>\d+))?"
+                   r"(?: dest6b=(?P<dest6b>\d+)?)")
+    rx_mt = re.compile(r"(?P<ts>\d+\.\d+): bpf_trace_printk: "
+                       r"met cookie=(?P<cookie>\d+) rport=(?P<rport>\d+) alg=(?P<alg>\d+) segs=(?P<segs>\d+) val=(?P<val>\d+)")
+    rx_sr = re.compile(r"(?P<ts>\d+\.\d+): bpf_trace_printk: "
+                       r"srate cookie=(?P<cookie>\d+) alg=(?P<alg>\d+) srate=(?P<srate>\d+)")
     for line in text.splitlines():
         m = rx_sw.search(line)
         if m:
-            sw.append((float(m.group(1)), int(m.group(2)),
-                       int(m.group(3)), int(m.group(4)),
-                       int(m.group(5)), int(m.group(6)), m.group(7),
-                       m.group(8), m.group(9), m.group(10), m.group(11), m.group(12), line))
+            sw.append((float(m.group("ts")), int(m.group("cookie")),
+                       int(m.group("from")), int(m.group("to")),
+                       int(m.group("bc")), int(m.group("ac")), m.group("mt"),
+                       m.group("rb"), m.group("dest"), m.group("dest6"), m.group("dest6b"), line))
             continue
         v = rx_mt.search(line)
         if v:
-            met[int(v.group(2))].append((float(v.group(1)), int(v.group(6))))
+            met[int(v.group("cookie"))].append((float(v.group("ts")), int(v.group("val"))))
             continue
         s = rx_sr.search(line)
         if s:
-            srate[int(s.group(2))].append((float(s.group(1)), int(s.group(4))))
+            srate[int(s.group("cookie"))].append((float(s.group("ts")), int(s.group("srate"))))
     _result = (sw, met, srate)
     _SWMS_CACHE.clear()
     _SWMS_CACHE[_key] = _result
