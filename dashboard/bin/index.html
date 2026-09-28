@@ -1485,7 +1485,29 @@
     if (!doc) return;
     var bid = $("bucket").value;
     var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid]) || bid;
-    var L = doc.last || {};
+    // Live data from current.json (not stale bucket document)
+    var _live = window.__current_doc || {};
+    var _bidLabel = (window.__labels && window.__labels[bid]) || bid;
+    // Find this bucket in doc.buckets (for instances, ref_rate, min_rtt, best_alg)
+    var _bkt = null;
+    (_live.buckets || []).forEach(function(b) {
+      if (b.dest === bid || b.dest === _bidLabel) _bkt = b;
+    });
+    var L = {
+      instances: _bkt ? _bkt.inst : null,
+      ref_rate: _bkt ? _bkt.ref_mbps : null,
+      min_rtt: _bkt ? _bkt.rtt_us : null,
+      best_alg: _bkt ? _bkt.best_alg : null,
+      collected_ts: _live.generated_ts,
+      tcp_rmem_max: (doc.last || {}).tcp_rmem_max || null,
+      re: {}
+    };
+    // Build rate_ema dict from metric_by_bucket (live, 100KB/s units)
+    var _mb = _live.metric_by_bucket || {};
+    var _mbRows = _mb[bid] || _mb[_bidLabel] || [];
+    _mbRows.forEach(function(r) {
+      if (r.alg && r.rate_ema != null) L.re[r.alg] = r.rate_ema;
+    });
     var setT = function (id, s) { var e = $(id); if (e) e.textContent = s; };
     setT("n_inst", fmtN(L.instances));
     setT("n_ref",  fmtMbps(L.ref_rate) + " Mb/s");
