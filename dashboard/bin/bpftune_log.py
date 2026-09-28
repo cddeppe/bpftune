@@ -807,7 +807,7 @@ def _swaps_mets_srates(text):
                        r"(?: mt=(?P<mt>\d+) rb=(?P<rb>\d+))?"
                        r"(?: dest=(?P<dest>\d+))?"
                        r"(?: dest6=(?P<dest6>\d+))?"
-                   r"(?: dest6b=(?P<dest6b>\d+)?)")
+                   r"(?: dest6b=(?P<dest6b>\d+))?")
     rx_mt = re.compile(r"(?P<ts>\d+\.\d+): bpf_trace_printk: "
                        r"met cookie=(?P<cookie>\d+) rport=(?P<rport>\d+) alg=(?P<alg>\d+) segs=(?P<segs>\d+) val=(?P<val>\d+)")
     rx_sr = re.compile(r"(?P<ts>\d+\.\d+): bpf_trace_printk: "
