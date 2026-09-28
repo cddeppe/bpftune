@@ -143,6 +143,7 @@ class H(BaseHTTPRequestHandler):
                     mask=(0xFFFFFFFF<<16)&0xFFFFFFFF
                     to_ip=str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(ip))&mask))
                 except: pass
+            remove_alias_line(ip)  # remove old entry first (no duplicates)
             add_alias_line(ip, to_ip, label)
         save_labels(labels)
         groups=parse_aliases()
