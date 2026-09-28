@@ -120,26 +120,29 @@ class TestLabelFor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cli = _load_cli()
+        # After the module split, _label_for lives in bpftune_log.
+        # Patch there, not on cli (functions use their defining module's globals).
+        cls.log_mod = getattr(cls.cli, 'bpftune_log', cls.cli)
 
     def setUp(self):
-        self._orig_ll = self.cli._load_labels
-        self._orig_lf = self.cli._load_fold
-        self._orig_lal = self.cli._load_aliases_labels
-        self.cli._load_labels = lambda: {
+        self._orig_ll = self.log_mod._load_labels
+        self._orig_lf = self.log_mod._load_fold
+        self._orig_lal = self.log_mod._load_aliases_labels
+        self.log_mod._load_labels = lambda: {
             "82.43.0.0": "home-bucket",
             "abcd:f234::": "v6-peer",
         }
-        self.cli._load_fold = lambda: {
+        self.log_mod._load_fold = lambda: {
             "v6:2603c020": "89.168.0.0",
         }
-        self.cli._load_aliases_labels = lambda: {
+        self.log_mod._load_aliases_labels = lambda: {
             "162.120.232.10": "vps-peer",
         }
 
     def tearDown(self):
-        self.cli._load_labels = self._orig_ll
-        self.cli._load_fold = self._orig_lf
-        self.cli._load_aliases_labels = self._orig_lal
+        self.log_mod._load_labels = self._orig_ll
+        self.log_mod._load_fold = self._orig_lf
+        self.log_mod._load_aliases_labels = self._orig_lal
 
     def test_empty_addr_returns_empty(self):
         self.assertEqual(self.cli._label_for(""), "")
