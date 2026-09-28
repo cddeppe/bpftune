@@ -1464,6 +1464,13 @@
         for (var i = 0; i < bs.options.length; i++) {
           var ip = bs.options[i].value;
           var label = window.__labels[ip];
+          if (!label && ip.indexOf("v6:") === 0) {
+            var hex = ip.substring(3);
+            if (hex.length >= 8) {
+              var ip6 = hex.substring(0,4) + ":" + hex.substring(4,8) + "::";
+              label = window.__labels[ip6];
+            }
+          }
           if (label) {
             var pts = bs.options[i].text.match(/\((\d+)\)/);
             bs.options[i].text = label + ' (' + (pts ? pts[1] : '') + ')';
