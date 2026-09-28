@@ -17,6 +17,7 @@ import ipaddress, csv, io, json, os, re, socket, struct, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 
 def _mtime_cache(path, cache_holder, loader):
@@ -184,6 +185,232 @@ MIDDOT = "\u00b7"
 
 SUSTAINED_LO_S = 60.0
 SUSTAINED_HI_S = 300.0
+
+
+# ---- TypedDict schema: the contract between bpftune-cli.py and index.html ----
+# These document the JSON schema that collect_all() returns.  The frontend
+# reads current.json (written by the collector) and expects these fields.
+# Keep in sync with the actual return values of the data_* functions.
+
+class LogWindow(TypedDict, total=False):
+    """Time range of the BPF log tail (wall-clock timestamps)."""
+    oldest_ts: int
+    newest_ts: int
+    span_min: float
+    swap_count: int
+    age_min: float
+
+class BuildInfo(TypedDict, total=False):
+    """bpftune package + service status."""
+    version: str
+    dash_version: str
+    service: str
+    uptime_min: Optional[int]
+    started_utc: str
+    log_path: Optional[str]
+
+class SystemInfo(TypedDict, total=False):
+    """Host system facts."""
+    kernel: str
+    default_cc: str
+    cpu_count: int
+    load_1: float
+    load_5: float
+    load_15: float
+    procs_running: int
+    procs_total: int
+    host_uptime_s: int
+    mem_total_bytes: int
+    mem_avail_bytes: int
+    mem_used_bytes: int
+    mem_used_pct: float
+
+class TunableItem(TypedDict):
+    key: str
+    value: str
+
+class TunableGroup(TypedDict):
+    group: str
+    items: List[TunableItem]
+
+class BucketRow(TypedDict, total=False):
+    """One destination bucket (top 8 by instances)."""
+    dest: str
+    inst: int
+    rtt_us: int
+    ref_mbps: float
+    best_alg: str
+    n_alg: int
+
+class MetricRow(TypedDict, total=False):
+    """One algorithm row in the picker leaderboard."""
+    alg: str
+    metric: float
+    votes: int
+    alive: int
+    rate_ema: int
+    swap_score: int
+    penalty: float
+    score: float
+    bad_streak: int
+    null_streak: int
+    active: bool
+
+class LiveLeaderEntry(TypedDict, total=False):
+    alg: str
+    weighted: int
+    rate_ema: int
+    swap_score: int
+    bad: int
+    null: int
+    count: int
+
+class LiveLeader(TypedDict, total=False):
+    dest: str
+    inst: int
+    top: List[LiveLeaderEntry]
+
+class ProofRow(TypedDict, total=False):
+    alg: str
+    good: int
+    proved: int
+    proven_max: Optional[float]
+    sampled_avg: Optional[float]
+    sampled_max: Optional[float]
+    samples: Optional[int]
+
+class RateRow(TypedDict, total=False):
+    thr: int
+    n: int
+    mean: float
+    min: float
+    max: float
+
+class OutcomeSummary(TypedDict, total=False):
+    """One outcome scale (composite / srate / sustained)."""
+    measurable: int
+    unmeasurable: int
+    win: int
+    win_pct: float
+    null: int
+    null_pct: float
+    loss: int
+    loss_pct: float
+    rescued: int
+    full_loss: int
+    open: int
+    rescued_pct: float
+    full_loss_pct: float
+    open_pct: float
+
+class SwapListItem(TypedDict, total=False):
+    dest: Optional[str]
+    outcome: Optional[str]
+    outcome_sustained: Optional[str]
+    cookie: int
+    ts: float
+
+class SwapOutcomes(TypedDict, total=False):
+    composite: OutcomeSummary
+    srate: OutcomeSummary
+    sustained: OutcomeSummary
+    swaps_list: List[SwapListItem]
+
+class DivergenceRow(TypedDict, total=False):
+    category: str
+    measured: int
+    win_pct: float
+    null_pct: float
+    loss_pct: float
+    win: int
+    null: int
+    loss: int
+    skipped: int
+    measured_srate: int
+    win_pct_srate: float
+    null_pct_srate: float
+    loss_pct_srate: float
+    win_srate: int
+    null_srate: int
+    loss_srate: int
+    skipped_srate: int
+    measured_sustained: int
+    win_pct_sustained: float
+    null_pct_sustained: float
+    loss_pct_sustained: float
+    win_sustained: int
+    null_sustained: int
+    loss_sustained: int
+    skipped_sustained: int
+
+class ChurnInfo(TypedDict):
+    cookies: int
+    one: int
+    mid: int
+    many: int
+    max: int
+
+class RecentSwap(TypedDict, total=False):
+    boot_ts: float
+    from_alg: str
+    to_alg: str
+    d: int
+    outcome: Optional[str]
+    outcome_srate: Optional[str]
+    outcome_sustained: Optional[str]
+    mt_alg: Optional[str]
+    rb_alg: Optional[str]
+    dest: str
+    _bucket: str
+
+class RecentProof(TypedDict, total=False):
+    boot_ts: float
+    alg: str
+    mbps: float
+    tier: str
+    dest: str
+
+class ProofRaw(TypedDict, total=False):
+    alg: str
+    dest: Optional[str]
+    rate: float
+    tier: str
+
+class RateRaw(TypedDict, total=False):
+    dest: Optional[str]
+    thr: int
+    srate: int
+
+class CollectAllResult(TypedDict, total=False):
+    """Full dashboard state — the JSON contract with index.html.
+
+    This is what collect_all() returns and what the collector writes
+    to /var/lib/bpftune/history/current.json.  The frontend fetches
+    it every 30s via liveRefresh().
+    """
+    generated_ts: int
+    log_window: LogWindow
+    bucket_ips: Dict[str, List[str]]
+    now_mono: float
+    hostname: str
+    build: BuildInfo
+    system: SystemInfo
+    tunables: List[TunableGroup]
+    buckets: List[BucketRow]
+    metric: List[MetricRow]
+    metric_by_bucket: Dict[str, List[MetricRow]]
+    bucket_live: Dict[str, Any]
+    live_leaders: List[LiveLeader]
+    proof: List[ProofRow]
+    rate: List[RateRow]
+    swap_outcomes: SwapOutcomes
+    divergence: List[DivergenceRow]
+    churn: ChurnInfo
+    recent_swaps: List[RecentSwap]
+    recent_swaps_by_bucket: Dict[str, List[RecentSwap]]
+    recent_proofs: List[RecentProof]
+    proofs_raw: List[ProofRaw]
+    rate_raw: List[RateRaw]
 
 
 def sh(cmd, timeout=15):
@@ -412,7 +639,7 @@ def read_map():
     return entries
 
 
-def data_build(logpath):
+def data_build(logpath) -> BuildInfo:
     v = sh("dpkg-query -W -f='${Version}' bpftune").strip() or "?"
     a = sh("systemctl is-active bpftune").strip() or "?"
     dash_v = sh("cd /root/bpftune && git rev-parse --short HEAD 2>/dev/null").strip() or "?"
@@ -437,7 +664,7 @@ def data_build(logpath):
     }
 
 
-def data_system():
+def data_system() -> SystemInfo:
     out = {
         "kernel":     sh_noshell(["uname", "-r"]).strip(),
         "default_cc": sh_noshell(["sysctl", "-n",
@@ -502,7 +729,7 @@ KNOWN_TUNABLES = [
 ]
 
 
-def data_tunables():
+def data_tunables() -> List[TunableGroup]:
     j = sh_noshell(["journalctl", "-u", "bpftune",
                                         "--no-pager", "-q",
                                         "--grep", "sysctl 'net\\."])
@@ -540,7 +767,7 @@ def data_tunables():
     return [{"group": g, "items": groups[g]} for g in order]
 
 
-def data_buckets(hosts, n=8):
+def data_buckets(hosts, n=8) -> List[BucketRow]:
     if not hosts:
         return []
     rows = []
@@ -609,7 +836,7 @@ def _vote_sum(v):
     return total
 
 
-def data_metric(hosts):
+def data_metric(hosts) -> List[MetricRow]:
     """Swap target leaderboard.
 
     Sourced from the busiest bucket by total metric_count.
@@ -669,7 +896,7 @@ def data_metric(hosts):
     return rows
 
 
-def data_metric_by_bucket(hosts):
+def data_metric_by_bucket(hosts) -> Dict[str, List[MetricRow]]:
     """Per-bucket picker leaderboard, keyed by bucket id.
 
     Same row shape as data_metric, but for every bucket (sorted by
@@ -816,7 +1043,7 @@ def data_bucket_live():
     return per
 
 
-def data_recent_swaps_by_bucket(text, n_per_bucket=16):
+def data_recent_swaps_by_bucket(text, n_per_bucket=16) -> Dict[str, List[RecentSwap]]:
     """Same rows as data_recent_swaps, grouped by destination /16 so
     the panel can follow the bucket dropdown.  Returns
     {bucket_str: [row, ...]} ordered newest-first within each."""
@@ -900,7 +1127,7 @@ def _proof_events(text):
     return events, samples
 
 
-def data_proof(text):
+def data_proof(text) -> List[ProofRow]:
     events, samples = _proof_events(text)
     if not events and not samples:
         return []
@@ -926,7 +1153,7 @@ def data_proof(text):
     return rows
 
 
-def data_rate(text):
+def data_rate(text) -> List[RateRow]:
     out_map = defaultdict(list)
     for line in text.splitlines():
         if "midsamp" not in line:
@@ -1114,7 +1341,7 @@ def _add_loss_recovery(outcomes_dict, swaps):
 # === end bpftune-swap-outcomes-redesign-v1 ===
 
 
-def data_swap_outcomes(text):
+def data_swap_outcomes(text) -> SwapOutcomes:
     sw, met, srate = _swaps_mets_srates(text)
     swaps_list = []
     c_counts = {"win": 0, "null": 0, "loss": 0, "skip": 0}
@@ -1165,7 +1392,7 @@ def data_swap_outcomes(text):
     return _result
 
 
-def data_divergence(text):
+def data_divergence(text) -> List[DivergenceRow]:
     sw, met, srate = _swaps_mets_srates(text)
     keys = ("rate==metric", "rate!=metric", "pre-0.4.45")
     groups = {k: {"total": 0,
@@ -1230,7 +1457,7 @@ def data_divergence(text):
     return rows
 
 
-def data_churn(text):
+def data_churn(text) -> ChurnInfo:
     sw, _met, _sr = _swaps_mets_srates(text)
     counts = defaultdict(int)
     for row in sw:
@@ -1354,7 +1581,7 @@ def _cookie_dest_map(text):
     return out
 
 
-def data_recent_swaps(text, n=10):
+def data_recent_swaps(text, n=10) -> List[RecentSwap]:
     sw, met, srate = _swaps_mets_srates(text)
     rows = []
     for row in sw:
@@ -1385,7 +1612,7 @@ def data_recent_swaps(text, n=10):
     return rows[-n:]
 
 
-def data_recent_proofs(text, n=16):
+def data_recent_proofs(text, n=16) -> List[RecentProof]:
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
     cdest = _cookie_dest_map(text)
     out = []
@@ -1411,7 +1638,7 @@ LIVE_TOP_N       = 6
 LIVE_MAX_BUCKETS = 8
 
 
-def data_live_leaders(hosts):
+def data_live_leaders(hosts) -> List[LiveLeader]:
     """Compute the picker's live ranking per bucket.
 
     Uses the exact formula from reanchor_best (tcp_conn_tuner.c):
@@ -1485,7 +1712,7 @@ def _uptime_now():
 
 
 
-def _log_window(text):
+def _log_window(text) -> LogWindow:
     """Time range of the log tail."""
     sw, _, _ = _swaps_mets_srates(text)
     if not sw:
@@ -1528,7 +1755,7 @@ def _run_writeback_and_get_swaps(text):
 
 
 
-def data_bucket_ips(text):
+def data_bucket_ips(text) -> Dict[str, List[str]]:
     """Extract all dest IPs (v4 + v6) from the log, group by /16 (v4) or /32 (v6)."""
     import re, ipaddress
     buckets = {}
@@ -1648,7 +1875,7 @@ def _safe(fn, default, label):
         return default
 
 
-def collect_all():
+def collect_all() -> CollectAllResult:
     """Build the full dashboard state dict consumed by index.html.
 
     Single entry point for all dashboard data.  Returns a dict with keys:
