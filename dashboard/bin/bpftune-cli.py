@@ -304,7 +304,10 @@ def _parse_plain_map(out):
                         v[name] = val
                     i += 2
                 if v:
-                    inst = int(v.get('instances', 0) or 0)
+                    try:
+                        inst = int(v.get('instances', 0) or 0)
+                    except (ValueError, TypeError):
+                        inst = 0
                     # Decode the key bytes (16 bytes = IPv4-mapped IPv6)
                     if len(key_bytes) == 16:
                         b = key_bytes
@@ -320,6 +323,12 @@ def _parse_plain_map(out):
             in_key = in_value = False
             key_bytes = []
             value_text = []
+            # Handle '},{' on same line: opening of next record
+            if '{' in s:
+                depth = 1
+                in_key = in_value = False
+                key_bytes = []
+                value_text = []
             continue
         if s.startswith('key:'):
             in_key = True
