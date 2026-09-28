@@ -39,6 +39,7 @@ mismatch the state is reset; only caches and in-flight pendings are
 lost (at most 300 seconds of unresolved swaps).
 """
 import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
+import importlib.util
 from pathlib import Path
 
 
@@ -144,6 +145,16 @@ STATE_VERSION = 3
 
 SELF_DIR = Path(__file__).resolve().parent
 CLI      = SELF_DIR / "bpftune-cli.py"
+
+# Import the CLI module once at daemon startup (avoids per-cycle subprocess).
+# The hyphen in bpftune-cli.py means we can't use a normal import.
+_cli_mod = None
+try:
+    _spec = importlib.util.spec_from_file_location("bpftune_cli", str(CLI))
+    _cli_mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_cli_mod)
+except Exception as _e:
+    print("collector: failed to import CLI module: %s" % _e, file=sys.stderr)
 
 CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
@@ -823,8 +834,47 @@ def collect_swaps(map_data):
 
 
 def run_cli_snapshot(map_raw=""):
-    if not CLI.exists():
+    """Call collect_all() directly — no subprocess, no Python startup.
+
+    The CLI module is imported once at daemon startup (_cli_mod).
+    The BPF map dump is passed via env var (same interface the CLI
+    already uses) so read_map() picks it up without calling bpftool.
+    """
+    if _cli_mod is None:
+        print("collector: CLI module not imported, falling back to subprocess", file=sys.stderr)
+        return _run_cli_subprocess(map_raw)
+    tmp_map = None
+    try:
+        if map_raw:
+            try:
+                fd, tmp_map = tempfile.mkstemp(
+                    prefix=".map-", suffix=".json", dir=str(HIST))
+                with os.fdopen(fd, "w") as f:
+                    f.write(map_raw)
+                os.environ["BPFTUNE_MAP_DUMP_JSON"] = tmp_map
+            except OSError:
+                tmp_map = None
+        doc = _cli_mod.collect_all()
+        tmp = str(CURRENT_JSON) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(doc, f, separators=(",", ":"))
+        os.replace(tmp, str(CURRENT_JSON))
+        return doc
+    except Exception as e:
+        print("collector: CLI snapshot failed: %s" % e, file=sys.stderr)
         return None
+    finally:
+        if tmp_map:
+            try:
+                os.unlink(tmp_map)
+            except OSError:
+                pass
+        # Clean up env var so next cycle doesn't use stale map dump
+        os.environ.pop("BPFTUNE_MAP_DUMP_JSON", None)
+
+
+def _run_cli_subprocess(map_raw=""):
+    """Fallback: subprocess call (used if importlib import failed)."""
     env = os.environ.copy()
     tmp_map = None
     try:
@@ -850,7 +900,7 @@ def run_cli_snapshot(map_raw=""):
         os.replace(tmp, str(CURRENT_JSON))
         return doc
     except Exception as e:
-        print("collector: CLI snapshot failed: %s" % e, file=sys.stderr)
+        print("collector: CLI subprocess failed: %s" % e, file=sys.stderr)
         return None
     finally:
         if tmp_map:
