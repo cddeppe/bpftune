@@ -311,25 +311,21 @@ def reimport_labels_from_aliases():
     return added
 
 
-def auto_fold():
-    """Line-by-line edit. Only manage IPs in labels with >1 IP.
-    Single-IP-label IPs are treated as FOREIGN (preserved)."""
-    labels = load_labels()
-    bpf_stats = bpf_remote_host_stats()
+def _compute_desired_folds(labels, bpf_stats):
+    """Phase 1: compute which IPs should fold to which canonical.
 
+    Returns (desired_rules, managed_canonicals, managed_ips, results).
+    Only labels with >1 IP are managed; single-IP labels are FOREIGN."""
     by_label = defaultdict(list)
     for ip, lbl in labels.items():
         by_label[lbl].append(ip)
 
-    # KEY FIX: only treat IPs as "managed" if they're part of a label
-    # with >1 IP.  Single-IP-label IPs are FOREIGN (preserved).
-    managed_ips_for_fold = set()
+    managed_ips = set()
     for label, ips in by_label.items():
-        if not label or len(ips) < 2:
-            continue
-        managed_ips_for_fold.update(ips)
+        if label and len(ips) >= 2:
+            managed_ips.update(ips)
 
-    desired_managed_rules = []
+    desired_rules = []
     managed_canonicals = {}
     results = []
 
@@ -340,73 +336,55 @@ def auto_fold():
         folded = [ip for ip in ips if ip != canonical]
         deleted = []
         for ip in folded:
-            desired_managed_rules.append({
-                "from": ip, "to": canonical, "label": label,
-            })
+            desired_rules.append({"from": ip, "to": canonical, "label": label})
             managed_canonicals[ip] = canonical
             ok, err = bpf_aliases_update(ip, canonical)
             if not ok:
-                sys.stderr.write(
-                    "[auto-fold] BPF aliases update %s -> %s failed: %s\n" %
-                    (ip, canonical, err)
-                )
+                sys.stderr.write("[auto-fold] BPF aliases update %s -> %s failed: %s\n" % (ip, canonical, err))
             st = bpf_stats.get(ip)
             if st and st.get("swaps", 0) == 0:
                 ok2, _ = bpf_remote_host_delete(ip)
                 if ok2:
                     deleted.append(ip)
-        results.append({
-            "label": label,
-            "canonical": canonical,
-            "folded": folded,
-            "deleted_buckets": deleted,
-        })
+        results.append({"label": label, "canonical": canonical, "folded": folded, "deleted_buckets": deleted})
 
-    desired_by_from = {r["from"]: r for r in desired_managed_rules}
+    return desired_rules, managed_canonicals, managed_ips, results
 
-    try:
-        with open(ALIASES_FILE) as f:
-            original_text = f.read()
-    except OSError:
-        original_text = ""
 
+def _rewrite_aliases_lines(original_text, desired_by_from, managed_ips, managed_canonicals):
+    """Phase 2: rewrite aliases file line-by-line.
+
+    For each existing line:
+      - managed IP: update to desired canonical (or remove if no longer desired)
+      - foreign/single-IP: preserve, but fix transitive folds
+    Returns (new_lines, seen_froms, removed_folds, new_rules_to_add).
+    """
     new_lines = []
     seen_froms = set()
     removed_folds = []
 
     for line in original_text.splitlines():
         stripped = line.strip()
-
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
             new_lines.append(line)
             continue
-
-        if "=" not in stripped:
-            new_lines.append(line)
-            continue
-
         try:
             lhs, rhs = stripped.split("=", 1)
             from_ip = lhs.strip()
             rest = rhs.strip().split()
             if not rest:
-                new_lines.append(line)
-                continue
+                new_lines.append(line); continue
             to_ip = rest[0]
-            label = rest[1] if len(rest) > 1 else ""
         except (ValueError, IndexError):
-            new_lines.append(line)
-            continue
+            new_lines.append(line); continue
 
-        # KEY FIX: use managed_ips_for_fold, NOT managed_ips
-        if from_ip in managed_ips_for_fold:
+        if from_ip in managed_ips:
             if from_ip in desired_by_from:
                 desired = desired_by_from[from_ip]
                 if to_ip != desired["to"]:
-                    new_line = from_ip + " = " + desired["to"]
-                    if desired.get("label"):
-                        new_line += " " + desired["label"]
-                    new_lines.append(new_line)
+                    nl = from_ip + " = " + desired["to"]
+                    if desired.get("label"): nl += " " + desired["label"]
+                    new_lines.append(nl)
                 else:
                     new_lines.append(line)
                 seen_froms.add(from_ip)
@@ -414,33 +392,59 @@ def auto_fold():
                 bpf_aliases_delete(from_ip)
                 removed_folds.append(from_ip)
         else:
-            # FOREIGN or single-IP-managed: PRESERVE
+            # FOREIGN or single-IP-managed: PRESERVE, fix transitive folds
             if to_ip in managed_canonicals:
                 new_to = managed_canonicals[to_ip]
                 if new_to != to_ip:
-                    new_line = line.replace(to_ip, new_to, 1)
-                    new_lines.append(new_line)
+                    new_lines.append(line.replace(to_ip, new_to, 1))
                     bpf_aliases_update(from_ip, new_to)
                 else:
                     new_lines.append(line)
             else:
                 new_lines.append(line)
 
-    new_rules_to_add = [r for r in desired_managed_rules
-                        if r["from"] not in seen_froms]
-
+    new_rules_to_add = [r for r in desired_by_from.values() if r["from"] not in seen_froms]
     if new_rules_to_add:
         if new_lines and new_lines[-1].strip():
             new_lines.append("")
         new_lines.append("# auto-fold managed rules (added by labels-api.py auto_fold)")
         for r in new_rules_to_add:
-            line = r["from"] + " = " + r["to"]
-            if r.get("label"):
-                line += " " + r["label"]
-            new_lines.append(line)
+            nl = r["from"] + " = " + r["to"]
+            if r.get("label"): nl += " " + r["label"]
+            new_lines.append(nl)
 
+    return new_lines, seen_froms, removed_folds, new_rules_to_add
+
+
+def auto_fold():
+    """Reconcile aliases file with labels: fold multi-IP labels to one canonical.
+
+    Three phases:
+      1. _compute_desired_folds — group labels, pick canonicals, update BPF
+      2. _rewrite_aliases_lines — line-by-line file edit preserving foreign rules
+      3. atomic write with backup + stderr summary
+
+    Only labels with >1 IP are managed; single-IP-label IPs are FOREIGN (preserved).
+    """
+    labels = load_labels()
+    bpf_stats = bpf_remote_host_stats()
+
+    # Phase 1: compute desired folds + update BPF aliases map
+    desired_rules, managed_canonicals, managed_ips, results = _compute_desired_folds(labels, bpf_stats)
+    desired_by_from = {r["from"]: r for r in desired_rules}
+
+    # Phase 2: rewrite aliases file
+    try:
+        with open(ALIASES_FILE) as f:
+            original_text = f.read()
+    except OSError:
+        original_text = ""
+
+    new_lines, seen_froms, removed_folds, new_rules_to_add = _rewrite_aliases_lines(
+        original_text, desired_by_from, managed_ips, managed_canonicals)
     new_text = "\n".join(new_lines) + "\n"
 
+    # Phase 3: atomic write with backup
     if new_text != original_text:
         try:
             backup = ALIASES_FILE + ".bak." + str(int(time.time()))
@@ -461,9 +465,7 @@ def auto_fold():
         sys.stderr.write(
             "[auto-fold] %s: %d -> %d lines (managed_fold: %d, removed: %d, appended: %d)\n" %
             (ALIASES_FILE, len(original_text.splitlines()), len(new_lines),
-             len(desired_managed_rules), len(removed_folds),
-             len(new_rules_to_add))
-        )
+             len(desired_rules), len(removed_folds), len(new_rules_to_add)))
 
     if removed_folds:
         results.append({"removed_folds": removed_folds})
