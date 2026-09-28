@@ -2094,13 +2094,15 @@
       var ipText = count > 1 ? (count + ' IPs') : g.ips[0];
       html += '<tr><td><input type="text" value="' + _le_esc(label) + '" data-old-label="' + _le_esc(label) + '" class="label-edit-input" data-ips=' + JSON.stringify(g.ips).replace(/"/g,'&quot;') + ' style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
         '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
-        (count > 1 ? ' <button onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
+        (count > 1 ? ' <button id="le-btn-' + _le_esc(label) + '" onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
         '</td><td></td></tr>';
       // Show individual IPs with delete buttons
       g.ips.forEach(function(ip, idx) {
         var style = count > 1 ? ' style="display:none"' : '';
-        html += '<tr class="le-ips-' + _le_esc(label) + '"' + style + '><td colspan="2" style="padding-left:24px;font-size:11px">' + _le_esc(ip) + '</td>' +
-          '<td><button onclick="_le_del_ip(\'' + _le_esc(ip) + '\')" style="font-size:10px;padding:0 4px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">x</button></td></tr>';
+        html += '<tr class="le-ips-' + _le_esc(label) + '"' + style + '><td colspan="2" style="padding-left:24px;font-size:11px">' +
+          '<span>' + _le_esc(ip) + '</span>' +
+          ' <button onclick="_le_del_ip(\'' + _le_esc(ip) + '\')" style="font-size:10px;padding:0 4px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad);margin-left:6px">x</button>' +
+          '</td><td></td></tr>';
       });
     });
     document.getElementById('label-rows').innerHTML = html;
@@ -2134,9 +2136,17 @@
 
   function _le_toggle(label) {
     var rows = document.querySelectorAll('.le-ips-' + label);
+    var expanded = false;
     for (var i = 0; i < rows.length; i++) {
-      rows[i].style.display = (rows[i].style.display === 'none') ? '' : 'none';
+      if (rows[i].style.display === 'none' || rows[i].style.display === '') {
+        rows[i].style.display = '';
+        expanded = true;
+      } else {
+        rows[i].style.display = 'none';
+      }
     }
+    var btn = document.getElementById('le-btn-' + label);
+    if (btn) btn.textContent = expanded ? 'hide' : 'show';
   }
   function _le_del_ip(ip) {
     if (!confirm('Remove ' + ip + '?')) return;
