@@ -2096,6 +2096,33 @@
     });
     document.getElementById('label-rows').innerHTML = html;
   }
+  function addLabel() {
+    var raw = document.getElementById('new-ip').value.trim();
+    var label = document.getElementById('new-label').value.trim();
+    if (!raw || !label) return;
+    var ips = raw.split(/[\s,]+/).filter(function(x) { return x.length > 0; });
+    ips = ips.map(function(ip) { return ip.split('/')[0]; });
+    if (ips.length === 0) return;
+    if (ips.length === 1) {
+      saveLabel(ips[0], label);
+    } else {
+      fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips: ips, label: label})})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok) {
+            _le_render(d.labels || {}, d.groups || {});
+            if (window.__liveFetch) window.__liveFetch();
+          } else {
+            alert('Error: ' + JSON.stringify(d));
+          }
+        })
+        .catch(function(err) { alert('Fetch error: ' + err); });
+    }
+    document.getElementById('new-ip').value = '';
+    document.getElementById('new-label').value = '';
+  }
+
   function _le_toggle(label) {
     var rows = document.querySelectorAll('.le-ips-' + label);
     for (var i = 0; i < rows.length; i++) {
@@ -2115,32 +2142,7 @@
       .then(function(r) { return r.json(); })
       .then(function(d) { _le_render(d.labels||{}, d.groups||{}); if (window.__liveFetch) window.__liveFetch(); });
   }
-  function addLabel() {
-    var raw = document.getElementById('new-ip').value.trim();
-    var label = document.getElementById('new-label').value.trim();
-    if (!raw || !label) return;
-    // Parse multiple IPs (space/comma/newline separated)
-    var ips = raw.split(/[\s,]+/).filter(function(x) { return x; });
-    // Strip CIDR suffixes (/24, /16, /32, etc.)
-    ips = ips.map(function(ip) { return ip.split('/')[0]; });
-    if (ips.length === 0) return;
-    if (ips.length === 1) {
-      saveLabel(ips[0], label);
-    } else {
-      // Multiple IPs: send as a group POST
-      fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ips: ips, label: label})})
-        .then(function(r) { return r.json(); })
-        .then(function(d) {
-          if (d.ok) {
-            _le_render(d.labels || {}, d.groups || {});
-            if (window.__liveFetch) window.__liveFetch();
-          }
-        });
-    }
-    document.getElementById('new-ip').value = '';
-    document.getElementById('new-label').value = '';
-  }
+
   document.addEventListener('blur', function(e) {
     if (e.target && e.target.classList && e.target.classList.contains('label-edit-input')) {
       var newLabel = e.target.value.trim();
