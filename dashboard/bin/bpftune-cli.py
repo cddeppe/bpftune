@@ -24,7 +24,8 @@ _LABELS_MTIME = None
 def _load_labels():
     """0.4.79: /var/lib/bpftune/aliases.labels.json {canonical_ip: label}."""
     global _LABELS_CACHE, _LABELS_MTIME
-    import os as _os, json as _json
+    import os
+import ipaddress as _os, json as _json
     path = "/var/lib/bpftune/aliases.labels.json"
     try:
         m = _os.path.getmtime(path)
@@ -146,7 +147,10 @@ def _load_aliases_labels():
                 to_ip = rest[0]
                 label = rest[1] if len(rest) > 1 else ""
                 if label:
-                    d[to_ip] = label
+                    try:
+                        d[str(ipaddress.ip_address(to_ip))] = label
+                    except (ValueError, TypeError):
+                        d[to_ip] = label
     except OSError:
         d = {}
     _ALIASES_LABEL_CACHE = d
@@ -154,14 +158,27 @@ def _load_aliases_labels():
     return d
 
 
+def _normalize_ip(ip_str):
+    """Normalize IP to canonical form for dict lookup.
+    Ensures '2603:c020::' and '2603:c020:0:0:0:0:0:0' both match."""
+    try:
+        return str(ipaddress.ip_address(ip_str))
+    except (ValueError, TypeError):
+        return ip_str
+
+
 def _label_for(addr):
     if not addr:
         return addr
     addr = _fold_v6(addr)
     addr = _canon_bucket(addr)
+    addr = _normalize_ip(addr)
+    # Check labels.json (normalize keys for matching)
     labels = _load_labels()
-    if addr in labels:
-        return labels[addr]
+    for k, v in labels.items():
+        if k == addr or _normalize_ip(k) == addr:
+            return v
+    # Check aliases (keys already normalized at load time)
     alias_labels = _load_aliases_labels()
     if addr in alias_labels:
         return alias_labels[addr]
