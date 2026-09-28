@@ -248,9 +248,10 @@ class TestDataPipeline(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cli = _load_cli()
+        cls.log_mod = getattr(cls.cli, 'bpftune_log', cls.cli)
 
     def setUp(self):
-        self.cli._SWMS_CACHE = {}
+        self.log_mod._SWMS_CACHE = {}
 
     def test_swaps_mets_srates_parses_mock_log(self):
         sw, met, srate = self.cli._swaps_mets_srates(MOCK_LOG)
@@ -345,13 +346,15 @@ class TestCollectAllIntegration(unittest.TestCase):
         self.cli._SWMS_CACHE = {}
 
     def tearDown(self):
-        self.cli.find_log = self._orig_find_log
-        self.cli.tail_recent = self._orig_tail
-        self.cli.read_map = self._orig_read_map
-        self.cli._run_writeback_and_get_swaps = self._orig_wb
-        self.cli.data_build = self._orig_build
-        self.cli.data_system = self._orig_system
-        self.cli.data_tunables = self._orig_tunables
+        for mod in (self.log_mod, self.cli):
+            mod.find_log = self._orig_find_log
+            mod.tail_recent = self._orig_tail
+            mod.read_map = self._orig_read_map
+        for mod in (self.data_mod, self.cli):
+            mod._run_writeback_and_get_swaps = self._orig_wb
+            mod.data_build = self._orig_build
+            mod.data_system = self._orig_system
+            mod.data_tunables = self._orig_tunables
         if self._orig_env is None:
             os.environ.pop("BPFTUNE_MAP_DUMP_JSON", None)
         else:
