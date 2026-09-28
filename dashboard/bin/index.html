@@ -1478,7 +1478,7 @@
     var doc = state.bucketDoc;
     if (!doc) return;
     var bid = $("bucket").value;
-    var sub = $("nowbucket"); if (sub) sub.textContent = bid;
+    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid]) || bid;
     var L = doc.last || {};
     var setT = function (id, s) { var e = $(id); if (e) e.textContent = s; };
     setT("n_inst", fmtN(L.instances));
