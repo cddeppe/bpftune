@@ -553,6 +553,58 @@ def tail_recent(budget=LOG_TAIL_BYTES):
     return "".join(reversed(chunks))
 
 
+# Incremental log reading — daemon mode tracks offsets across cycles.
+# Only reads NEW bytes since last call.  Returns (new_text, new_offsets).
+# If the file shrank (rotation), reads from start.
+_incremental_offsets = {}
+
+def tail_incremental(offsets=None):
+    """Read only new log lines since last call.
+
+    Args:
+        offsets: dict {filepath_str: byte_offset}.  If None, uses
+            module-level _incremental_offsets (persistent in daemon mode).
+
+    Returns (new_text, updated_offsets).  On first call (empty offsets),
+    reads the full tail (same as tail_recent) so the first cycle has data.
+    """
+    if offsets is None:
+        offsets = _incremental_offsets
+    paths = sorted(Path("/var/log").glob("bpftune-met-*.log"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if not paths:
+        return "", offsets
+    chunks = []
+    new_offsets = dict(offsets)  # copy
+    for p in paths:
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        key = str(p)
+        prev_offset = offsets.get(key, -1)
+        # If file shrank (rotation) or first read, read last 2MB
+        if prev_offset < 0 or size < prev_offset:
+            take = min(size, LOG_TAIL_BYTES)
+            start = size - take
+        else:
+            # Read only new bytes since last read
+            start = prev_offset
+            if start >= size:
+                continue  # no new data
+        try:
+            with open(p, "rb") as f:
+                f.seek(start)
+                data = f.read()
+            chunks.append(data.decode("utf-8", errors="replace"))
+            new_offsets[key] = size
+        except OSError:
+            continue
+    # Update module-level cache
+    _incremental_offsets.clear()
+    _incremental_offsets.update(new_offsets)
+    return "".join(reversed(chunks)), new_offsets
+
 
 def _parse_plain_map(out):
     """Parse the plain-text (non-JSON) bpftool map dump format.
