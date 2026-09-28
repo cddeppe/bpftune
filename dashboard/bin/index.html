@@ -1057,7 +1057,7 @@
                pct.toFixed(0) + '%"></i></span>' + pct.toFixed(0) + '%</td>';
       }
       html += '<tr>' +
-        '<td class="mono name">' + esc(r.dest) + '</td>' +
+        '<td class="mono name">' + esc(shortAddr(r.dest)) + '</td>' +
         '<td class="mono">' + fmtN(r.inst) + '</td>' +
         '<td class="mono dim">' + (r.rtt_us / 1000).toFixed(1) + ' ms</td>' +
         '<td class="mono">' + r.ref_mbps.toFixed(1) + '</td>' +
@@ -1373,7 +1373,14 @@
   function shortAddr(a) {
     a = a || "";
     if (window.__labels && window.__labels[a]) return window.__labels[a];
-    if (a.indexOf("v6:") === 0) return a;
+    if (a.indexOf("v6:") === 0) {
+      var hex = a.substring(3);
+      if (hex.length >= 8) {
+        var ip6 = hex.substring(0,4) + ":" + hex.substring(4,8) + "::";
+        if (window.__labels && window.__labels[ip6]) return window.__labels[ip6];
+      }
+      return a;
+    }
     var p = a.split(".");
     if (p.length === 4) return p[0] + "." + p[1] + ".0.0";
     return a;
