@@ -1084,7 +1084,7 @@ def data_swap_outcomes(text):
         "sustained": _finalize_outcome(sust_counts),
     }, swaps_list)
     _result["swaps_list"] = [
-        {"dest": _label_for(s.get("remote_host")) if s.get("remote_host") else None,
+        {"dest": _resolve_remote_host(s.get("remote_host")) if s.get("remote_host") else None,
          "outcome": s.get("outcome"),
          "outcome_sustained": s.get("outcome_sustained"),
          "cookie": s.get("cookie"), "ts": s.get("ts")}
@@ -1461,6 +1461,27 @@ def data_bucket_ips(text):
 
 
 
+
+def _resolve_remote_host(rh):
+    """Convert remote_host to a form _label_for can look up.
+    Handles raw 32-bit integers (e.g., '1378604897' -> '82.43.215.97')."""
+    if not rh:
+        return None
+    labeled = _label_for(rh)
+    if labeled != rh:
+        return labeled
+    try:
+        n = int(rh)
+        if n > 0:
+            dotted = "%d.%d.%d.%d" % (
+                (n >> 24) & 0xff, (n >> 16) & 0xff,
+                (n >> 8) & 0xff, n & 0xff)
+            labeled = _label_for(dotted)
+            return labeled if labeled != dotted else dotted
+    except (ValueError, TypeError):
+        pass
+    return rh
+
 def _proofs_with_dest(text):
     """Per-proof data with labeled dest for client-side bucket filtering."""
     cdest = _cookie_dest_map(text)
@@ -1474,7 +1495,7 @@ def _proofs_with_dest(text):
         c = m.group(1)
         a = int(m.group(2))
         v4, v6 = cdest.get(c, (None, None))
-        dest = _label_for(v4 or v6) if (v4 or v6) else None
+        dest = _resolve_remote_host(v4 or v6) if (v4 or v6) else None
         out.append({
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
             "dest": dest,
@@ -1498,7 +1519,7 @@ def _rate_samples_with_dest(text):
             continue
         c = mc.group(1)
         v4, v6 = cdest.get(c, (None, None))
-        dest = _label_for(v4 or v6) if (v4 or v6) else None
+        dest = _resolve_remote_host(v4 or v6) if (v4 or v6) else None
         out.append({
             "dest":  dest,
             "thr":   int(mt.group(1)),

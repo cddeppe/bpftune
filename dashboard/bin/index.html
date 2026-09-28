@@ -1521,6 +1521,7 @@
       _bs.add(new Option('All Buckets', 'all'), 0);
     }
     if (_bs && _prevVal) { _bs.value = _prevVal; }
+    else if (_bs) { _bs.value = 'all'; }
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
