@@ -1913,18 +1913,16 @@
       if (!groups[label]) groups[label] = [];
       groups[label].push(ip);
     });
-    // Render
     var html = '';
     Object.keys(groups).sort().forEach(function(label) {
       var ips = groups[label];
       var count = ips.length;
       var ipText = count > 1 ? (count + ' IPs') : ips[0];
-      html += '<tr><td><b>' + _le_esc(label) + '</b></td>' +
+      html += '<tr><td><input type="text" value="' + _le_esc(label) + '" data-old-label="' + _le_esc(label) + '" class="label-edit-input" data-ips=' + JSON.stringify(ips) + ' style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
         '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
         (count > 1 ? ' <button onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
         '</td>' +
         '<td><button onclick="_le_del_group(\'' + _le_esc(label) + '\',' + JSON.stringify(ips).replace(/"/g,'&quot;') + ')" style="font-size:11px;padding:2px 8px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Del</button></td></tr>';
-      // Show individual IPs for multi-IP groups (hidden by default)
       if (count > 1) {
         html += '<tr id="le-' + _le_esc(label) + '" style="display:none"><td colspan="3" style="padding-left:24px">';
         ips.forEach(function(ip) { html += '<div>' + _le_esc(ip) + '</div>'; });
@@ -1966,7 +1964,28 @@
   }
   document.addEventListener('blur', function(e) {
     if (e.target && e.target.classList && e.target.classList.contains('label-edit-input')) {
-      saveLabel(e.target.getAttribute('data-ip'), e.target.value.trim());
+      var newLabel = e.target.value.trim();
+      var oldLabel = e.target.getAttribute('data-old-label');
+      var ips = JSON.parse(e.target.getAttribute('data-ips') || '[]');
+      if (newLabel && newLabel !== oldLabel) {
+        // Rename: delete old, add new for each IP
+        ips.forEach(function(ip) {
+          fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ip: ip, label: ''})});
+        });
+        setTimeout(function() {
+          ips.forEach(function(ip) {
+            fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ip: ip, label: newLabel})});
+          });
+          setTimeout(function() {
+            fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
+              _le_render(d.labels||{});
+              if (window.__liveFetch) window.__liveFetch();
+            });
+          }, 200);
+        }, 200);
+      }
     }
   }, true);
   document.addEventListener('click', function(e) {
