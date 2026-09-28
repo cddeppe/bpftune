@@ -95,7 +95,6 @@ class H(BaseHTTPRequestHandler):
             if not label:
                 for ip in ips: labels.pop(ip,None)
             else:
-                ips=[auto_mask(ip,labels)[0] for ip in ips]
                 for ip in ips: labels[ip]=label
             save_labels(labels)
             aliases=load_aliases()
