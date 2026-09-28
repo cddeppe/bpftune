@@ -2098,6 +2098,7 @@
                   ' (' + b.points + ')</option>';
         }
         bs.innerHTML = html;
+        bs.add(new Option("All Buckets", "all"), 0);
         var saved_bucket = null;
         try { saved_bucket = localStorage.getItem("bpftune.bucket"); } catch (e) {}
         var still_there = false;
@@ -2106,7 +2107,7 @@
             if (state.meta.buckets[q].id === saved_bucket) { still_there = true; break; }
           }
         }
-        bs.value = still_there ? saved_bucket : state.meta.default_bucket;
+        bs.value = still_there ? saved_bucket : "all";
 
         var rs = $("range");
         var rhtml = "";
