@@ -1282,10 +1282,53 @@ def _log_window(text):
             "swap_count": len(sw), "age_min": age_min}
 
 
+
+def _run_writeback_and_get_swaps(text):
+    """Run the writeback BEFORE the leaderboard reads the BPF map.
+    Returns the swaps_list for data_swap_outcomes to reuse."""
+    sw, met, srate = _swaps_mets_srates(text)
+    swaps_list = []
+    for row in sw:
+        ts, c = row[0], row[1]
+        fa, ta = row[2], row[3]
+        o = _outcome_composite(met, c, ts)
+        o2 = _outcome_srate(srate, c, ts)
+        o3 = _outcome_sustained(srate, c, ts)
+        remote_host = None
+        _dest6 = row[10] if len(row) > 10 else None
+        if _dest6:
+            try:
+                _n6 = int(_dest6)
+                if _n6 != 0:
+                    remote_host = "%x:%x::" % ((_n6>>16)&0xFFFF, _n6&0xFFFF)
+            except: pass
+        if not remote_host:
+            _dest = row[9] if len(row) > 9 else None
+            if _dest:
+                try:
+                    _n = int(_dest)
+                    if _n != 0:
+                        remote_host = "%d.%d.%d.%d" % ((_n>>24)&0xff,(_n>>16)&0xff,(_n>>8)&0xff,_n&0xff)
+                except: pass
+        swaps_list.append({'ts':ts,'cookie':c,'from_alg':fa,'to_alg':ta,
+                          'remote_host':remote_host,'outcome':o,
+                          'outcome_srate':o2,'outcome_sustained':o3})
+    try:
+        from streak_writeback import writeback_streaks
+        writeback_streaks(swaps_list)
+    except Exception as e:
+        import sys; print(f'[writeback] {e}', file=sys.stderr)
+    return swaps_list
+
+
 def collect_all():
     logpath = find_log()
     hosts   = read_map()
     text    = tail_recent()
+    # Run the writeback FIRST (corrects BPF map streaks before leaderboard reads them)
+    _run_writeback_and_get_swaps(text)
+    # Re-read the map (to get corrected streaks)
+    hosts   = read_map()
     return {
         "generated_ts":   int(time.time()),
         "log_window":     _log_window(text),

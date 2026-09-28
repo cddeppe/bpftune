@@ -10,7 +10,7 @@ OFF_METRICS_ARRAY=OFF_RATE_HIST+SIZEOF_RATE_HIST
 SIZEOF_REMOTE_HOST=OFF_METRICS_ARRAY+(NUM_TCP_CONN_METRICS*SIZEOF_TCP_CONN_METRIC)
 WRITEBACK_WINDOW=8
 _MASK_BITS_V4=16; _MASK_BITS_V6=32
-WB_THROTTLE_FILE='/tmp/.bpftune_writeback_last'; WB_THROTTLE_SEC=300
+WB_THROTTLE_FILE='/tmp/.bpftune_writeback_last'; WB_THROTTLE_SEC=0
 _PREFIX_FIELDS=('min_rtt','max_rate_delivered','instances','selection_count','best_i','best_v','second_i','second_v','rate_best_i','rate_best_v','rate_second_i','rate_second_v','rtt_low_streak','rtt_low_min')
 _METRIC_FIELDS_U64=('state_flags','greedy_count','metric_count','metric_value')
 _METRIC_FIELDS_U16=('sockets_alive','sockets_good','sockets_proved','rate_ema','swap_score')
@@ -138,11 +138,12 @@ def _masked_ip(ip_str):
 
 
 def writeback_streaks(swaps):
-    try:
-        if os.path.exists(WB_THROTTLE_FILE):
-            age=time.time()-os.path.getmtime(WB_THROTTLE_FILE)
-            if age<WB_THROTTLE_SEC: return
-    except OSError: pass
+    if WB_THROTTLE_SEC>0:
+        try:
+            if os.path.exists(WB_THROTTLE_FILE):
+                age=time.time()-os.path.getmtime(WB_THROTTLE_FILE)
+                if age<WB_THROTTLE_SEC: return
+        except OSError: pass
     map_id=_resolve_remote_host_map_id()
     if map_id is None: return
     _detect_mask(map_id)
