@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
 """
 labels-api.py - IP label/group editor API for the bpftune dashboard.
+Port 8081. nginx proxies /api/labels here.
 
-Serves on port 8081. nginx proxies /api/labels to this server.
+AUTO-FOLD BEHAVIOR (v2 - line-by-line, preserves formatting)
 
-AUTO-FOLD BEHAVIOR (the whole point of this file)
-  Every POST/DELETE triggers auto_fold().  For each label currently on >1 IP,
-  pick a canonical and fold the others into it:
+  Every POST/DELETE triggers auto_fold(). For each label currently on >1
+  IP, pick a canonical and fold the others into it:
 
-    canonical pick:  (1) most BPF remote_host instances  (live data wins)
-                     (2) tiebreak:  v6 wins over v4
-                     (3) tiebreak:  broader mask wins (more zero bytes at end)
+    canonical pick:  (1) most BPF remote_host instances (live data wins)
+                     (2) tiebreak: v6 wins over v4
+                     (3) tiebreak: broader mask (more trailing zero bytes)
 
-  Three categories of rules in /etc/bpftune/aliases:
-    MANAGED  - from-IP is in labels.json  -> we own it, replace with our
-                                            desired rule (or delete if label
-                                            is now on a single IP)
-    FOREIGN  - from-IP NOT in labels.json -> PRESERVE (user's manual rules
-                                            like vps-us, vps-de, etc.)
-    TRANSITIVE - a FOREIGN rule whose `to` is a managed IP being folded ->
-                                            re-point `to` at the new canonical
-                                            so chained folds work (BPF aliases
-                                            lookup is single-shot, no chain)
+  The aliases file is edited LINE BY LINE - we never rewrite the whole
+  file. This preserves comments, blank lines, section headers, and
+  column alignment for rules we don't touch.
 
-  For each non-canonical managed IP:
-    1. write/update BPF aliases map entry (FROM=non_canonical -> TO=canonical)
-       -- immediate in-kernel effect, no bpftune restart
-    2. write/update /etc/bpftune/aliases  (persistent across restarts)
-    3. delete the stale BPF remote_host bucket for the non-canonical IP
-       if its swap_count == 0 (safe: no lost history)
+  Per-line action:
+    MANAGED rule (from-IP is in labels.json):
+      - in desired set: maybe replace `to` (one line edited)
+      - not in desired set: DELETE (line skipped)
+    FOREIGN rule (from-IP NOT in labels.json):
+      - if `to` is a managed IP being folded (transitive): edit `to` in
+        place via line.replace() - the rest of the line is untouched
+      - else: KEEP verbatim
+  New managed rules (not already in file): APPEND at the end under a
+  '# auto-fold managed rules' section.
+
+  The BPF aliases map (dest_alias_map) is updated live via bpftool - no
+  bpftune restart needed. Stale remote_host buckets (swap_count==0) are
+  deleted so the dropdown cleans up immediately.
 """
 import json
 import os
@@ -56,9 +57,6 @@ CORS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# File I/O (labels.json + aliases file)
-# ---------------------------------------------------------------------------
 def load_labels():
     try:
         with open(LABELS_FILE) as f:
@@ -103,36 +101,12 @@ def parse_aliases_rules(text):
     return rules
 
 
-def format_aliases_text(rules):
-    out = []
-    for r in rules:
-        line = r["from"] + " = " + r["to"]
-        if r.get("label"):
-            line += " " + r["label"]
-        out.append(line)
-    return ("\n".join(out) + "\n") if out else ""
-
-
 def load_aliases_rules():
     try:
         with open(ALIASES_FILE) as f:
             return parse_aliases_rules(f.read())
     except OSError:
         return []
-
-
-def save_aliases_rules(rules):
-    d = os.path.dirname(ALIASES_FILE) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(format_aliases_text(rules))
-        os.chmod(tmp, 0o644)
-        os.rename(tmp, ALIASES_FILE)
-    except OSError:
-        try: os.unlink(tmp)
-        except OSError: pass
-        raise
 
 
 # ---------------------------------------------------------------------------
@@ -214,29 +188,7 @@ def bpf_remote_host_stats():
         )
     except subprocess.CalledProcessError:
         return {}
-
     stats = {}
-    # bpftool output can be in two formats:
-    #   (a) plain text with "key:" / "value:" lines (no btf)
-    #   (b) JSON with "key" and "value" objects (with btf)
-    # Try JSON first (newer kernels have btf).
-    try:
-        # The plain "key: hex ..." format is what we get without btf.
-        # With btf, bpftool emits structured JSON.  Detect which.
-        if out.lstrip().startswith("["):
-            data = json.loads(out)
-            for entry in data:
-                kb = bytes(entry["key"]["in6_u"]["u6_addr8"])
-                vb = b""  # we'd need to walk value bytes; but we only need
-                          # first 40 bytes for instances + swap_count
-                # JSON-structured value is a dict, not raw bytes — skip
-                # the JSON path; fall through to plain-text parsing for
-                # the actual hex bytes.
-                pass
-    except (json.JSONDecodeError, KeyError):
-        pass
-
-    # Plain-text path: parse "key: hex ... value: hex ..." blocks
     blocks = out.split("\n\n")
     for blk in blocks:
         key_hex = None
@@ -299,18 +251,14 @@ def bpf_remote_host_delete(ip_str):
     return ok, r.stderr.strip() or r.stdout.strip()
 
 
-# ---------------------------------------------------------------------------
-# Canonical pick
-# ---------------------------------------------------------------------------
 def _pick_canonical(ips, bpf_stats):
     """Pick the canonical IP from a list.  Rules (in order):
        1. most BPF instances (live data wins)
        2. tiebreak: v6 over v4
-       3. tiebreak: broader mask (more zero bytes at end of address)
+       3. tiebreak: broader mask (more trailing zero bytes)
     """
     def score(ip):
         is_v6 = ":" in ip
-        # count trailing zero bytes (broader mask = more zeros)
         try:
             ipobj = ipaddress.ip_address(ip)
             packed = ipobj.packed
@@ -323,35 +271,39 @@ def _pick_canonical(ips, bpf_stats):
 
 
 # ---------------------------------------------------------------------------
-# AUTO-FOLD - the heart of this file
+# AUTO-FOLD - line-by-line edit, preserves formatting
 # ---------------------------------------------------------------------------
 def auto_fold():
-    """Scan labels.json.  For every label on >1 IP, fold the duplicates
-    into the canonical IP via the BPF aliases map + /etc/bpftune/aliases.
+    """Line-by-line edit of /etc/bpftune/aliases.
 
-    PRESERVES foreign rules (manual user rules whose `from` IP is not in
-    labels.json).  Handles transitive folds (foreign rules whose `to`
-    points at a managed IP being folded - re-point them at the new canonical).
+    PRESERVES: comments, blank lines, column alignment for rules we
+    don't need to change.
+
+    MODIFIES in place: foreign rules whose `to` is a managed IP being
+    folded (transitive - only `to` changes, rest of line preserved).
+
+    DELETES: managed rules whose `from` is no longer desired (e.g.
+    self-folds after canonical re-point).
+
+    REPLACES: managed rules whose `to` changed.
+
+    APPENDS: new managed rules at the end under a managed-rules section.
     """
     labels = load_labels()
     bpf_stats = bpf_remote_host_stats()
 
-    # IPs we manage (those with labels in labels.json)
     managed_ips = set(labels.keys())
 
-    # Group managed IPs by label
     by_label = defaultdict(list)
     for ip, lbl in labels.items():
         by_label[lbl].append(ip)
 
-    # Compute desired managed rules + map of (folded_ip -> new_canonical)
     desired_managed_rules = []
-    managed_canonicals = {}  # ip -> new_canonical (for IPs being folded)
+    managed_canonicals = {}
     results = []
+
     for label, ips in by_label.items():
-        if not label:
-            continue
-        if len(ips) < 2:
+        if not label or len(ips) < 2:
             continue
         canonical = _pick_canonical(ips, bpf_stats)
         folded = [ip for ip in ips if ip != canonical]
@@ -379,54 +331,106 @@ def auto_fold():
             "deleted_buckets": deleted,
         })
 
-    # Read old rules, separate into foreign (preserve) and managed (we own)
-    old_rules = load_aliases_rules()
-    foreign_rules = []
-    managed_old_rules = []
-    for r in old_rules:
-        if r["from"] in managed_ips:
-            managed_old_rules.append(r)
-        else:
-            foreign_rules.append(r)
+    desired_by_from = {r["from"]: r for r in desired_managed_rules}
 
-    # Handle transitive folds: if a foreign rule's `to` is a managed IP
-    # being folded, re-point `to` at the new canonical.  Also update the
-    # BPF map entry for that `from` IP.
-    for i, r in enumerate(foreign_rules):
-        if r["to"] in managed_canonicals:
-            new_to = managed_canonicals[r["to"]]
-            if new_to != r["to"]:
-                r = dict(r)
-                r["to"] = new_to
-                r["raw"] = r["from"] + " = " + new_to + (
-                    " " + r["label"] if r.get("label") else "")
-                foreign_rules[i] = r
-                # live-update BPF map
-                bpf_aliases_update(r["from"], new_to)
+    try:
+        with open(ALIASES_FILE) as f:
+            original_text = f.read()
+    except OSError:
+        original_text = ""
 
-    # Delete BPF entries for managed rules that are no longer desired
-    desired_froms = {r["from"] for r in desired_managed_rules}
+    new_lines = []
+    seen_froms = set()
     removed_folds = []
-    for r in managed_old_rules:
-        if r["from"] not in desired_froms:
-            bpf_aliases_delete(r["from"])
-            removed_folds.append(r["from"])
 
-    # Final file = foreign rules (preserved) + desired managed rules
-    final_rules = foreign_rules + desired_managed_rules
-    if old_rules != final_rules:
+    for line in original_text.splitlines():
+        stripped = line.strip()
+
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+
+        if "=" not in stripped:
+            new_lines.append(line)
+            continue
+
+        try:
+            lhs, rhs = stripped.split("=", 1)
+            from_ip = lhs.strip()
+            rest = rhs.strip().split()
+            if not rest:
+                new_lines.append(line)
+                continue
+            to_ip = rest[0]
+            label = rest[1] if len(rest) > 1 else ""
+        except (ValueError, IndexError):
+            new_lines.append(line)
+            continue
+
+        if from_ip in managed_ips:
+            if from_ip in desired_by_from:
+                desired = desired_by_from[from_ip]
+                if to_ip != desired["to"]:
+                    new_line = from_ip + " = " + desired["to"]
+                    if desired.get("label"):
+                        new_line += " " + desired["label"]
+                    new_lines.append(new_line)
+                else:
+                    new_lines.append(line)
+                seen_froms.add(from_ip)
+            else:
+                bpf_aliases_delete(from_ip)
+                removed_folds.append(from_ip)
+        else:
+            if to_ip in managed_canonicals:
+                new_to = managed_canonicals[to_ip]
+                if new_to != to_ip:
+                    new_line = line.replace(to_ip, new_to, 1)
+                    new_lines.append(new_line)
+                    bpf_aliases_update(from_ip, new_to)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+    new_rules_to_add = [r for r in desired_managed_rules
+                        if r["from"] not in seen_froms]
+
+    if new_rules_to_add:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append("# auto-fold managed rules (added by labels-api.py auto_fold)")
+        for r in new_rules_to_add:
+            line = r["from"] + " = " + r["to"]
+            if r.get("label"):
+                line += " " + r["label"]
+            new_lines.append(line)
+
+    new_text = "\n".join(new_lines) + "\n"
+
+    if new_text != original_text:
         try:
             backup = ALIASES_FILE + ".bak." + str(int(time.time()))
             shutil.copy2(ALIASES_FILE, backup)
         except OSError:
             pass
-        save_aliases_rules(final_rules)
-        # log what changed for the operator
+        d = os.path.dirname(ALIASES_FILE) or "."
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(new_text)
+            os.chmod(tmp, 0o644)
+            os.rename(tmp, ALIASES_FILE)
+        except OSError:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
         sys.stderr.write(
-            "[auto-fold] aliases file: %d rules -> %d rules "
-            "(foreign preserved: %d, managed: %d)\n" %
-            (len(old_rules), len(final_rules),
-             len(foreign_rules), len(desired_managed_rules))
+            "[auto-fold] %s: %d lines -> %d lines "
+            "(managed: %d desired, %d removed, %d appended)\n" %
+            (ALIASES_FILE, len(original_text.splitlines()), len(new_lines),
+             len(desired_managed_rules), len(removed_folds),
+             len(new_rules_to_add))
         )
 
     if removed_folds:
@@ -461,17 +465,13 @@ class LabelsHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ip": ip, "label": labels.get(ip, "")})
         else:
             aliases = [r["raw"] for r in load_aliases_rules()]
-            self._send_json(200, {
-                "labels": labels,
-                "aliases": aliases,
-            })
+            self._send_json(200, {"labels": labels, "aliases": aliases})
 
     def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path not in ("/api/labels", "/"):
             self._send_json(404, {"error": "not found"})
             return
-
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode()
@@ -479,9 +479,7 @@ class LabelsHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             self._send_json(400, {"error": "invalid JSON"})
             return
-
         labels = load_labels()
-
         if "ips" in req and isinstance(req["ips"], list):
             label = req.get("label", "").strip()
             ips = [ip.strip() for ip in req["ips"] if ip.strip()]
@@ -493,31 +491,22 @@ class LabelsHandler(BaseHTTPRequestHandler):
                     labels[ip] = label
             save_labels(labels)
             fold_results = auto_fold()
-            self._send_json(200, {
-                "ok": True, "labels": labels,
-                "fold_results": fold_results,
-            })
+            self._send_json(200, {"ok": True, "labels": labels,
+                                  "fold_results": fold_results})
             return
-
         ip = req.get("ip", "").strip()
         label = req.get("label", "").strip()
         if not ip:
             self._send_json(400, {"error": "ip is required"})
             return
-
         if not label:
             labels.pop(ip, None)
         else:
             labels[ip] = label
         save_labels(labels)
-
         fold_results = auto_fold()
-
-        self._send_json(200, {
-            "ok": True, "ip": ip, "label": label,
-            "labels": labels,
-            "fold_results": fold_results,
-        })
+        self._send_json(200, {"ok": True, "ip": ip, "label": label,
+                              "labels": labels, "fold_results": fold_results})
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
@@ -526,25 +515,16 @@ class LabelsHandler(BaseHTTPRequestHandler):
         if not ip:
             self._send_json(400, {"error": "ip is required"})
             return
-
         labels = load_labels()
         labels.pop(ip, None)
         save_labels(labels)
-
         fold_results = auto_fold()
-
-        self._send_json(200, {
-            "ok": True, "ip": ip,
-            "fold_results": fold_results,
-        })
+        self._send_json(200, {"ok": True, "ip": ip, "fold_results": fold_results})
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[labels-api] %s %s\n" % (self.client_address[0], fmt % args))
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint - startup auto_fold reconcile pass
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("[labels-api] startup auto-fold pass...", file=sys.stderr)
     try:
@@ -560,7 +540,6 @@ if __name__ == "__main__":
                       file=sys.stderr)
     except Exception as e:
         print("[labels-api] startup auto-fold failed: %s" % e, file=sys.stderr)
-
     print("[labels-api] listening on port %d" % PORT, file=sys.stderr)
     server = HTTPServer(("127.0.0.1", PORT), LabelsHandler)
     server.serve_forever()
