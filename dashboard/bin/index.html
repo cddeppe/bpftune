@@ -2047,6 +2047,7 @@
       bs.innerHTML = html;
       bs.add(new Option('All Buckets', 'all'), 0);
       bs.value = stillThere ? keep : 'all';
+      if (window.__current_doc) _reFilterPanels();
 
       var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                       .replace("T", " ").slice(0, 19) + "Z";
@@ -2108,6 +2109,7 @@
           }
         }
         bs.value = still_there ? saved_bucket : "all";
+        if (window.__current_doc) _reFilterPanels();
 
         var rs = $("range");
         var rhtml = "";
