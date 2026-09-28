@@ -2078,18 +2078,13 @@
     }).catch(function(err) { alert('Error: ' + err); });
   }
   function closeLabelEditor() { document.getElementById('label-modal').style.display = 'none'; }
-  function _le_render(labels, groups) {
-    // Merge: for each label, collect IPs from both labels + groups
+  function _le_render(labels) {
+    // Group IPs by label (labels.json is the single source of truth)
     var allLabels = {};
-    // From groups (the main aliases file)
-    Object.keys(groups).forEach(function(label) {
-      allLabels[label] = { to_ip: groups[label].to_ip, ips: groups[label].from_ips.slice() };
-    });
-    // From labels (the display labels file)
     Object.keys(labels).forEach(function(ip) {
       var label = labels[ip];
-      if (!allLabels[label]) allLabels[label] = { to_ip: ip, ips: [] };
-      if (ip !== allLabels[label].to_ip && allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
+      if (!allLabels[label]) allLabels[label] = { ips: [] };
+      if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
     });
     // Render
     var html = '';
@@ -2148,13 +2143,13 @@
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: ''})})
       .then(function(r) { return r.json(); })
-      .then(function(d) { _le_render(d.labels||{}, d.groups||{}); if (window.__liveFetch) window.__liveFetch(); });
+      .then(function(d) { _le_render(d.labels||{}); if (window.__liveFetch) window.__liveFetch(); });
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: label})})
       .then(function(r) { return r.json(); })
-      .then(function(d) { _le_render(d.labels||{}, d.groups||{}); if (window.__liveFetch) window.__liveFetch(); });
+      .then(function(d) { _le_render(d.labels||{}); if (window.__liveFetch) window.__liveFetch(); });
   }
 
   document.addEventListener('blur', function(e) {
@@ -2175,7 +2170,7 @@
           });
           setTimeout(function() {
             fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
-              _le_render(d.labels||{}, d.groups||{});
+              _le_render(d.labels||{});
               if (window.__liveFetch) window.__liveFetch();
             });
           }, 300);
