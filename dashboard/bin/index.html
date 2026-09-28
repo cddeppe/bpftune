@@ -1433,6 +1433,7 @@
   }
 
   function renderLiveState(doc) {
+    window.__current_doc = doc;
     renderLogWindow(doc);
     if (doc.now_mono) SERVER_NOW_MONO = doc.now_mono;
     renderBuild(doc.build || {});
