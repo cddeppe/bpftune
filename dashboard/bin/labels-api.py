@@ -62,6 +62,29 @@ def remove_alias_line(from_ip):
                     continue  # skip this line
             f.write(line)
 
+
+def get_bucket_ips():
+    """Parse BPF log for swap dest IPs, group by /16 mask."""
+    import subprocess, re, ipaddress
+    try:
+        out = subprocess.check_output(['journalctl', '-u', 'bpftune', '--no-pager', '-q',
+            '--since', '-2h', '-g', 'swap cookie'], text=True, stderr=subprocess.STDOUT, timeout=5)
+    except Exception:
+        return {}
+    buckets = {}
+    for line in out.splitlines():
+        m = re.search(r'dest=(\d+)', line)
+        if not m: continue
+        n = int(m.group(1))
+        if n == 0: continue
+        full = "%d.%d.%d.%d" % ((n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+        try:
+            masked = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(full)) & 0xFFFF0000))
+        except: continue
+        if masked not in buckets: buckets[masked] = []
+        if full not in buckets[masked]: buckets[masked].append(full)
+    return buckets
+
 class H(BaseHTTPRequestHandler):
     def _json(self,code,data):
         b=json.dumps(data).encode()
@@ -76,6 +99,8 @@ class H(BaseHTTPRequestHandler):
         qs=parse_qs(urlparse(self.path).query)
         labels=load_labels()
         groups=parse_aliases()
+        if urlparse(self.path).path == "/api/bucket-ips":
+            self._json(200, get_bucket_ips()); return
         if "ip" in qs:
             ip=qs["ip"][0]; self._json(200,{"ip":ip,"label":labels.get(ip,"")})
         else:
