@@ -2116,10 +2116,28 @@
       .then(function(d) { _le_render(d.labels||{}, d.groups||{}); if (window.__liveFetch) window.__liveFetch(); });
   }
   function addLabel() {
-    var ip = document.getElementById('new-ip').value.trim();
+    var raw = document.getElementById('new-ip').value.trim();
     var label = document.getElementById('new-label').value.trim();
-    if (!ip || !label) return;
-    saveLabel(ip, label);
+    if (!raw || !label) return;
+    // Parse multiple IPs (space/comma/newline separated)
+    var ips = raw.split(/[\s,]+/).filter(function(x) { return x; });
+    // Strip CIDR suffixes (/24, /16, /32, etc.)
+    ips = ips.map(function(ip) { return ip.split('/')[0]; });
+    if (ips.length === 0) return;
+    if (ips.length === 1) {
+      saveLabel(ips[0], label);
+    } else {
+      // Multiple IPs: send as a group POST
+      fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ips: ips, label: label})})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok) {
+            _le_render(d.labels || {}, d.groups || {});
+            if (window.__liveFetch) window.__liveFetch();
+          }
+        });
+    }
     document.getElementById('new-ip').value = '';
     document.getElementById('new-label').value = '';
   }
@@ -2196,7 +2214,7 @@
         <tbody id="label-rows"></tbody>
       </table>
       <div class="label-add" style="display:flex;gap:8px;margin-top:12px">
-        <input type="text" id="new-ip" placeholder="IP (e.g. 82.43.0.0)" style="flex:1;font-size:11px;border:1px solid var(--muted);padding:4px 8px;border-radius:3px">
+        <input type="text" id="new-ip" placeholder="IP(s) — space or comma separated, e.g. 76.76.2.0 76.76.10.0" style="flex:2;font-size:11px;border:1px solid var(--muted);padding:4px 8px;border-radius:3px">
         <input type="text" id="new-label" placeholder="Label (e.g. home)" style="flex:1;font-size:11px;border:1px solid var(--muted);padding:4px 8px;border-radius:3px">
         <button type="button" onclick="addLabel()" style="font-size:11px;padding:4px 12px;border:1px solid var(--muted);border-radius:3px;cursor:pointer;background:var(--good-dim)">Add</button>
       </div>
