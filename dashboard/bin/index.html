@@ -780,6 +780,9 @@
   }
 
   function renderBucketIps(buckets, labels) {
+    var unlabeled = {};
+    Object.keys(buckets).forEach(function(m) { if (!labels[m]) unlabeled[m] = buckets[m]; });
+    buckets = unlabeled;
     var html = '';
     Object.keys(buckets).sort(function(a,b) { return (labels[b]||b).localeCompare(labels[a]||a); }).forEach(function(masked) {
       var ips = buckets[masked];
