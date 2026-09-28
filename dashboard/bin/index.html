@@ -2089,7 +2089,7 @@
     Object.keys(labels).forEach(function(ip) {
       var label = labels[ip];
       if (!allLabels[label]) allLabels[label] = { to_ip: ip, ips: [] };
-      if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
+      if (ip !== allLabels[label].to_ip && allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
     });
     // Render
     var html = '';

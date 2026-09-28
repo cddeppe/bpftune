@@ -90,6 +90,21 @@ def load_aliases_rules():
         return []
 
 
+def build_groups_from_aliases():
+    """Parse aliases into {label: {to_ip, from_ips}} for the frontend."""
+    rules = load_aliases_rules()
+    groups = {}
+    for r in rules:
+        label = r.get("label", "")
+        if not label:
+            continue
+        if label not in groups:
+            groups[label] = {"to_ip": r["to"], "from_ips": []}
+        if r["from"] != r["to"]:
+            if r["from"] not in groups[label]["from_ips"]:
+                groups[label]["from_ips"].append(r["from"])
+    return groups
+
 def _bpftool_map_id(name_substr):
     try:
         out = subprocess.check_output(["bpftool", "map", "show"], text=True)
