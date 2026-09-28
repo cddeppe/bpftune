@@ -817,8 +817,8 @@ def _swaps_mets_srates(text):
         if m:
             sw.append((float(m.group("ts")), int(m.group("cookie")),
                        int(m.group("from")), int(m.group("to")),
-                       int(m.group("bc")), int(m.group("ac")), m.group("mt"),
-                       m.group("rb"), m.group("dest"), m.group("dest6"), m.group("dest6b"), line))
+                       int(m.group("bc")), int(m.group("ac")), m.group("d"),
+                       m.group("mt"), m.group("rb"), m.group("dest"), m.group("dest6"), m.group("dest6b"), line))
             continue
         v = rx_mt.search(line)
         if v:
