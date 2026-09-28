@@ -1492,19 +1492,29 @@
     setT("n_rtt",  fmtRTT(L.min_rtt));
     setT("n_best", L.best_alg || "-");
     setT("n_rmem", fmtBytes(L.tcp_rmem_max));
-    // Streak/penalty from metric data
+    // Streak/penalty from metric data — match L.best_alg
     var _byB = state.metricByBucket || {};
     var _rows = (bid && _byB[bid]) ? _byB[bid] : [];
     if (_rows.length) {
-      var _best = _rows[0];
+      // Find the row matching the best algorithm (L.best_alg)
+      var _bestAlg = L.best_alg || "";
+      var _best = null;
+      for (var _i = 0; _i < _rows.length; _i++) {
+        if (_rows[_i].alg === _bestAlg) { _best = _rows[_i]; break; }
+      }
+      if (!_best) _best = _rows[0];  // fallback to first
       var _bad = _best.bad || 0;
       var _nul = _best.null || 0;
       var _ss = _best.swap_score || 256;
       var _pen = 16 + _bad * 4 + _nul * 2;
       setT("n_streak", _best.alg + "  penalty=" + (16/_pen).toFixed(3) +
         " (bad=" + _bad + " null=" + _nul + " score=" + _ss + ")");
+      // Try multiple field names for count
       var _totalSwaps = 0, _algCount = 0;
-      _rows.forEach(function(r) { var _c = r.count||0; if (_c>0) { _totalSwaps += _c; _algCount++; } });
+      _rows.forEach(function(r) {
+        var _c = r.count || r.metric_count || r.cnt || r.metric || 0;
+        if (_c > 0) { _totalSwaps += _c; _algCount++; }
+      });
       setT("n_swaps", fmtN(_totalSwaps));
       setT("n_algs2", _algCount + "/16");
     } else {
