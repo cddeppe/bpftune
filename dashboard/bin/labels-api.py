@@ -141,12 +141,10 @@ def bpf_aliases_update(from_ip, to_ip):
     v = ip_to_bpf_hex(to_ip)
     if not k or not v:
         return False, "bad ip"
-    r = subprocess.run(
-        ["bpftool", "map", "update", "id", str(mid),
-         "key", "hex", _hex_to_spaced(k),
-         "value", "hex", _hex_to_spaced(v)],
-        capture_output=True, text=True,
-    )
+    cmd = ["bpftool", "map", "update", "id", str(mid),
+           "key", "hex"] + _hex_to_spaced(k).split() + \
+          ["value", "hex"] + _hex_to_spaced(v).split()
+    r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode == 0, r.stderr.strip() or r.stdout.strip()
 
 
@@ -231,11 +229,9 @@ def bpf_remote_host_delete(ip_str):
     k = ip_to_bpf_hex(ip_str)
     if not k:
         return False, "bad ip"
-    r = subprocess.run(
-        ["bpftool", "map", "delete", "id", str(mid),
-         "key", "hex", _hex_to_spaced(k)],
-        capture_output=True, text=True,
-    )
+    cmd = ["bpftool", "map", "delete", "id", str(mid),
+           "key", "hex"] + _hex_to_spaced(k).split()
+    r = subprocess.run(cmd, capture_output=True, text=True)
     ok = r.returncode == 0 or "no such" in r.stderr.lower()
     return ok, r.stderr.strip() or r.stdout.strip()
 
@@ -523,6 +519,15 @@ class LabelsHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # bpftune regenerates labels.json on startup with ONLY canonical IPs.
+    # Re-import ALL IPs from aliases so the modal shows everyone.
+    try:
+        added = reimport_labels_from_aliases()
+        if added:
+            print(f"[labels-api] reimported {added} IPs from aliases into labels.json",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"[labels-api] reimport failed: {e}", file=sys.stderr)
     print("[labels-api] startup auto-fold pass...", file=sys.stderr)
     try:
         results = auto_fold()
