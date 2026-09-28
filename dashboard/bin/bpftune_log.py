@@ -727,6 +727,13 @@ def read_map():
 
 
 def _proof_events(text):
+    """Parse proof + midsamp events from the BPF log tail.
+
+    No cache: called once per collect_all() cycle (by data_proof).
+    _swaps_mets_srates caches because it's called 7+ times per cycle
+    (by data_swap_outcomes, data_divergence, data_churn, data_recent_swaps,
+    data_recent_swaps_by_bucket, _run_writeback_and_get_swaps, _log_window).
+    """
     MET_WINDOW_S = 60.0
     lines = text.splitlines()
 
@@ -788,6 +795,14 @@ def _proof_events(text):
     return events, samples
 
 
+
+# CACHING STRATEGY:
+#   File-based caches (_load_labels, _load_fold, _load_aliases_labels)
+#     -> use _mtime_cache(path, holder, loader) — consolidated pattern.
+#   Text-based cache (_swaps_mets_srates):
+#     -> uses hash(text) as key — content-based, stable within a process.
+#     -> called 7+ times per collect_all() cycle with the same text.
+#   _proof_events: no cache — called once per cycle (see its docstring).
 
 _SWMS_CACHE = {}
 
