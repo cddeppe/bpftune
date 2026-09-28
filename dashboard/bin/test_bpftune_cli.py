@@ -323,15 +323,18 @@ class TestCollectAllIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cli = _load_cli()
+        # After the module split, functions live in bpftune_log / bpftune_data.
+        cls.log_mod = getattr(cls.cli, 'bpftune_log', cls.cli)
+        cls.data_mod = getattr(cls.cli, 'bpftune_data', cls.cli)
 
     def setUp(self):
-        self._orig_find_log = self.cli.find_log
-        self._orig_tail = self.cli.tail_recent
-        self._orig_read_map = self.cli.read_map
-        self._orig_wb = self.cli._run_writeback_and_get_swaps
-        self._orig_build = self.cli.data_build
-        self._orig_system = self.cli.data_system
-        self._orig_tunables = self.cli.data_tunables
+        self._orig_find_log = self.log_mod.find_log
+        self._orig_tail = self.log_mod.tail_recent
+        self._orig_read_map = self.log_mod.read_map
+        self._orig_wb = self.data_mod._run_writeback_and_get_swaps
+        self._orig_build = self.data_mod.data_build
+        self._orig_system = self.data_mod.data_system
+        self._orig_tunables = self.data_mod.data_tunables
         import json, tempfile
         mock_map = [{"formatted": {"key": {"in6_u": {"u6_addr8": [0]*10 + [255,255] + [10,0,0,1]}}, "value": {"instances": 5, "min_rtt": 1000, "max_rate_delivered": 50000, "best_i": 1, "metrics": [{"metric_count": 15, "rate_ema": 100000, "swap_score": 256, "bad_streak": 0, "null_streak": 0}]}}}]
         self._map_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
@@ -339,14 +342,17 @@ class TestCollectAllIntegration(unittest.TestCase):
         self._map_file.close()
         self._orig_env = os.environ.get("BPFTUNE_MAP_DUMP_JSON")
         os.environ["BPFTUNE_MAP_DUMP_JSON"] = self._map_file.name
-        self.cli.find_log = lambda: "/tmp/mock_bpf.log"
-        self.cli.tail_recent = lambda budget=2000000: MOCK_LOG
-        self.cli.read_map = lambda: self._orig_read_map()
-        self.cli._run_writeback_and_get_swaps = lambda text: []
-        self.cli.data_build = lambda logpath: {"version": "0.4.84", "dash_version": "test", "service": "active", "uptime_min": 100, "started_utc": "12:00:00", "log_path": logpath}
-        self.cli.data_system = lambda: {"kernel": "test", "default_cc": "cubic", "cpu_count": 2}
-        self.cli.data_tunables = lambda: [{"group": "ipv4.tcp", "items": [{"key": "tcp_rmem", "value": "4096 131072 931104"}]}]
-        self.cli._SWMS_CACHE = {}
+        # Patch on BOTH the source module AND cli (collect_all uses cli's globals)
+        for mod in (self.log_mod, self.cli):
+            mod.find_log = lambda: "/tmp/mock_bpf.log"
+            mod.tail_recent = lambda budget=2000000: MOCK_LOG
+            mod.read_map = lambda: self._orig_read_map()
+            mod._SWMS_CACHE = {}
+        for mod in (self.data_mod, self.cli):
+            mod._run_writeback_and_get_swaps = lambda text: []
+            mod.data_build = lambda logpath: {"version": "0.4.84", "dash_version": "test", "service": "active", "uptime_min": 100, "started_utc": "12:00:00", "log_path": logpath}
+            mod.data_system = lambda: {"kernel": "test", "default_cc": "cubic", "cpu_count": 2}
+            mod.data_tunables = lambda: [{"group": "ipv4.tcp", "items": [{"key": "tcp_rmem", "value": "4096 131072 931104"}]}]
 
     def tearDown(self):
         for mod in (self.log_mod, self.cli):
