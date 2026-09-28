@@ -1505,6 +1505,24 @@
     return f;
   }
 
+
+  function _reFilterPanels() {
+    var doc = window.__current_doc;
+    if (!doc) return;
+    var bid = $('bucket') ? $('bucket').value : 'all';
+    var blabel = 'all';
+    if (bid !== 'all') {
+      var bs = $('bucket');
+      blabel = (window.__labels && window.__labels[bid]) ||
+        (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
+    }
+    var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
+    renderProof(fdoc.proof || []);
+    renderRate(fdoc.rate || []);
+    renderSwapOutcomes(fdoc.swap_outcomes || null, fdoc.churn || {});
+    renderRecentProofs(fdoc.recent_proofs || []);
+  }
+
   function renderLiveState(doc) {
     window.__current_doc = doc;
     renderLogWindow(doc);
@@ -1522,6 +1540,11 @@
     }
     if (_bs && _prevVal) { _bs.value = _prevVal; }
     else if (_bs) { _bs.value = 'all'; }
+    // Hook dropdown change to instantly re-filter all panels
+    if (_bs && !_bs._refilterHooked) {
+      _bs.addEventListener('change', _reFilterPanels);
+      _bs._refilterHooked = true;
+    }
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
