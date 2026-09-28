@@ -814,6 +814,48 @@
     });
   }
 
+  // SSE real-time updates with polling fallback.
+  // SSE pushes data within 1s of collection; polling fallback (30s)
+  // ensures the dashboard still works if SSE crashes.
+  var _sseSource = null;
+  var _pollFallback = null;
+
+  function startLiveUpdates() {
+    if (typeof EventSource !== "undefined") {
+      _sseSource = new EventSource("/sse");
+      _sseSource.onmessage = function (e) {
+        try {
+          var doc = JSON.parse(e.data);
+          renderLiveState(doc);
+          refreshNowCardAndChart();
+        } catch (err) {
+          console.error("SSE parse error:", err);
+        }
+      };
+      _sseSource.onerror = function () {
+        console.log("SSE failed, falling back to polling");
+        if (_sseSource) _sseSource.close();
+        _sseSource = null;
+        startPollingFallback();
+      };
+      console.log("SSE connected — real-time updates enabled");
+      // Also do an immediate fetch so the page loads fast (don't
+      // wait for the next SSE push)
+      liveRefresh();
+    } else {
+      startPollingFallback();
+    }
+  }
+
+  function startPollingFallback() {
+    if (_pollFallback) return;
+    console.log("Polling fallback active (30s interval)");
+    _pollFallback = setInterval(function () {
+      liveRefresh();
+      refreshNowCardAndChart();
+    }, 30000);
+  }
+
   function renderNow() {
     var doc = state.bucketDoc;
     if (!doc) return;
@@ -1283,11 +1325,7 @@ function _populateBucketSelect(desiredBucket) {
   }
 
   function boot() {
-    liveRefresh();
-    setInterval(function () {
-      liveRefresh();
-      refreshNowCardAndChart();
-    }, 30000);
+    startLiveUpdates();
 
     setInterval(refreshAll, 300000);
 
