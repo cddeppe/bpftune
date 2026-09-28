@@ -608,6 +608,12 @@
         <span class="v mono" id="n_rbest">-</span></div>
       <div class="stat"><span class="k">tcp_rmem max</span>
         <span class="v mono" id="n_rmem">-</span></div>
+      <div class="stat"><span class="k">streak</span>
+        <span class="v mono" id="n_streak">-</span></div>
+      <div class="stat"><span class="k">swap count</span>
+        <span class="v mono" id="n_swaps">-</span></div>
+      <div class="stat"><span class="k">algorithms</span>
+        <span class="v mono" id="n_algs2">-</span></div>
     </div>
     <div class="rates">
       <span class="k">Rate EMA</span>
@@ -1486,6 +1492,26 @@
     setT("n_rtt",  fmtRTT(L.min_rtt));
     setT("n_best", L.best_alg || "-");
     setT("n_rmem", fmtBytes(L.tcp_rmem_max));
+    // Streak/penalty from metric data
+    var _byB = state.metricByBucket || {};
+    var _rows = (bid && _byB[bid]) ? _byB[bid] : [];
+    if (_rows.length) {
+      var _best = _rows[0];
+      var _bad = _best.bad || 0;
+      var _nul = _best.null || 0;
+      var _ss = _best.swap_score || 256;
+      var _pen = 16 + _bad * 4 + _nul * 2;
+      setT("n_streak", _best.alg + "  penalty=" + (16/_pen).toFixed(3) +
+        " (bad=" + _bad + " null=" + _nul + " score=" + _ss + ")");
+      var _totalSwaps = 0, _algCount = 0;
+      _rows.forEach(function(r) { var _c = r.count||0; if (_c>0) { _totalSwaps += _c; _algCount++; } });
+      setT("n_swaps", fmtN(_totalSwaps));
+      setT("n_algs2", _algCount + "/16");
+    } else {
+      setT("n_streak", "-");
+      setT("n_swaps", "-");
+      setT("n_algs2", "-");
+    }
     setT("nowupdated",
          L.collected_ts ? "updated " + relTime(L.collected_ts) : "");
 
