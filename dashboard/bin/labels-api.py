@@ -115,16 +115,23 @@ class H(BaseHTTPRequestHandler):
         if "ips" in req and isinstance(req["ips"],list):
             label=req.get("label","").strip()
             ips=req["ips"]
-            for ip in ips:
-                if not label:
+            if not label:
+                for ip in ips:
                     labels.pop(ip,None)
                     remove_alias_line(ip)
+            else:
+                # Use the first IP's masked version as the canonical to_ip
+                # so ALL IPs in this group fold into ONE bucket
+                if label in groups:
+                    to_ip = groups[label]["to_ip"]
                 else:
+                    to_ip = mask_ip(ips[0])
+                for ip in ips:
                     labels[ip]=label
                     masked=mask_ip(ip)
                     if masked!=ip and masked not in labels: labels[masked]=label
                     remove_alias_line(ip)
-                    add_alias_line(ip,masked,label)
+                    add_alias_line(ip,to_ip,label)
             save_labels(labels)
             groups=parse_aliases()
             self._json(200,{"ok":True,"labels":labels,"groups":groups}); return
