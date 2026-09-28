@@ -1,0 +1,21 @@
+name: Dashboard Tests
+
+on:
+  push:
+    branches: [dashboard]
+  pull_request:
+    branches: [dashboard]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run tests
+        working-directory: dashboard/bin
+        env:
+          BPFTUNE_CLI_PATH: ./bpftune-cli.py
+        run: python3 test_bpftune_cli.py
