@@ -948,7 +948,7 @@ def _daemon_loop():
         except Exception as e:
             print("collector: error in cycle: %s" % e, file=sys.stderr)
         # Sleep in 1s increments so SIGTERM is responsive
-        for _ in range(60):
+        for _ in range(300):
             if not _running[0]:
                 break
             time.sleep(1)
