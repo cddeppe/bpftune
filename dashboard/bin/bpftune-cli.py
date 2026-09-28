@@ -385,12 +385,30 @@ def data_buckets(hosts, n=8):
             ref = int(mrv) / BPS_TO_MBPS
         except Exception:
             ref = 0.0
+        # Compute picker's choice (same formula as data_live_leaders)
+        picker_i = int(bi)
+        picker_w = 0
+        for mi in range(16):
+            m = metrics[mi] if mi < len(metrics) and isinstance(metrics[mi], dict) else {}
+            cnt = int(m.get("metric_count", 0) or 0)
+            rv  = int(m.get("rate_ema", 0) or 0)
+            ss  = int(m.get("swap_score", 0) or 0)
+            bad = int(m.get("bad_streak", 0) or 0)
+            nul = int(m.get("null_streak", 0) or 0)
+            if cnt < MIN_LEADER_TRUST or rv == 0: continue
+            ss_eff = ss if ss else 256
+            weighted = rv * ss_eff // 256
+            pen = 16 + bad * 4 + nul * 2
+            weighted = weighted * 16 // pen
+            if weighted > picker_w:
+                picker_w = weighted
+                picker_i = mi
         rows.append({
             "dest":     addr,
             "inst":     inst,
             "rtt_us":   int(rtt),
             "ref_mbps": round(ref, 1),
-            "best_alg": CONGS[int(bi)] if int(bi) < 16 else str(bi),
+            "best_alg": CONGS[int(picker_i)] if int(picker_i) < 16 else str(picker_i),
             "n_alg":    used,
         })
         if len(rows) >= n:
