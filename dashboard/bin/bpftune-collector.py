@@ -876,5 +876,32 @@ def main():
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
 
 
+def _daemon_loop():
+    """Run main() every 60 seconds with signal handling."""
+    import signal
+    _running = [True]
+    def _stop(sig, frame):
+        _running[0] = False
+        print("collector: received signal %d, shutting down" % sig,
+              file=sys.stderr)
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    print("collector: daemon mode started (60s interval)", file=sys.stderr)
+    while _running[0]:
+        try:
+            main()
+        except Exception as e:
+            print("collector: error in cycle: %s" % e, file=sys.stderr)
+        # Sleep in 1s increments so SIGTERM is responsive
+        for _ in range(60):
+            if not _running[0]:
+                break
+            time.sleep(1)
+    print("collector: daemon stopped", file=sys.stderr)
+
+
 if __name__ == "__main__":
-    main()
+    if "--daemon" in sys.argv:
+        _daemon_loop()
+    else:
+        main()
