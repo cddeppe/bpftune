@@ -64,16 +64,18 @@ def remove_alias_line(from_ip):
 
 
 def get_bucket_ips():
-    """Parse BPF log for swap dest IPs, group by /16 mask."""
-    import subprocess, re, ipaddress
+    """Parse BPF log for ALL dest IPs, group by /16."""
+    import importlib.util, re as _re, ipaddress
     try:
-        out = subprocess.check_output(['journalctl', '-u', 'bpftune', '--no-pager', '-q',
-            '--since', '-2h', '-g', 'swap cookie'], text=True, stderr=subprocess.STDOUT, timeout=5)
+        spec = importlib.util.spec_from_file_location("cli", "/opt/bpftune-dashboard/bin/bpftune-cli.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        text = cli.tail_recent()
     except Exception:
         return {}
     buckets = {}
-    for line in out.splitlines():
-        m = re.search(r'dest=(\d+)', line)
+    for line in text.splitlines():
+        m = _re.search(r'dest=(\d+)', line)
         if not m: continue
         n = int(m.group(1))
         if n == 0: continue
@@ -84,6 +86,7 @@ def get_bucket_ips():
         if masked not in buckets: buckets[masked] = []
         if full not in buckets[masked]: buckets[masked].append(full)
     return buckets
+
 
 class H(BaseHTTPRequestHandler):
     def _json(self,code,data):
