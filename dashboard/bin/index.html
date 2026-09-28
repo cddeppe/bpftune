@@ -2045,7 +2045,8 @@
         if (b.id === keep) stillThere = true;
       }
       bs.innerHTML = html;
-      bs.value = stillThere ? keep : state.meta.default_bucket;
+      bs.add(new Option('All Buckets', 'all'), 0);
+      bs.value = stillThere ? keep : 'all';
 
       var stamp = new Date(state.meta.generated_ts * 1000).toISOString()
                       .replace("T", " ").slice(0, 19) + "Z";
