@@ -149,6 +149,9 @@ CLI      = SELF_DIR / "bpftune-cli.py"
 # Import the CLI module once at daemon startup (avoids per-cycle subprocess).
 # The hyphen in bpftune-cli.py means we can't use a normal import.
 _cli_mod = None
+# In-memory log offsets for incremental reading (daemon mode only).
+# Persists across cycles so tail_incremental() reads only new lines.
+_log_offsets = {}
 try:
     _spec = importlib.util.spec_from_file_location("bpftune_cli", str(CLI))
     _cli_mod = importlib.util.module_from_spec(_spec)
@@ -854,7 +857,9 @@ def run_cli_snapshot(map_raw=""):
                 os.environ["BPFTUNE_MAP_DUMP_JSON"] = tmp_map
             except OSError:
                 tmp_map = None
-        doc = _cli_mod.collect_all()
+        # Use incremental reading (daemon mode): only parse new log
+        # lines since last cycle.  First call reads full tail.
+        doc = _cli_mod.collect_all_incremental(_log_offsets)
         tmp = str(CURRENT_JSON) + ".tmp"
         with open(tmp, "w") as f:
             json.dump(doc, f, separators=(",", ":"))
