@@ -2126,6 +2126,7 @@ function _populateBucketSelect(desiredBucket) {
         status("updated " + relTime(state.meta.generated_ts));
         if (footgen) footgen.textContent = "rendered " + stamp;
 
+        var bs = $("bucket");
         bs.onchange = function () {
           try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
           loadBucket(bs.value);
