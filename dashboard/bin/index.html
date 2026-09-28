@@ -1551,7 +1551,7 @@
       if (_nul > 0) _st += " n=" + _nul;
       setT("n_streak", _st);
       setT("n_swaps", _top.count ? fmtN(_top.count) : "-");
-      setT("n_algs2", "-");
+      setT("n_algs2", ((state.metricByBucket||{})[bid]||[]).length + "/16");
     } else {
       setT("n_streak", "-");
       setT("n_swaps", "-");
