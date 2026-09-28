@@ -1367,6 +1367,7 @@
 
   function shortAddr(a) {
     a = a || "";
+    if (window.__labels && window.__labels[a]) return window.__labels[a];
     if (a.indexOf("v6:") === 0) return a;
     var p = a.split(".");
     if (p.length === 4) return p[0] + "." + p[1] + ".0.0";
@@ -1442,6 +1443,22 @@
     renderRecentProofs(doc.recent_proofs || []);
     state.lastLiveSwaps = doc.recent_swaps || [];
     renderRecentSwapsForBucket();
+    // Fetch labels + update dropdown option text + shortAddr lookups
+    fetch('/api/labels', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(ld) {
+      window.__labels = ld.labels || {};
+      // Update bucket dropdown to show labels
+      var bs = $('bucket');
+      if (bs && bs.options) {
+        for (var i = 0; i < bs.options.length; i++) {
+          var ip = bs.options[i].value;
+          var label = window.__labels[ip];
+          if (label) {
+            var pts = bs.options[i].text.match(/\((\d+)\)/);
+            bs.options[i].text = label + ' (' + (pts ? pts[1] : '') + ')';
+          }
+        }
+      }
+    }).catch(function() {});
   }
 
   function liveRefresh() {
