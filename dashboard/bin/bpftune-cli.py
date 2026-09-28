@@ -1272,7 +1272,7 @@ def data_recent_proofs(text, n=16):
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
             "mbps": round(int(m.group(4)) / BPS_TO_MBPS, 1),
             "tier": "proved" if m.group(5) == "2" else "good",
-            "dest": _dest_str(*(cdest.get(c) or (None, None))),
+            "dest": _label_for(_dest_str(*(cdest.get(c) or (None, None)))),
         })
     return out
 
