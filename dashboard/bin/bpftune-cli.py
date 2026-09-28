@@ -281,13 +281,16 @@ def _parse_plain_map(out):
         s = line.strip()
         if not s:
             continue
-        if s.startswith('{') and depth == 0:
+        # Track brace depth to find record boundaries.
+        # Opening: lines containing '{' (possibly with '[' prefix like '[{').
+        # Closing: lines containing '}' (possibly with ']' suffix like '}]').
+        if '{' in s and depth == 0:
             depth = 1
             in_key = in_value = False
             key_bytes = []
             value_text = []
             continue
-        if s == '}' and depth > 0:
+        if '}' in s and depth > 0:
             # End of a record — emit if we have a value dict
             if value_text:
                 v = {}
