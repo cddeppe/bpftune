@@ -852,7 +852,7 @@ def data_rate(text):
 _SWMS_CACHE = {}
 
 def _swaps_mets_srates(text):
-    _key = id(text)
+    _key = hash(text)
     if _key in _SWMS_CACHE:
         return _SWMS_CACHE[_key]
     sw = []
