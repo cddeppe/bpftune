@@ -551,6 +551,11 @@
 .lr-footer .v { color: var(--fg); font-variant-numeric: tabular-nums; }
 .lr-footer .v.dim { color: var(--muted); }
 
+
+  .ip-label { cursor: pointer; border-bottom: 1px dotted var(--muted-2); transition: color .15s; }
+  .ip-label:hover { color: var(--good); }
+  .ip-edit { font-size: 11px; border: 1px solid var(--muted); padding: 0 4px; border-radius: 3px; outline: none; background: var(--bg, #fff); color: var(--text, #000); }
+
 </style>
 </head>
 <body>
@@ -697,6 +702,51 @@
   var el = document.getElementById("gen");
   if (el) el.textContent = "html @ " + new Date().toISOString().slice(11, 19);
 })();
+
+  /* ---- IP Label Editor ---- */
+  function ipLabelEdit(el) {
+    var ip = el.getAttribute('data-ip');
+    if (!ip) return;
+    var old = el.textContent;
+    var input = document.createElement('input');
+    input.type = 'text'; input.className = 'ip-edit';
+    input.value = el.getAttribute('data-label') || '';
+    input.placeholder = 'label...';
+    input.style.width = Math.max(80, old.length * 8 + 20) + 'px';
+    el.textContent = '';
+    el.appendChild(input);
+    input.focus(); input.select();
+    var done = false;
+    function save() {
+      if (done) return; done = true;
+      var label = input.value.trim();
+      fetch('/api/labels', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ip: ip, label: label})})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok) {
+            el.textContent = label || ip;
+            el.setAttribute('data-label', label);
+            // Trigger a current.json refresh to update labels everywhere
+            if (window.__liveFetch) window.__liveFetch();
+          } else {
+            el.textContent = old;
+          }
+        })
+        .catch(function() { el.textContent = old; });
+    }
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { done = true; el.textContent = old; }
+    });
+    input.addEventListener('blur', save);
+  }
+  /* Delegated click handler */
+  document.addEventListener('click', function(e) {
+    var el = e.target.closest('.ip-label');
+    if (el && !el.querySelector('input')) ipLabelEdit(el);
+  });
+
 </script>
 
 <script>
