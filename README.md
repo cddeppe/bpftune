@@ -54,7 +54,7 @@ Instead of picking one congestion control algorithm globally, this fork learns w
 
 ### 16 congestion control algorithms
 
-The fork expanded from the original 4-6 to **16 algorithms**, each with different strengths:
+The fork expanded from the original 4 to **16 algorithms**, each with different strengths:
 
 | Algorithm | Best for |
 |---|---|
