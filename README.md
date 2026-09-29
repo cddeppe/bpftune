@@ -84,10 +84,10 @@ If a long-lived connection (like a 30-minute video stream) gets a bad algorithm 
 ```
 Time ──►
 
-ESTABLISHED          RTT_CB (bad metric)         swap            RTT_CB (good metric)
-    │                     │                        │                    │
-    ▼                     ▼                        ▼                    ▼
-    ├──── cubic ──────────┤                        ├──► bbr ────────────┤
+ESTABLISHED           RTT_CB (bad metric)         swap            RTT_CB (good metric)
+    │                      │                       │                    │
+    ▼                      ▼                       ▼                    ▼
+    ├──── cubic ───────────┤                       ├──► bbr ────────────┤
     │   (drawn badly)      │                       │   (rescued)        │
     │                      │                       │                    │
     │              metric >= 1.25x best            │                    │
