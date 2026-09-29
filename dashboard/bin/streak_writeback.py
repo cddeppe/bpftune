@@ -5,6 +5,7 @@ from collections import defaultdict
 
 RATE_HIST_BINS=32; NUM_TCP_CONG_ALGS=16; NUM_TCP_CONN_METRICS=16
 OFF_METRIC_BAD_STREAK=42; OFF_METRIC_NULL_STREAK=43; SIZEOF_TCP_CONN_METRIC=48
+OFF_METRIC_RATE_EMA=38; OFF_METRIC_SWAP_SCORE=40
 OFF_RATE_HIST=112; SIZEOF_RATE_HIST=4*RATE_HIST_BINS+8
 OFF_METRICS_ARRAY=OFF_RATE_HIST+SIZEOF_RATE_HIST
 SIZEOF_REMOTE_HOST=OFF_METRICS_ARRAY+(NUM_TCP_CONN_METRICS*SIZEOF_TCP_CONN_METRIC)
@@ -49,9 +50,26 @@ def _value_json_to_bytes(v):
         buf.extend(b'\x00\x00\x00\x00')
     return bytes(buf)
 
-def _patch_streaks(buf,alg_idx,bad,null):
+def _raw_score_from_outcomes(outcomes):
+    if not outcomes: return 256
+    last=outcomes[-1]
+    if last=='win': return 282
+    if last=='loss': return 230
+    return 256
+
+def _patch_streaks(buf,alg_idx,bad,null,outcomes=None):
     base=OFF_METRICS_ARRAY+(alg_idx*SIZEOF_TCP_CONN_METRIC)
     buf[base+OFF_METRIC_BAD_STREAK]=bad&0xff; buf[base+OFF_METRIC_NULL_STREAK]=null&0xff
+    if outcomes:
+        current_ss=struct.unpack_from('<H',buf,base+OFF_METRIC_SWAP_SCORE)[0]
+        if current_ss==256:
+            rate_ema=struct.unpack_from('<H',buf,base+OFF_METRIC_RATE_EMA)[0]
+            if rate_ema>0:
+                raw_score=_raw_score_from_outcomes(outcomes)
+                penalty=max(0,1.0-(bad*0.2+null*0.1))
+                new_ss=int(rate_ema*raw_score/256*penalty)
+                new_ss=max(0,min(65535,new_ss))
+                struct.pack_into('<H',buf,base+OFF_METRIC_SWAP_SCORE,new_ss)
 
 def _streaks_from_history(outcomes):
     bad=0; null=0
@@ -180,7 +198,7 @@ def writeback_streaks(swaps):
             if not recent: continue
             outcomes=[s.get('outcome_sustained') for s in recent]
             bad,null=_streaks_from_history(outcomes)
-            _patch_streaks(buf,alg_idx,bad,null); patches+=1
+            _patch_streaks(buf,alg_idx,bad,null,outcomes); patches+=1
         if patches==0: continue
         value_args=_bytes_to_args(bytes(buf))
         if _map_update_bytes(map_id,key_args,value_args):
