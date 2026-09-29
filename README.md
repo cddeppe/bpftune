@@ -156,7 +156,7 @@ BPF lookup at ESTABLISHED:
 
 The alias map is a `BPF_MAP_TYPE_HASH` (struct in6_addr → struct in6_addr) pinned at `/sys/fs/bpf/bpftune/tcp_conn/aliases`. Updated live via `bpftool` — no daemon restart needed.
 
-Configurable prefix masking: `bpftune --prefix4=24 --prefix6=64` (runtime, takes effect on next ESTABLISHED).
+Configurable prefix masking: `bpftune --prefix4=24 --prefix6=64` (runtime, takes effect on next ESTABLISHED, persists across restarts). See [Tuning & Customization](#tuning--customization) for details.
 
 ---
 
@@ -165,54 +165,62 @@ Configurable prefix masking: `bpftune --prefix4=24 --prefix6=64` (runtime, takes
 Full web dashboard with real-time SSE (Server-Sent Events) updates:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  bpftune · hostname · 2026-09-29T00:00:00Z                      │
-├──────────────────────────────┬──────────────────────────────────┤
-│  BUILD / SERVICE             │  SYSTEM FACTS                    │
-│  version    0.4.83           │  kernel     6.12.107             │
-│  dashboard  abc1234          │  default CC cubic                │
-│  service    active           │  cpu cores   2                   │
-│  uptime     0h 12m           │  load        0.18 0.15 0.05      │
-│                              │  memory      536MB / 1.01GB      │
-├──────────────────────────────┴──────────────────────────────────┤
-│  BPFTUNE-MANAGED TUNABLES                                       │
-│  core.netdev_budget=913  core.netdev_budget_usecs=24413         │
-│  ipv4.tcp_rmem=4096 87380 64000000                              │
-│  ipv4.tcp_wmem=4096 65536 16777216                              │
-├─────────────────────────────────────────────────────────────────┤
-│  TOP DESTINATION BUCKETS                                        │
-│  dest          inst    rtt    ref     best     algs  coverage   │
-│  bucket-a      9,212   0.0    0.0     scalable 15    —          │
-│  bucket-b      1,644   34.9   67.1    westwood 16    —          │
-│  bucket-c      1,154   65.1   0.0     dctcp   16    —           │
-│  ...                                                            │
-├──────────────────────────────┬──────────────────────────────────┤
-│  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD              │
-│  alg      re    ss  pen score │  alg       good  prvd  p_max    │
-│  westwood 87.2  256 1.0 109  │  scalable  9     29    351.3     │
-│  lp       90.4  256 0.8 90.4 │  cubic     2      4    235.2     │
-│  cubic    88.8  256 0.8 88.8 │  dctcp     5      7    229.2     │
-│  ...                          │  ...                            │
-├──────────────────────────────┴──────────────────────────────────┤
-│  SWAP OUTCOMES (sustained)            RECENT SWAPS              │
-│  win   55  46%                       illinois→westwood  loss    │
-│  null  53  44%                       nv→illinois       win      │
-│  loss  13  11%                       westwood→illinois loss     │
-│  loss recovery: 5 rescued / 8 full   ...                        │
-├─────────────────────────────────────────────────────────────────┤
-│  RECENT PROOFS                RATE PROGRESSION                  │
-│  westwood  bucket-c  63.4    thr     n    mean   min   max      │
-│  scalable  bucket-c  62.9    1000    92   2.1    0.0   29.1     │
-│  ...                          10000   60   2.1    0.0   29.1    │
-│                               ...                               │
-├─────────────────────────────────────────────────────────────────┤
-│  [All Buckets ▼]  — dropdown filters ALL panels by bucket       │
-│                                                                 │
-│  Rate EMA per algorithm — Mb/s  ████▆▆▅▅▄▄▃▃               │
-│  Swap Score per algorithm       ██████████████                  │
-│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                       │
-│  Swaps per bin                 ▃ ▅▇█▇▅▃ ▁▁                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  bpftune   [bucket ▼ home-sco (1)]   [range 1h|24h|7d|all]   Edit Labels │
+│                                       updated 18s ago                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NOW (home-sco)                                                         │
+│  instances 820   rate best 87.2 Mb/s   ref rate 0.0   min RTT 34.9 ms  │
+│  best alg dctcp   streak 3   swaps 12   algs 16                        │
+│  (no live rates for this bucket)  ← shown when bucket has no live data  │
+├──────────────────────────────┬──────────────────────────────────────────┤
+│  BUILD / SERVICE             │  SYSTEM FACTS                            │
+│  version    0.4.83           │  kernel     6.12.197+deb13-amd64         │
+│  dashboard  4bd8c86          │  default CC scalable                    │
+│  service    active           │  cpu cores   2                           │
+│  uptime     13h 56m          │  load        0.51 0.74 0.66              │
+│  started    04:08:09 UTC     │  memory      1.39 GB / 4.11 GB (34%)     │
+│                              │  host uptime 10d 5h 28m                 │
+├──────────────────────────────┴──────────────────────────────────────────┤
+│  BPFTUNE-MANAGED TUNABLES                                               │
+│  core.netdev_budget=14300        core.netdev_budget_usecs=47681          │
+│  ipv4.tcp_rmem=4096 87380 2500000                                       │
+│  ipv4.tcp_wmem=4096 65536 67108864                                      │
+│  core.rmem_default=1048576                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TOP DESTINATION BUCKETS                                                │
+│  dest          inst    rtt    ref     best     algs  coverage           │
+│  v6:26061a40   12K     0.0    0.0     cubic    16    —                 │
+│  home-sco      820     34.9   0.0     dctcp    16    —                  │
+│  91.123.0.0    1.6K    65.1   67.1    scalable 15    —                   │
+│  ...                                                                    │
+├──────────────────────────────┬──────────────────────────────────────────┤
+│  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD                      │
+│  alg      re    ss  pen score │  alg       good  prvd  p_max  s_avg    │
+│  westwood 87.2  256 1.0 109  │  scalable  9     29    351.3  62.9      │
+│  lp       90.4  256 0.8 90.4 │  cubic     2      4    235.2  18.1      │
+│  cubic    88.8  256 0.8 88.8 │  dctcp     5      7    229.2  44.7      │
+│  ...                          │  ...                                    │
+├──────────────────────────────┴──────────────────────────────────────────┤
+│  SWAP OUTCOMES (sustained)            RECENT SWAPS                      │
+│  win   55  46%                       htcp→highspeed   home-sco · 9s    │
+│  null  53  44%                       dctcp→highspeed  home-sco · 21s   │
+│  loss  13  11%                       bbr→highspeed    home-sco · 3m    │
+│  loss recovery: 5 rescued / 8 full   ...                               │
+├──────────────────────────────┬──────────────────────────────────────────┤
+│  RECENT PROOFS                │  RATE PROGRESSION                       │
+│  westwood  home-sco  63.4    │  thr      n    mean   min   max         │
+│  scalable  home-sco  62.9    │  1000     92   2.1    0.0   29.1        │
+│  dctcp     91.123    44.7    │  10000    60   2.1    0.0   29.1        │
+│  ...                          │  ...                                    │
+├──────────────────────────────┴──────────────────────────────────────────┤
+│  [All Buckets ▼]   — dropdown filters ALL panels by bucket             │
+│                                                                         │
+│  Rate EMA per algorithm — Mb/s   ████▆▆▅▅▄▄▃▃  (1h: last 60min)       │
+│  Swap Score per algorithm       ██████████████                          │
+│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                                │
+│  Swaps per bin                  ▃ ▅▇█▇▅▃ ▁▁  (same axis as above)     │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Two-tier real-time collection
@@ -350,7 +358,7 @@ The original [bpftune](https://github.com/oracle/bpftune) is a general-purpose B
 | Environment | Datacenter (single-path) | Mixed-workload (multi-path, VPS) |
 | IP grouping | No | Yes (BPF aliases + label editor) |
 | Dashboard | None | Full web UI (SSE, charts, per-bucket filtering) |
-| Prefix masking | N/A (global) | Runtime-configurable (--prefix4, --prefix6) |
+| Prefix masking | N/A (global) | Runtime-configurable (`--prefix4`, `--prefix6`) |
 | State persistence | No (re-learning on restart) | Yes (version-checked, atomic write) |
 | Streak correction | No | Yes (sustained→kernel writeback) |
 | Exploration | N/A (reactive, not exploratory) | Epsilon-greedy (coverage=2, adaptive) |
@@ -358,29 +366,160 @@ The original [bpftune](https://github.com/oracle/bpftune) is a general-purpose B
 
 ---
 
-## Building & deploying
+## Tuning & Customization
+
+`bpftune` exposes standard CLI flags plus three custom flags added by this fork. The custom flags are NOT in `bpftune --help` (help text never updated), but they work — call them directly.
+
+### Standard CLI flags
+
+| Flag | Purpose |
+|---|---|
+| `-r, --learning_rate N` | 0=conservative (1.0625%), 4=aggressive (25%, **default**). Higher = change tunables more often. |
+| `-d, --debug` | Debug output |
+| `-D, --daemon` | Daemon mode |
+| `-s, --stderr` | Log to stderr (not syslog) |
+| `-R, --rollback` | Revert sysctl changes on exit (testing mode) |
+| `-S, --support` | Probe BPF feature support |
+| `-c, --cgroup PATH` | Filter by cgroup |
+| `-l, --libdir PATH` | Plugin dir (default `/usr/local/lib64/bpftune`) |
+| `--print-libdir` | Print compiled-in plugin dir, exit |
+| `-p, --port PORT` | Query TCP port (default: ephemeral) |
+| `-a, --allow NAME.so` | Allow only specific tuner(s) |
+| `-L, --legacy` | Force legacy mode |
+| `-q, --query QUERY` | Query state (see below) |
+| `-V, --version` / `-h, --help` | Version / help |
+
+### Custom fork flags (work, but not in `--help`)
+
+Write to `/var/lib/bpftune/` for persistence; daemon restores on restart. Live updates take effect on next `ESTABLISHED`.
+
+**`--prefix4=N`** (added 0.4.79) — IPv4 bucket prefix width, 1-32. Default 16 (`/16` grouping). `--prefix4=32` = no grouping. `--prefix4=24` = group /24s. Does NOT wipe learned state — only new sockets land under the new prefix. Persists to `/var/lib/bpftune/prefix4`. Mechanism: `tuner_config_map` BPF ARRAY slot 1.
+
+**`--prefix6=N`** (added later) — IPv6 bucket prefix width, 1-128. Default 32 (`/32`). `--prefix6=48` = group /48s (ISP allocation). `--prefix6=64` = group /64s (end-site). Persists to `/var/lib/bpftune/prefix6`. Slot 2.
+
+**`--exp` / `--exp=N`** (added 0.4.64) — Exploration %, 0-100. `--exp` prints current. `--exp=0` = deterministic (no exploration). `--exp=100` = explore every fresh socket (**default**). Persists to `/var/lib/bpftune/explore_pct`. Slot 0. BPF map pinned at `/sys/fs/bpf/bpftune/tcp_conn/explore`.
+
+### Querying state
 
 ```bash
-# BPF tuner (main branch)
+bpftune -q summary      # changes made by tuners
+bpftune -q tuners       # loaded tuners + state
+bpftune -q tunables     # supported tunables
+bpftune -q jtunables    # JSON version
+bpftune -q status       # current tunable status
+bpftune -q jstatus      # JSON version
+bpftune -q rollback     # changes to roll back
+bpftune -q help         # list of queries
+```
+
+### Learning rate levels
+
+| Rate | Sensitivity |
+|---|---|
+| 0 | 1.0625% — very conservative |
+| 1 | 3.125% — conservative |
+| 2 | 6.25% — moderate |
+| 3 | 12.5% — aggressive |
+| 4 (default) | 25% — very aggressive |
+
+### IP grouping via aliases (`/etc/bpftune/aliases`)
+
+```
+203.0.113.15     = 203.0.113.0    location-a
+2001:db8:1::abcd = 203.0.113.0    location-a
+198.51.100.20    = 198.51.100.0   location-b
+```
+
+`FROM = TO` folds `FROM` into `TO`'s bucket. Optional `label` shows in the dashboard. Live updates via the dashboard's **IP Label Editor** modal (labels-api writes file + reloads BPF map via `bpftool`, no daemon restart). Manual edits need `systemctl restart bpftune`.
+
+### Advanced BPF map knobs (recompile-only)
+
+In the BPF program, not CLI-tunable:
+- `SWAP_BAD_FIRST=1`, `SWAP_BAD_LATER=2`, `SWAP_MAX=2` — swap trigger thresholds
+- `T_SETTLE_NS=5e9` — 5s settle window after swap
+- `MIN_LEADER_TRUST=3` — votes before a leader can be a swap target
+
+### Sustained-rate scoring
+
+- `ratio_q >= 282` → WIN (ratio >= 1.10)
+- `ratio_q <= 230` → LOSS (ratio <= 0.90)
+- otherwise → NULL
+- Penalty: `1.0 - (bad_streak × 0.2 + null_streak × 0.1)`
+
+### State file — reset learning
+
+```bash
+systemctl stop bpftune
+rm /var/lib/bpftune/tcp_conn_tuner.state
+systemctl start bpftune
+```
+
+Daily backup at `/mnt/backup/tcp_conn_tuner.state.$(date +%A)` (7-day rotation).
+
+### Dashboard-managed sysctls
+
+The **BPFTUNE-MANAGED TUNABLES** panel shows sysctls bpftune is auto-tuning. Don't `sysctl -w` them — bpftune overrides on next cycle.
+
+### systemd overrides
+
+```bash
+systemctl edit bpftune.service
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/bpftune -r 2 --prefix4=24 --prefix6=48 --exp=10
+systemctl daemon-reload && systemctl restart bpftune
+```
+
+Override lives at `/etc/systemd/system/bpftune.service.d/override.conf`, survives `dpkg -i`.
+
+---
+
+## Building & deploying
+
+### Quick install (fresh host)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cddeppe/bpftune/main/install.sh | sudo bash -s -- --yes
+```
+
+Flags: `--yes` (non-interactive), `--no-dashboard` (tuner only), `--dashboard-only` (dashboard only), `--help`.
+
+The installer detects arch (amd64/arm64), finds `.deb` in `/mnt/backup/` or downloads from GitHub releases, installs via `dpkg -i`, optionally deploys the dashboard (git clone `dashboard` branch, systemd services, nginx `:8080`, cron, tests).
+
+### Update an existing host
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cddeppe/bpftune/main/update.sh | sudo bash
+```
+
+Flags: `--tuner-only`, `--dashboard-only`, `--force-downgrade` (if needed), `--help`.
+
+The updater checks installed vs latest GitHub release, refuses to downgrade without `--force-downgrade`, upgrades `.deb` if newer, pulls `dashboard` branch, syncs files to `/opt/bpftune-dashboard/bin/` + `/var/lib/bpftune/history/`, restarts services, runs tests.
+
+### Cut a new release (builder host)
+
+On the builder (`vps-3959` for amd64, `instance-20250225-1017` for arm64):
+
+```bash
 cd /root/bpftune
 git checkout main
 rm -f src/*.skel.h src/*.bpf.o src/*.o    # mandatory — stale objects bite
 make clean
 dpkg-buildpackage -b -us -uc
-# produces ../bpftune_<version>_<arch>.deb
-
-# Deploy
-sudo systemctl stop bpftune
-sudo dpkg -i ../bpftune_*.deb
-sudo systemctl start bpftune
-
-# Dashboard (dashboard branch)
-git checkout dashboard
-cp dashboard/bin/*.py dashboard/bin/*.js dashboard/bin/*.css /opt/bpftune-dashboard/bin/
-cp dashboard/bin/index.html /var/lib/bpftune/history/
-cp dashboard/bin/dashboard.css dashboard/bin/dashboard.js /var/lib/bpftune/history/
-systemctl restart bpftune-collector
+cp ../bpftune_*_*.deb /mnt/backup/
 ```
+
+Then on `vps-3959` (after both arch `.deb`s are in `/mnt/backup/`), run the atomic release pusher to create the GitHub release with `bpftune-custom-<ver>-<arch>.deb` assets. The release is what `install.sh` and `update.sh` download from.
+
+### Deploy dashboard to other hosts
+
+On each target host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cddeppe/bpftune/main/update.sh | sudo bash -s -- --dashboard-only
+```
+
+Pulls `origin/dashboard`, syncs to `/opt/bpftune-dashboard/bin/` + `/var/lib/bpftune/history/`, restarts `bpftune-collector` + `bpftune-labels-api`, runs tests.
 
 ## Verify
 
