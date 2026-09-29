@@ -711,6 +711,8 @@
     renderRate(fdoc.rate || []);
     renderSwapOutcomes(fdoc.swap_outcomes || null, fdoc.churn || {});
     renderRecentProofs(fdoc.recent_proofs || []);
+    window.__filtered_doc = fdoc;
+    renderSwaps();
   }
 
   function _safeRender(label, fn) {
@@ -1194,8 +1196,23 @@
   }
 
   function renderSwaps() {
-    var doc = state.swaps, rng = $("range").value;
-    var d = doc[rng];
+    var rng = $("range").value;
+    var d = null;
+    var sse = window.__filtered_doc || window.__current_doc;
+    if (sse && sse.swap_outcomes && sse.swap_outcomes.swaps_list) {
+      var sw = sse.swap_outcomes.swaps_list;
+      var now = (sse.generated_ts || (Date.now()/1000));
+      var rSec = {"1h":3600,"24h":86400,"7d":604800,"all":999999999}[rng] || 3600;
+      var bSec = {"1h":60,"24h":3600,"7d":21600,"all":86400}[rng] || 60;
+      var bins = {};
+      sw.forEach(function(s) {
+        var t = s.ts || 0;
+        if (t >= now - rSec) { var b = Math.floor(t/bSec)*bSec; bins[b] = (bins[b]||0)+1; }
+      });
+      var sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
+      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
+    }
+    if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
     var ts = d.ts;
 
