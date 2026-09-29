@@ -969,9 +969,11 @@
   var charts = {};
 
   function mk(id, cfg) {
-    if (charts[id]) { charts[id].destroy(); }
     var cv = $(id);
     if (!cv) return;
+    if (charts[id]) { try { charts[id].destroy(); } catch(e) {} }
+    var existing = Chart.getChart(cv);
+    if (existing) { try { existing.destroy(); } catch(e) {} }
     charts[id] = new Chart(cv, cfg);
   }
 
