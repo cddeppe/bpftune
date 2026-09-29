@@ -794,10 +794,14 @@
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
     _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
     _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
-    if ($("range") && $("range").value === "1h" && state.bucketDoc) {
+    if ($("range") && state.bucketDoc) {
       _safeRender('bucket_chart', function() { renderBucket(); });
     }
     _renderFilteredPanels(doc);
+    // Ensure swaps-per-bin also refreshes on every SSE push, regardless of
+    // whether _renderFilteredPanels happened to call it.  Harmless no-op if
+    // already called (Chart.js mk() destroys + re-creates the chart).
+    renderSwaps();
     state.lastLiveSwaps = doc.recent_swaps || [];
     renderRecentSwapsForBucket();
     _fetchAndApplyLabels();
@@ -1302,6 +1306,12 @@
       var sw = sse.swap_outcomes.swaps_list;
       var now = (sse.generated_ts || (Date.now()/1000));
       var fixedAxis = buildFixedAxis(rng, now);
+      // Swap timestamps are in CLOCK_MONOTONIC (seconds since boot), NOT Unix
+      // epoch.  Convert to epoch using sse.now_mono: epoch = mono + offset
+      // where offset = generated_ts - now_mono.  Without this, all swaps fall
+      // outside the [now-rSec, now] window (since swap.ts ~= 887000 but
+      // generated_ts ~= 1790700000) and no bars appear.
+      var monoOffset = (sse.now_mono && sse.now_mono > 0) ? (now - sse.now_mono) : 0;
       // Set min/max globals (same as renderBucket) so this chart's x-axis
       // also spans the full fixed window even where bins are 0.
       if (fixedAxis) {
@@ -1317,7 +1327,7 @@
         // to its nearest bin via binary search.  Empty bins -> 0 bars.
         var swapCounts = fixedAxis.ts.map(function(){return 0;});
         sw.forEach(function(s) {
-          var t = s.ts || 0;
+          var t = (s.ts || 0) + monoOffset;   // monotonic -> epoch
           var fa = fixedAxis.ts;
           if (t < fa[0] || t > fa[fa.length - 1]) return;
           if (t <= fa[0]) { swapCounts[0]++; return; }
@@ -1340,7 +1350,7 @@
         var bSec = 86400;
         var bins = {};
         sw.forEach(function(s) {
-          var t = s.ts || 0;
+          var t = (s.ts || 0) + monoOffset;   // monotonic -> epoch
           var b = Math.floor(t/bSec)*bSec;
           bins[b] = (bins[b]||0)+1;
         });
