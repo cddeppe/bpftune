@@ -32,6 +32,7 @@ DASHBOARD_UNSPECIFIED=1
 DASHBOARD=1
 DEB_INSTALL=1
 ASSUME_YES=0
+FORCE_DOWNGRADE=0
 SHOW_HELP=0
 
 for arg in "$@"; do
@@ -39,6 +40,7 @@ for arg in "$@"; do
         --no-dashboard)    DASHBOARD_UNSPECIFIED=0; DASHBOARD=0; DEB_INSTALL=1 ;;
         --dashboard-only)  DASHBOARD_UNSPECIFIED=0; DASHBOARD=1; DEB_INSTALL=0 ;;
         --yes|-y)          ASSUME_YES=1 ;;
+        --force-downgrade) FORCE_DOWNGRADE=1 ;;
         --help|-h)         SHOW_HELP=1 ;;
         *)                 fail "Unknown flag: $arg (try --help)" ;;
     esac
@@ -136,14 +138,33 @@ for a in d.get('assets', []):
         fi
 
         NEW_VER=$(dpkg-deb -f "$DEB" Version 2>/dev/null || echo "?")
-        printf "  installing %s\n" "$NEW_VER"
 
-        systemctl stop bpftune 2>/dev/null || true
-        if ! dpkg -i "$DEB"; then
-            fail "dpkg -i failed — fix apt with 'apt-get install -f' and re-run"
+        SKIP_DOWNGRADE=0
+        if [ "$ALREADY_INSTALLED" = 1 ] && dpkg --compare-versions "$NEW_VER" lt "$CURRENT_VER" 2>/dev/null; then
+            warn "Found $NEW_VER but installed is $CURRENT_VER — this would be a DOWNGRADE"
+            if [ "$FORCE_DOWNGRADE" = 1 ]; then
+                ok "proceeding with downgrade (--force-downgrade)"
+            elif [ "$ASSUME_YES" = 1 ]; then
+                warn "--yes implies no downgrade — skipping"
+                SKIP_DOWNGRADE=1
+            else
+                printf "  Proceed with downgrade? [y/N] "
+                read -r REPLY; REPLY="${REPLY:-n}"
+                [[ "$REPLY" =~ ^[Yy]$ ]] || SKIP_DOWNGRADE=1
+            fi
         fi
-        systemctl enable --now bpftune
-        ok "bpftune $(dpkg-query -W -f='${Version}' bpftune) installed and started"
+
+        if [ "$SKIP_DOWNGRADE" = 1 ]; then
+            ok "keeping installed version $CURRENT_VER"
+        else
+            printf "  installing %s\n" "$NEW_VER"
+            systemctl stop bpftune 2>/dev/null || true
+            if ! dpkg -i "$DEB"; then
+                fail "dpkg -i failed — fix apt with 'apt-get install -f' and re-run"
+            fi
+            systemctl enable --now bpftune
+            ok "bpftune $(dpkg-query -W -f='${Version}' bpftune) installed and started"
+        fi
     fi
 fi
 

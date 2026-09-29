@@ -29,14 +29,16 @@ trap 'fail "Aborted at line $LINENO (exit code $?)"' ERR
 # ---------- Parse args ----------
 DO_TUNER=1
 DO_DASHBOARD=1
+FORCE_DOWNGRADE=0
 SHOW_HELP=0
 
 for arg in "$@"; do
     case "$arg" in
-        --tuner-only)      DO_DASHBOARD=0 ;;
-        --dashboard-only)  DO_TUNER=0 ;;
-        --help|-h)         SHOW_HELP=1 ;;
-        *)                 fail "Unknown flag: $arg (try --help)" ;;
+        --tuner-only)       DO_DASHBOARD=0 ;;
+        --dashboard-only)   DO_TUNER=0 ;;
+        --force-downgrade)  FORCE_DOWNGRADE=1 ;;
+        --help|-h)          SHOW_HELP=1 ;;
+        *)                  fail "Unknown flag: $arg (try --help)" ;;
     esac
 done
 
@@ -118,6 +120,22 @@ for a in d.get('assets', []):
         fi
     elif [ "$NEW_VER" = "$CURRENT_VER" ]; then
         ok "already at latest version ($CURRENT_VER) — skipping .deb install"
+    elif dpkg --compare-versions "$NEW_VER" lt "$CURRENT_VER" 2>/dev/null; then
+        warn "Found $NEW_VER but installed is $CURRENT_VER — this would be a DOWNGRADE"
+        if [ "$FORCE_DOWNGRADE" = 1 ]; then
+            ok "proceeding with downgrade (--force-downgrade)"
+            printf "  downgrading: %s → %s\n" "$CURRENT_VER" "$NEW_VER"
+            systemctl stop bpftune 2>/dev/null || true
+            if ! dpkg -i "$DEB_TO_INSTALL"; then
+                fail "dpkg -i failed — run 'apt-get install -f' then re-run this script"
+            fi
+            systemctl start bpftune
+            sleep 1
+            ok "bpftune downgraded to $(dpkg-query -W -f='${Version}' bpftune)"
+        else
+            fail "Refusing to downgrade $CURRENT_VER → $NEW_VER without --force-downgrade.
+   If you really want to downgrade, re-run with: bash update.sh --force-downgrade"
+        fi
     else
         printf "  upgrading: %s → %s\n" "$CURRENT_VER" "$NEW_VER"
         systemctl stop bpftune 2>/dev/null || true
