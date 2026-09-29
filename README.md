@@ -165,62 +165,64 @@ Configurable prefix masking: `bpftune --prefix4=24 --prefix6=64` (runtime, takes
 Full web dashboard with real-time SSE (Server-Sent Events) updates:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  bpftune   [bucket ▼ location-a (1)]  [range 1h|24h|7d|all] Edit Labels │
-│                                       updated 18s ago                   │
-├─────────────────────────────────────────────────────────────────────────┤
-│  NOW (location-a)                                                       │
-│  instances 820   rate best 87.2 Mb/s   ref rate 0.0   min RTT 34.9 ms   │
-│  best alg dctcp   streak 3   swaps 12   algs 16                         │
-│  (no live rates for this bucket)  ← shown when bucket has no live data  │
-├──────────────────────────────┬──────────────────────────────────────────┤
-│  BUILD / SERVICE             │  SYSTEM FACTS                            │
-│  version    0.4.83           │  kernel     6.12.0-amd64                 │
-│  dashboard  abc1234          │  default CC cubic                        │
-│  service    active           │  cpu cores   2                           │
-│  uptime     0h 12m           │  load        0.18 0.15 0.05              │
-│  started    04:08:09 UTC     │  memory      536MB / 1.01GB              │
-│                              │  host uptime 3d 2h 15m                   │
-├──────────────────────────────┴──────────────────────────────────────────┤
-│  BPFTUNE-MANAGED TUNABLES                                               │
-│  core.netdev_budget=14300        core.netdev_budget_usecs=47681         │
-│  ipv4.tcp_rmem=4096 87380 2500000                                       │
-│  ipv4.tcp_wmem=4096 65536 67108864                                      │
-│  core.rmem_default=1048576                                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│  TOP DESTINATION BUCKETS                                                │
-│  dest          inst    rtt    ref     best     algs  coverage           │
-│  2001:db8::    12K     0.0    0.0     cubic    16    —                  │
-│  location-a    820     34.9   0.0     dctcp    16    —                  │
-│  198.51.100.0  1.6K    65.1   67.1    scalable 15    —                  │
-│  ...                                                                    │
-├──────────────────────────────┬──────────────────────────────────────────┤
-│  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD                      │
-│  alg      re    ss  pen score │  alg       good  prvd  p_max  s_avg     │
-│  westwood 87.2  256 1.0 109  │  scalable  9     29    351.3  62.9       │
-│  lp       90.4  256 0.8 90.4 │  cubic     2      4    235.2  18.1       │
-│  cubic    88.8  256 0.8 88.8 │  dctcp     5      7    229.2  44.7       │
-│  ...                          │  ...                                    │
-├──────────────────────────────┴──────────────────────────────────────────┤
-│  SWAP OUTCOMES (sustained)            RECENT SWAPS                      │
-│  win   55  46%                       htcp→highspeed   location-a · 9s   │
-│  null  53  44%                       dctcp→highspeed  location-a · 21s  │
-│  loss  13  11%                       bbr→highspeed    location-a · 3m   │
-│  loss recovery: 5 rescued / 8 full   ...                                │
-├──────────────────────────────┬──────────────────────────────────────────┤
-│  RECENT PROOFS                │  RATE PROGRESSION                       │
-│  westwood  location-a  63.4  │  thr      n    mean   min   max          │
-│  scalable  location-a  62.9 │  1000     92   2.1    0.0   29.1          │
-│  dctcp     198.51.100 44.7  │  10000    60   2.1    0.0   29.1          │
-│  ...                          │  ...                                    │
-├──────────────────────────────┴──────────────────────────────────────────┤
-│  [All Buckets ▼]   — dropdown filters ALL panels by bucket              │
-│                                                                         │
-│  Rate EMA per algorithm — Mb/s   ████▆▆▅▅▄▄▃▃  (1h: last 60min)    │
-│  Swap Score per algorithm       ██████████████                          │
-│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                               │
-│  Swaps per bin                  ▃ ▅▇█▇▅▃ ▁▁  (same axis as above)  │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  bpftune   [bucket ▼ location-a (1)]  [range 1h|24h|7d|all] Edit Labels         │
+│                                       updated 18s ago                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  NOW (location-a)                                                               │
+│  instances 820   rate best 87.2 Mb/s   ref rate 0.0   min RTT 34.9 ms           │
+│  best alg dctcp   streak 3   swaps 12   algs 16                                 │
+│  (no live rates for this bucket)  ← shown when bucket has no live data          │
+├──────────────────────────────────────────────┬──────────────────────────────────┤
+│  BUILD / SERVICE                             │  SYSTEM FACTS                    │
+│  version    0.4.83                           │  kernel     6.12.0-amd64         │
+│  dashboard  abc1234                          │  default CC cubic                │
+│  service    active                           │  cpu cores   2                   │
+│  uptime     0h 12m                           │  load        0.18 0.15 0.05      │
+│  started    04:08:09 UTC                     │  memory      536MB / 1.01GB      │
+│                                              │  host uptime 3d 2h 15m           │
+├──────────────────────────────────────────────┴──────────────────────────────────┤
+│  BPFTUNE-MANAGED TUNABLES                                                       │
+│  core.netdev_budget=14300        core.netdev_budget_usecs=47681                 │
+│  ipv4.tcp_rmem=4096 87380 2500000                                               │
+│  ipv4.tcp_wmem=4096 65536 67108864                                              │
+│  core.rmem_default=1048576                                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  TOP DESTINATION BUCKETS                                                        │
+│  dest          inst    rtt    ref     best     algs  coverage                   │
+│  2001:db8::    12K     0.0    0.0     cubic    16    —                          │
+│  location-a    820     34.9   0.0     dctcp    16    —                          │
+│  198.51.100.0  1.6K    65.1   67.1    scalable 15    —                          │
+│  ...                                                                            │
+├──────────────────────────────────────────────┬──────────────────────────────────┤
+│  SWAP TARGET LEADERBOARD                     │  RECENT SWAPS                    │
+│  alg      re    ss  pen score                │  htcp→highspeed  loc-a · 9s      │
+│  westwood 87.2  256 1.0 109                  │  dctcp→highspeed loc-a · 21s     │
+│  lp       90.4  256 0.8 90.4                 │  bbr→highspeed   loc-a · 3m      │
+│  cubic    88.8  256 0.8 88.8                 │  ...                             │
+│  ...                                         │                                  │
+├──────────────────────────────────────────────┼──────────────────────────────────┤
+│  PROOF LEADERBOARD                           │  RECENT PROOFS                   │
+│  alg       good  prvd  p_max                 │  westwood  loc-a    63.4         │
+│  scalable  9     29    351.3                 │  scalable  loc-a    62.9         │
+│  cubic     2     4     235.2                 │  dctcp     198.51.100 44.7       │
+│  dctcp     5     7     229.2                 │  ...                             │
+│  ...                                         │                                  │
+├──────────────────────────────────────────────┼──────────────────────────────────┤
+│  RATE PROGRESSION                            │  SWAP OUTCOMES (sustained)       │
+│  thr      n    mean   min   max              │  win   55  46%                   │
+│  1000     92   2.1    0.0   29.1             │  null  53  44%                   │
+│  10000    60   2.1    0.0   29.1             │  loss  13  11%                   │
+│  ...                                         │  loss recovery: 5/8 full         │
+│                                              │  ...                             │
+├──────────────────────────────────────────────┴──────────────────────────────────┤
+│  [All Buckets ▼]   — dropdown filters ALL panels by bucket                      │
+│                                                                                 │
+│  Rate EMA per algorithm — Mb/s   ████▆▆▅▅▄▄▃▃  (1h: last 60min)            │
+│  Swap Score per algorithm       ██████████████                                  │
+│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                                       │
+│  Swaps per bin                  ▃ ▅▇█▇▅▃ ▁▁  (same axis as above)          │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Two-tier real-time collection
