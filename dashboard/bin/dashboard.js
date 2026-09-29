@@ -1396,6 +1396,9 @@ function _populateBucketSelect(desiredBucket) {
          * to the saved bucket and then loading a different one, so
          * the chart showed one bucket's data under another's name
          * until the user re-selected. */
+        if (bs.value === 'all') {
+          return Promise.resolve();
+        }
         return loadBucket(bs.value);
       })
       .then(function () {
