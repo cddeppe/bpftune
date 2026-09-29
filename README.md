@@ -166,21 +166,21 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  bpftune   [bucket ▼ home-sco (1)]   [range 1h|24h|7d|all]   Edit Labels │
+│  bpftune   [bucket ▼ location-a (1)]  [range 1h|24h|7d|all]   Edit Labels │
 │                                       updated 18s ago                    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  NOW (home-sco)                                                         │
+│  NOW (location-a)                                                       │
 │  instances 820   rate best 87.2 Mb/s   ref rate 0.0   min RTT 34.9 ms  │
-│  best alg dctcp   streak 3   swaps 12   algs 16                        │
+│  best alg dctcp   streak 3   swaps 12   algs 16                         │
 │  (no live rates for this bucket)  ← shown when bucket has no live data  │
 ├──────────────────────────────┬──────────────────────────────────────────┤
 │  BUILD / SERVICE             │  SYSTEM FACTS                            │
-│  version    0.4.83           │  kernel     6.12.197+deb13-amd64         │
-│  dashboard  4bd8c86          │  default CC scalable                    │
+│  version    0.4.83           │  kernel     6.12.0-amd64               │
+│  dashboard  abc1234          │  default CC cubic                      │
 │  service    active           │  cpu cores   2                           │
-│  uptime     13h 56m          │  load        0.51 0.74 0.66              │
-│  started    04:08:09 UTC     │  memory      1.39 GB / 4.11 GB (34%)     │
-│                              │  host uptime 10d 5h 28m                 │
+│  uptime     0h 12m           │  load        0.18 0.15 0.05            │
+│  started    04:08:09 UTC     │  memory      536MB / 1.01GB             │
+│                              │  host uptime 3d 2h 15m                   │
 ├──────────────────────────────┴──────────────────────────────────────────┤
 │  BPFTUNE-MANAGED TUNABLES                                               │
 │  core.netdev_budget=14300        core.netdev_budget_usecs=47681          │
@@ -190,9 +190,9 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 ├─────────────────────────────────────────────────────────────────────────┤
 │  TOP DESTINATION BUCKETS                                                │
 │  dest          inst    rtt    ref     best     algs  coverage           │
-│  v6:26061a40   12K     0.0    0.0     cubic    16    —                 │
-│  home-sco      820     34.9   0.0     dctcp    16    —                  │
-│  91.123.0.0    1.6K    65.1   67.1    scalable 15    —                   │
+│  2001:db8::    12K     0.0    0.0     cubic    16    —                  │
+│  location-a    820     34.9   0.0     dctcp    16    —                  │
+│  198.51.100.0  1.6K    65.1   67.1    scalable 15    —                   │
 │  ...                                                                    │
 ├──────────────────────────────┬──────────────────────────────────────────┤
 │  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD                      │
@@ -203,15 +203,15 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 │  ...                          │  ...                                    │
 ├──────────────────────────────┴──────────────────────────────────────────┤
 │  SWAP OUTCOMES (sustained)            RECENT SWAPS                      │
-│  win   55  46%                       htcp→highspeed   home-sco · 9s    │
-│  null  53  44%                       dctcp→highspeed  home-sco · 21s   │
-│  loss  13  11%                       bbr→highspeed    home-sco · 3m    │
+│  win   55  46%                       htcp→highspeed   location-a · 9s  │
+│  null  53  44%                       dctcp→highspeed  location-a · 21s │
+│  loss  13  11%                       bbr→highspeed    location-a · 3m   │
 │  loss recovery: 5 rescued / 8 full   ...                               │
 ├──────────────────────────────┬──────────────────────────────────────────┤
 │  RECENT PROOFS                │  RATE PROGRESSION                       │
-│  westwood  home-sco  63.4    │  thr      n    mean   min   max         │
-│  scalable  home-sco  62.9    │  1000     92   2.1    0.0   29.1        │
-│  dctcp     91.123    44.7    │  10000    60   2.1    0.0   29.1        │
+│  westwood  location-a  63.4  │  thr      n    mean   min   max         │
+│  scalable  location-a  62.9 │  1000     92   2.1    0.0   29.1        │
+│  dctcp     198.51.100 44.7  │  10000    60   2.1    0.0   29.1        │
 │  ...                          │  ...                                    │
 ├──────────────────────────────┴──────────────────────────────────────────┤
 │  [All Buckets ▼]   — dropdown filters ALL panels by bucket             │
@@ -454,7 +454,7 @@ rm /var/lib/bpftune/tcp_conn_tuner.state
 systemctl start bpftune
 ```
 
-Daily backup at `/mnt/backup/tcp_conn_tuner.state.$(date +%A)` (7-day rotation).
+A daily backup (7-day rotation) is recommended — set up a cron job to copy the state file to a backup directory of your choice.
 
 ### Dashboard-managed sysctls
 
@@ -484,7 +484,7 @@ curl -fsSL https://raw.githubusercontent.com/cddeppe/bpftune/main/install.sh | s
 
 Flags: `--yes` (non-interactive), `--no-dashboard` (tuner only), `--dashboard-only` (dashboard only), `--help`.
 
-The installer detects arch (amd64/arm64), finds `.deb` in `/mnt/backup/` or downloads from GitHub releases, installs via `dpkg -i`, optionally deploys the dashboard (git clone `dashboard` branch, systemd services, nginx `:8080`, cron, tests).
+The installer detects arch (amd64/arm64), finds `.deb` in a local backup directory or downloads from GitHub releases, installs via `dpkg -i`, optionally deploys the dashboard (git clone `dashboard` branch, systemd services, nginx `:8080`, cron, tests).
 
 ### Update an existing host
 
@@ -498,7 +498,7 @@ The updater checks installed vs latest GitHub release, refuses to downgrade with
 
 ### Cut a new release (builder host)
 
-On the builder (`vps-3959` for amd64, `instance-20250225-1017` for arm64):
+On the builder host (amd64) and the arm64 builder:
 
 ```bash
 cd /root/bpftune
@@ -506,10 +506,10 @@ git checkout main
 rm -f src/*.skel.h src/*.bpf.o src/*.o    # mandatory — stale objects bite
 make clean
 dpkg-buildpackage -b -us -uc
-cp ../bpftune_*_*.deb /mnt/backup/
+cp ../bpftune_*_*.deb /your/backup/dir/
 ```
 
-Then on `vps-3959` (after both arch `.deb`s are in `/mnt/backup/`), run the atomic release pusher to create the GitHub release with `bpftune-custom-<ver>-<arch>.deb` assets. The release is what `install.sh` and `update.sh` download from.
+Once both arch `.deb`s are in your backup directory, run the atomic release pusher to create the GitHub release with `bpftune-custom-<ver>-<arch>.deb` assets. The release is what `install.sh` and `update.sh` download from.
 
 ### Deploy dashboard to other hosts
 
