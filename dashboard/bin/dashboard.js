@@ -1212,26 +1212,39 @@
         var t = s.ts || 0;
         if (t >= now - rSec) { var b = Math.floor(t/bSec)*bSec; bins[b] = (bins[b]||0)+1; }
       });
-      // Build bin axis to match Rate EMA / Swap Score / Bad Streak exactly.
-      // Those charts use the ts array computed in renderBucket (state.bucketDoc.series[rng].ts
-      // or state.bucketLive[bid].ts for the 1h range), exposed via window.__bucket_ts.
-      // We bin the swaps into the same [tMin, tMax] span at bSec granularity so all
-      // four charts share the exact same x-axis. Fallback (no bucket data yet): span
-      // (now - rSec) to now snapped to bin boundaries. "all" range keeps only-populated
-      // bins (otherwise we'd generate millions of empties).
+      // Use the SAME ts array as Rate EMA / Swap Score / Bad Streak (exposed via
+      // window.__bucket_ts from renderBucket) so all four charts share an identical
+      // x-axis, tick-for-tick. Each swap is assigned to its nearest sample timestamp
+      // (no bSec binning, no Math.floor snap — that was causing a 1-bin left-shift
+      // because rate_ema samples land at ~:30 past each minute, not at :00).
+      // Fallback (no bucket data yet): bSec-binned axis spanning (now - rSec, now).
+      // "all" range: keep only-populated bins (avoid millions of empties).
       var tsRange = window.__bucket_ts;
-      var sk;
+      var sk, swapCounts;
       if (rng === "all") {
         sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
+        swapCounts = sk.map(function(t){return bins[t] || 0;});
       } else if (tsRange && tsRange.length) {
-        var tMin = Math.min.apply(null, tsRange);
-        var tMax = Math.max.apply(null, tsRange);
-        var startBin = Math.floor(tMin / bSec) * bSec;
-        var endBin   = Math.floor(tMax / bSec) * bSec;
-        sk = [];
-        for (var b = startBin; b <= endBin; b += bSec) {
-          sk.push(b);
-        }
+        // Use tsRange directly as the bin labels — same array the other charts use.
+        sk = tsRange.slice().sort(function(a,b){return a-b;});
+        swapCounts = sk.map(function(){return 0;});
+        // Assign each swap to its nearest ts in sk (binary search; sk is small,
+        // typically 25-300 entries for 1h-7d ranges).
+        sw.forEach(function(s) {
+          var t = s.ts || 0;
+          if (t <= sk[0])              { swapCounts[0]++; return; }
+          if (t >= sk[sk.length - 1]) { swapCounts[sk.length - 1]++; return; }
+          var lo = 0, hi = sk.length - 1;
+          while (lo < hi - 1) {
+            var mid = (lo + hi) >> 1;
+            if (sk[mid] <= t) lo = mid; else hi = mid;
+          }
+          if (Math.abs(t - sk[lo]) <= Math.abs(t - sk[hi])) {
+            swapCounts[lo]++;
+          } else {
+            swapCounts[hi]++;
+          }
+        });
       } else {
         var endBin   = Math.floor(now / bSec) * bSec;
         var startBin = Math.floor((now - rSec) / bSec) * bSec;
@@ -1239,8 +1252,9 @@
         for (var b = startBin; b <= endBin; b += bSec) {
           sk.push(b);
         }
+        swapCounts = sk.map(function(t){return bins[t] || 0;});
       }
-      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t] || 0;})};
+      if (sk.length) d = {ts: sk, swaps: swapCounts};
     }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
