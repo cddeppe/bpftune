@@ -1011,6 +1011,11 @@
           time: {tooltipFormat: "MMM d, HH:mm"},
           grid: {display: false},
           ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4},
+          // Force the x-axis to span the fixed window [now-rSec, now] even
+          // when actual data only covers part of it.  Set by renderBucket
+          // and renderSwaps after buildFixedAxis(); undefined for "all".
+          min: window.__chart_axis_min || undefined,
+          max: window.__chart_axis_max || undefined,
         },
         y: {
           beginAtZero: false,
@@ -1023,7 +1028,21 @@
         tooltip: {displayColors: true, boxPadding: 4},
       },
     };
-    return Object.assign(base, extra || {});
+    if (!extra) return base;
+    // Shallow-merge top-level keys, but deep-merge scales so charts that pass
+    // extra.scales = {x:..., y:...} (overriding base.scales) still inherit
+    // base.scales.x.min/max and other base props not in their extra.
+    var result = Object.assign({}, base);
+    for (var k in extra) {
+      if (k === 'scales' && extra.scales) {
+        result.scales = {};
+        result.scales.x = Object.assign({}, base.scales.x || {}, extra.scales.x || {});
+        result.scales.y = Object.assign({}, base.scales.y || {}, extra.scales.y || {});
+      } else {
+        result[k] = extra[k];
+      }
+    }
+    return result;
   }
 
   // ---- Fixed-axis helpers ----
@@ -1116,6 +1135,14 @@
     if (__fixedAxis) {
       s = rebinOntoAxis(ts, s, __fixedAxis.ts, __fixedAxis.interval);
       ts = __fixedAxis.ts;
+      // Expose min/max so timeOpts() can force x-axis to span the full
+      // [now-rSec, now] window even where data is null.
+      window.__chart_axis_min = ts[0] * 1000;
+      window.__chart_axis_max = ts[ts.length - 1] * 1000;
+    } else {
+      // "all" range — let Chart.js auto-scale to data extent
+      window.__chart_axis_min = undefined;
+      window.__chart_axis_max = undefined;
     }
 
     function makeSeries(prefix, source) {
@@ -1275,6 +1302,15 @@
       var sw = sse.swap_outcomes.swaps_list;
       var now = (sse.generated_ts || (Date.now()/1000));
       var fixedAxis = buildFixedAxis(rng, now);
+      // Set min/max globals (same as renderBucket) so this chart's x-axis
+      // also spans the full fixed window even where bins are 0.
+      if (fixedAxis) {
+        window.__chart_axis_min = fixedAxis.ts[0] * 1000;
+        window.__chart_axis_max = fixedAxis.ts[fixedAxis.ts.length - 1] * 1000;
+      } else {
+        window.__chart_axis_min = undefined;
+        window.__chart_axis_max = undefined;
+      }
       if (fixedAxis) {
         // Use the SAME fixed-axis ts as Rate EMA / Swap Score / Bad Streak so
         // all four charts share an identical x-axis.  Each swap is assigned
