@@ -1011,48 +1011,33 @@ def _start_sse_server(port=8082):
 
 
 def _lightweight_loop(_running):
-    """30s lightweight collection: BPF map only (no log parsing).
+    """30s lightweight collection: BPF map + incremental log parsing.
 
-    Reads the BPF map via bpftool (~50ms), builds a doc with just
-    buckets + build + system + generated_ts, merges with the last
-    full collect_all() result (so log-parsed panels stay fresh),
-    and stores in _last_result for SSE to push.
+    Reads BPF map (~50ms) + new log lines via tail_incremental (10-50
+    lines, not 2MB).  Parses new swaps/proofs, merges with last full
+    collection result.  Uses a SEPARATE offset dict so the 30s and 5min
+    loops don't conflict.
 
-    This gives the browser 30s updates for the NOW panel and buckets
-    without the ~2s cost of full log parsing.
+    Updates every 30s: NOW panel, buckets, recent_swaps, recent_proofs,
+    swap_outcomes, churn, log_window, proofs_raw, rate_raw.
+    Stays from 5min: proof leaderboard, rate progression, divergence,
+    metric, bucket_live, live_leaders, tunables.
     """
     global _last_result, _last_full_result
-    print("collector: lightweight loop started (30s interval)", file=sys.stderr)
+    _lw_offsets = {}  # SEPARATE offsets for 30s loop (don't share with 5min)
+    print("collector: lightweight loop started (30s interval, incremental log)", file=sys.stderr)
     while _running[0]:
         try:
-            ts = int(time.time())
-            map_data, _ = read_map_data()
-            if map_data and _cli_mod:
-                # Build lightweight doc from BPF map data
-                hosts = []
-                for addr, v in map_data.items():
-                    try:
-                        inst = int(v.get('instances', 0))
-                    except Exception:
-                        continue
-                    hosts.append((inst, addr, v))
-                hosts.sort(key=lambda x: -x[0])
-                light_doc = {
-                    'generated_ts': ts,
-                    'hostname': os.uname().nodename,
-                    'now_mono': _cli_mod._uptime_now(),
-                    'buckets': _cli_mod.data_buckets(hosts),
-                    'build': _cli_mod.data_build(_cli_mod.find_log()),
-                    'system': _cli_mod.data_system(),
-                }
-                # Merge with last full result (keep log-parsed panels)
+            map_data, map_raw = read_map_data()
+            if _cli_mod:
+                # Get the last full result as base for merging
                 with _result_lock:
-                    if _last_full_result:
-                        merged = dict(_last_full_result)
-                        merged.update(light_doc)
-                        _last_result = merged
-                    else:
-                        _last_result = light_doc
+                    base = _last_full_result
+                # Collect lightweight: BPF map + incremental log parsing
+                doc = _cli_mod.collect_lightweight(
+                    _lw_offsets, map_raw, base_result=base)
+                with _result_lock:
+                    _last_result = doc
         except Exception as e:
             print("collector: lightweight error: %s" % e, file=sys.stderr)
         # Sleep 30s in 1s increments for responsive shutdown

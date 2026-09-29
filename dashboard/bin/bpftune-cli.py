@@ -126,6 +126,117 @@ def _build_result(logpath, text, hosts):
     }
 
 
+def collect_lightweight(offsets, map_raw=None, base_result=None):
+    """Lightweight 30s collection: BPF map + incremental log parsing.
+
+    Reads only NEW log lines (via tail_incremental), parses new
+    swaps/proofs/srates from them, merges with base_result (last
+    5-min full collection).  Updates:
+      - buckets, build, system, generated_ts (from BPF map)
+      - recent_swaps, recent_proofs (append new, cap at 20/16)
+      - swap_outcomes.swaps_list (append new, cap at 2000)
+      - swap_outcomes counts (recompute from merged swaps_list)
+      - churn, log_window, proofs_raw, rate_raw
+    Does NOT recompute: proof (leaderboard), rate (progression),
+    divergence, metric, metric_by_bucket, bucket_live, live_leaders,
+    tunables — these stay from the 5-min full collection.
+    """
+    # Read new log lines (typically 10-50 lines, not 2MB)
+    text, _new_offsets = tail_incremental(offsets)
+    # Clear the _swaps_mets_srates cache — text changed
+    bpftune_log._SWMS_CACHE = {}
+
+    # Start from base_result (last full collection) or empty
+    doc = dict(base_result) if base_result else {}
+
+    # Update BPF map data
+    hosts = read_map()
+    logpath = find_log()
+    doc['generated_ts'] = int(time.time())
+    doc['hostname'] = os.uname().nodename
+    doc['now_mono'] = _uptime_now()
+    doc['buckets'] = _safe(lambda: data_buckets(hosts), [], 'lw_buckets')
+    doc['build'] = _safe(lambda: data_build(logpath), {}, 'lw_build')
+    doc['system'] = _safe(data_system, {}, 'lw_system')
+
+    if text:
+        # Parse new swaps/proofs from incremental log lines
+        new_swaps = _safe(lambda: data_recent_swaps(text), [], 'lw_recent_swaps')
+        new_proofs = _safe(lambda: data_recent_proofs(text), [], 'lw_recent_proofs')
+        new_swap_outcomes = _safe(lambda: data_swap_outcomes(text),
+            {'composite':{'measurable':0,'unmeasurable':0,'win':0,'win_pct':0,'null':0,'null_pct':0,'loss':0,'loss_pct':0},
+             'srate':{'measurable':0,'unmeasurable':0,'win':0,'win_pct':0,'null':0,'null_pct':0,'loss':0,'loss_pct':0},
+             'sustained':{'measurable':0,'unmeasurable':0,'win':0,'win_pct':0,'null':0,'null_pct':0,'loss':0,'loss_pct':0},
+             'swaps_list':[]}, 'lw_swap_outcomes')
+        new_churn = _safe(lambda: data_churn(text),
+            {'cookies':0,'one':0,'mid':0,'many':0,'max':0}, 'lw_churn')
+        new_proofs_raw = _safe(lambda: _proofs_with_dest(text), [], 'lw_proofs_raw')
+        new_rate_raw = _safe(lambda: _rate_samples_with_dest(text), [], 'lw_rate_raw')
+        new_log_window = _safe(lambda: _log_window(text),
+            {'oldest_ts':0,'newest_ts':0,'span_min':0,'swap_count':0,'age_min':0}, 'lw_log_window')
+        new_bucket_ips = _safe(lambda: data_bucket_ips(text), {}, 'lw_bucket_ips')
+
+        # Merge: append new items to base, cap sizes
+        if base_result:
+            # Recent swaps: append new, keep last 20
+            old_swaps = base_result.get('recent_swaps', [])
+            doc['recent_swaps'] = (old_swaps + new_swaps)[-20:]
+
+            # Recent proofs: append new, keep last 16
+            old_proofs = base_result.get('recent_proofs', [])
+            doc['recent_proofs'] = (old_proofs + new_proofs)[-16:]
+
+            # Swap outcomes: append new swaps_list, cap at 2000
+            old_so = base_result.get('swap_outcomes', {})
+            old_swaps_list = old_so.get('swaps_list', [])
+            new_swaps_list = new_swap_outcomes.get('swaps_list', [])
+            merged_swaps_list = (old_swaps_list + new_swaps_list)[-2000:]
+
+            # Recompute outcome counts from merged swaps_list
+            # (just re-run data_swap_outcomes on the merged list)
+            doc['swap_outcomes'] = new_swap_outcomes
+            doc['swap_outcomes']['swaps_list'] = merged_swaps_list
+
+            # Churn: use new (recomputed from new log lines)
+            doc['churn'] = new_churn
+
+            # Proofs/rate raw: append new, cap at 500
+            old_proofs_raw = base_result.get('proofs_raw', [])
+            doc['proofs_raw'] = (old_proofs_raw + new_proofs_raw)[-500:]
+            old_rate_raw = base_result.get('rate_raw', [])
+            doc['rate_raw'] = (old_rate_raw + new_rate_raw)[-500:]
+
+            # Bucket IPs: merge
+            old_bucket_ips = base_result.get('bucket_ips', {})
+            merged_bucket_ips = dict(old_bucket_ips)
+            for k, v in new_bucket_ips.items():
+                if k in merged_bucket_ips:
+                    for ip in v:
+                        if ip not in merged_bucket_ips[k]:
+                            merged_bucket_ips[k].append(ip)
+                else:
+                    merged_bucket_ips[k] = v
+            doc['bucket_ips'] = merged_bucket_ips
+        else:
+            # No base result — just use new data
+            doc['recent_swaps'] = new_swaps
+            doc['recent_proofs'] = new_proofs
+            doc['swap_outcomes'] = new_swap_outcomes
+            doc['churn'] = new_churn
+            doc['proofs_raw'] = new_proofs_raw
+            doc['rate_raw'] = new_rate_raw
+            doc['bucket_ips'] = new_bucket_ips
+
+        # Log window: use new (has fresh timestamps)
+        doc['log_window'] = new_log_window
+    else:
+        # No new log lines — keep base log_window
+        doc['log_window'] = doc.get('log_window',
+            {'oldest_ts':0,'newest_ts':0,'span_min':0,'swap_count':0,'age_min':0})
+
+    return doc
+
+
 # ---------- text renderer ----------
 
 
