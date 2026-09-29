@@ -169,7 +169,7 @@ def writeback_streaks(swaps):
     try:
         with open(WB_THROTTLE_FILE,'r') as f: last_ts=float(f.read().strip() or 0)
     except (OSError,ValueError): pass
-    new_swaps=[s for s in swaps if s.get('outcome_sustained')]  # ALL sustained swaps, not just new ones
+    new_swaps=[s for s in swaps if s.get('outcome_sustained') or s.get('outcome')]  # ALL sustained swaps, not just new ones
     if not new_swaps:
         try: os.utime(WB_THROTTLE_FILE,None)
         except OSError:
@@ -196,7 +196,7 @@ def writeback_streaks(swaps):
         for alg_idx in new_algs:
             recent=sorted([s for s in swaps if _masked_ip(s.get('remote_host') or '')==host and s.get('to_alg')==alg_idx and s.get('outcome_sustained')],key=lambda x:x.get('ts',0))[-WRITEBACK_WINDOW:]
             if not recent: continue
-            outcomes=[s.get('outcome_sustained') for s in recent]
+            outcomes=[s.get('outcome_sustained') or s.get('outcome') for s in recent]
             bad,null=_streaks_from_history(outcomes)
             _patch_streaks(buf,alg_idx,bad,null,outcomes); patches+=1
         if patches==0: continue
