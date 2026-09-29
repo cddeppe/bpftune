@@ -1209,8 +1209,23 @@
         var t = s.ts || 0;
         if (t >= now - rSec) { var b = Math.floor(t/bSec)*bSec; bins[b] = (bins[b]||0)+1; }
       });
-      var sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
-      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
+      // Build complete bin axis from (now - rSec) to now, snapped to bin boundaries.
+      // Empty bins get value 0. This makes the x-axis span the full lookback window
+      // (matching Rate EMA / Swap Score / Bad Streak), instead of only the span of
+      // bins that actually contain swaps. For "all" range, keep only-populated bins
+      // (otherwise we'd generate millions of empty bins).
+      var sk;
+      if (rng === "all") {
+        sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
+      } else {
+        var endBin   = Math.floor(now / bSec) * bSec;
+        var startBin = Math.floor((now - rSec) / bSec) * bSec;
+        sk = [];
+        for (var b = startBin; b <= endBin; b += bSec) {
+          sk.push(b);
+        }
+      }
+      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t] || 0;})};
     }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
