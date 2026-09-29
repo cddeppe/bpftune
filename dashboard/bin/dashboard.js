@@ -1045,9 +1045,6 @@
         ts = lb.ts;
       }
     }
-    // Expose ts to renderSwaps so the swaps-per-bin x-axis matches the rate /
-    // score / streak charts exactly (those use this same ts array).
-    window.__bucket_ts = ts && ts.length ? ts.slice() : null;
 
     function makeSeries(prefix, source) {
       source = source || s;
@@ -1212,49 +1209,8 @@
         var t = s.ts || 0;
         if (t >= now - rSec) { var b = Math.floor(t/bSec)*bSec; bins[b] = (bins[b]||0)+1; }
       });
-      // Use the SAME ts array as Rate EMA / Swap Score / Bad Streak (exposed via
-      // window.__bucket_ts from renderBucket) so all four charts share an identical
-      // x-axis, tick-for-tick. Each swap is assigned to its nearest sample timestamp
-      // (no bSec binning, no Math.floor snap — that was causing a 1-bin left-shift
-      // because rate_ema samples land at ~:30 past each minute, not at :00).
-      // Fallback (no bucket data yet): bSec-binned axis spanning (now - rSec, now).
-      // "all" range: keep only-populated bins (avoid millions of empties).
-      var tsRange = window.__bucket_ts;
-      var sk, swapCounts;
-      if (rng === "all") {
-        sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
-        swapCounts = sk.map(function(t){return bins[t] || 0;});
-      } else if (tsRange && tsRange.length) {
-        // Use tsRange directly as the bin labels — same array the other charts use.
-        sk = tsRange.slice().sort(function(a,b){return a-b;});
-        swapCounts = sk.map(function(){return 0;});
-        // Assign each swap to its nearest ts in sk (binary search; sk is small,
-        // typically 25-300 entries for 1h-7d ranges).
-        sw.forEach(function(s) {
-          var t = s.ts || 0;
-          if (t <= sk[0])              { swapCounts[0]++; return; }
-          if (t >= sk[sk.length - 1]) { swapCounts[sk.length - 1]++; return; }
-          var lo = 0, hi = sk.length - 1;
-          while (lo < hi - 1) {
-            var mid = (lo + hi) >> 1;
-            if (sk[mid] <= t) lo = mid; else hi = mid;
-          }
-          if (Math.abs(t - sk[lo]) <= Math.abs(t - sk[hi])) {
-            swapCounts[lo]++;
-          } else {
-            swapCounts[hi]++;
-          }
-        });
-      } else {
-        var endBin   = Math.floor(now / bSec) * bSec;
-        var startBin = Math.floor((now - rSec) / bSec) * bSec;
-        sk = [];
-        for (var b = startBin; b <= endBin; b += bSec) {
-          sk.push(b);
-        }
-        swapCounts = sk.map(function(t){return bins[t] || 0;});
-      }
-      if (sk.length) d = {ts: sk, swaps: swapCounts};
+      var sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
+      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
     }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
