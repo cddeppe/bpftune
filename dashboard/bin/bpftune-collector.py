@@ -48,6 +48,7 @@ from pathlib import Path
 # The collection loop writes to it (under _result_lock) after each cycle.
 # The SSE server reads it to push updates to connected browsers.
 _last_result = None
+_last_full_result = None  # last 5-min full collect_all() result (for merging)
 _result_lock = threading.Lock()
 
 
@@ -937,8 +938,9 @@ def main():
     doc = run_cli_snapshot(map_raw)
     if doc:
         with _result_lock:
-            global _last_result
+            global _last_result, _last_full_result
             _last_result = doc
+            _last_full_result = doc  # save for lightweight merge
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
 
@@ -1008,6 +1010,58 @@ def _start_sse_server(port=8082):
         print("collector: SSE server failed: %s" % e, file=sys.stderr)
 
 
+def _lightweight_loop(_running):
+    """30s lightweight collection: BPF map only (no log parsing).
+
+    Reads the BPF map via bpftool (~50ms), builds a doc with just
+    buckets + build + system + generated_ts, merges with the last
+    full collect_all() result (so log-parsed panels stay fresh),
+    and stores in _last_result for SSE to push.
+
+    This gives the browser 30s updates for the NOW panel and buckets
+    without the ~2s cost of full log parsing.
+    """
+    print("collector: lightweight loop started (30s interval)", file=sys.stderr)
+    while _running[0]:
+        try:
+            ts = int(time.time())
+            map_data, _ = read_map_data()
+            if map_data and _cli_mod:
+                # Build lightweight doc from BPF map data
+                hosts = []
+                for addr, v in map_data.items():
+                    try:
+                        inst = int(v.get('instances', 0))
+                    except Exception:
+                        continue
+                    hosts.append((inst, addr, v))
+                hosts.sort(key=lambda x: -x[0])
+                light_doc = {
+                    'generated_ts': ts,
+                    'hostname': os.uname().nodename,
+                    'now_mono': _cli_mod._uptime_now(),
+                    'buckets': _cli_mod.data_buckets(hosts),
+                    'build': _cli_mod.data_build(_cli_mod.find_log()),
+                    'system': _cli_mod.data_system(),
+                }
+                # Merge with last full result (keep log-parsed panels)
+                with _result_lock:
+                    if _last_full_result:
+                        merged = dict(_last_full_result)
+                        merged.update(light_doc)
+                        _last_result = merged
+                    else:
+                        _last_result = light_doc
+        except Exception as e:
+            print("collector: lightweight error: %s" % e, file=sys.stderr)
+        # Sleep 30s in 1s increments for responsive shutdown
+        for _ in range(30):
+            if not _running[0]:
+                break
+            time.sleep(1)
+    print("collector: lightweight loop stopped", file=sys.stderr)
+
+
 def _daemon_loop():
     """Run main() every 60 seconds with signal handling."""
     import signal
@@ -1023,6 +1077,9 @@ def _daemon_loop():
     sse_thread = threading.Thread(target=_start_sse_server, daemon=True)
     sse_thread.start()
     print("collector: SSE server started on port 8082", file=sys.stderr)
+    # Start lightweight 30s collection loop (BPF map only, no log parsing)
+    light_thread = threading.Thread(target=_lightweight_loop, args=(_running,), daemon=True)
+    light_thread.start()
     while _running[0]:
         try:
             main()
