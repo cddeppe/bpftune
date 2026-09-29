@@ -1021,6 +1021,7 @@ def _lightweight_loop(_running):
     This gives the browser 30s updates for the NOW panel and buckets
     without the ~2s cost of full log parsing.
     """
+    global _last_result, _last_full_result
     print("collector: lightweight loop started (30s interval)", file=sys.stderr)
     while _running[0]:
         try:
