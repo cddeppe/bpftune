@@ -16,13 +16,13 @@ Instead of picking one congestion control algorithm globally, this fork learns w
 
 ```
                     ┌──────────────────────────────────────────┐
-                    │            BPF kernel programs            │
+                    │            BPF kernel programs           │
                     │         (sockops + sk_storage)           │
                     │                                          │
   TCP ESTABLISHED ──┼──► bucket key = remote_ip (masked /16    │
                     │                          or /32 for v6)  │
-                    │                          │                │
-                    │   ┌────────────────────┘                │
+                    │                          │               │
+                    │   ┌────────────────────┘                 │
                     │   │                                      │
                     │   ▼                                      │
                     │  remote_host_map (LRU_HASH, 4096)        │
@@ -31,23 +31,23 @@ Instead of picking one congestion control algorithm globally, this fork learns w
                     │  │ 198.51.100.0 inst=300  best=htcp   │  │
                     │  │ 2001:db8::   inst=229  best=dctcp  │  │
                     │  │ 2001:db8:1:: inst=12K   best=bbr   │  │
-                    │  │ ...                                    │  │
-                    │  │                                        │  │
-                    │  │ Each bucket has per-algorithm:        │  │
-                    │  │   metric_value  (incremental mean)     │  │
-                    │  │   rate_ema      (exponential moving avg)│ │
-                    │  │   swap_score     (256 = neutral)       │ │
-                    │  │   bad_streak / null_streak             │  │
-                    │  │   sockets_alive / good / proved       │  │
+                    │  │ ...                                │  │
+                    │  │                                    │  │
+                    │  │ Each bucket has per-algorithm:     │  │
+                    │  │   metric_value (incremental mean)  │  │
+                    │  │   rate_ema (exponential moving avg)│  │
+                    │  │   swap_score (256 = neutral)       │  │
+                    │  │   bad_streak / null_streak         │  │
+                    │  │   sockets_alive / good / proved    │  │
                     │  └────────────────────────────────────┘  │
                     │                                          │
-  RTT_CB (every    ──┼──► metric sample at 10K/25K/100K/500K/1M  │
-   checkpoint)        │   segments → vote for best algorithm    │
+  RTT_CB (every    ─┼──► metric sample at 10K/25K/100K/500K/1M │
+   checkpoint)      │     segments → vote for best algorithm   │
                     │                                          │
-                    │   if socket's metric >= 1.25x best:       │
-                    │     → mid-socket swap via                 │
+                    │   if socket's metric >= 1.25x best:      │
+                    │    → mid-socket swap via                 │
                     │       bpf_setsockopt(TCP_CONGESTION)     │
-                    │     → score swap outcome (sustained rate) │
+                    │    → score swap outcome (sustained rate) │
                     │                                          │
                     └──────────────────────────────────────────┘
 ```
@@ -87,19 +87,19 @@ Time ──►
 ESTABLISHED          RTT_CB (bad metric)         swap            RTT_CB (good metric)
     │                     │                        │                    │
     ▼                     ▼                        ▼                    ▼
-    ├──── cubic ──────────┤                        ├──► bbr ──────────┤
-    │   (drawn badly)      │                        │   (rescued)       │
-    │                      │                        │                   │
-    │              metric >= 1.25x best            │                   │
-    │              2 consecutive bad checkpoints   │                   │
-    │              → bpf_setsockopt(TCP_CONGESTION, "bbr")            │
-    │                      │                        │                   │
-    │                      │    score = sustained rate (60-300s)       │
-    │                      │    ratio = peak_rate / pre_swap_rate      │
-    │                      │                        │                   │
-    │                      │    ratio >= 1.10 → WIN                   │
-    │                      │    ratio <= 0.90 → LOSS                  │
-    │                      │    otherwise     → NULL                  │
+    ├──── cubic ──────────┤                        ├──► bbr ────────────┤
+    │   (drawn badly)      │                       │   (rescued)        │
+    │                      │                       │                    │
+    │              metric >= 1.25x best            │                    │
+    │              2 consecutive bad checkpoints   │                    │
+    │              → bpf_setsockopt(TCP_CONGESTION, "bbr")              │
+    │                      │                       │                    │
+    │                      │    score = sustained rate (60-300s)        │
+    │                      │    ratio = peak_rate / pre_swap_rate       │
+    │                      │                       │                    │
+    │                      │    ratio >= 1.10 → WIN                     │
+    │                      │    ratio <= 0.90 → LOSS                    │
+    │                      │    otherwise     → NULL                    │
 ```
 
 The swap trigger uses:
@@ -168,7 +168,7 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 ┌─────────────────────────────────────────────────────────────────┐
 │  bpftune · hostname · 2026-09-29T00:00:00Z                      │
 ├──────────────────────────────┬──────────────────────────────────┤
-│  BUILD / SERVICE             │  SYSTEM FACTS                     │
+│  BUILD / SERVICE             │  SYSTEM FACTS                    │
 │  version    0.4.83           │  kernel     6.12.107             │
 │  dashboard  abc1234          │  default CC cubic                │
 │  service    active           │  cpu cores   2                   │
@@ -176,42 +176,42 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 │                              │  memory      536MB / 1.01GB      │
 ├──────────────────────────────┴──────────────────────────────────┤
 │  BPFTUNE-MANAGED TUNABLES                                       │
-│  core.netdev_budget=913  core.netdev_budget_usecs=24413        │
-│  ipv4.tcp_rmem=4096 87380 64000000                             │
-│  ipv4.tcp_wmem=4096 65536 16777216                             │
+│  core.netdev_budget=913  core.netdev_budget_usecs=24413         │
+│  ipv4.tcp_rmem=4096 87380 64000000                              │
+│  ipv4.tcp_wmem=4096 65536 16777216                              │
 ├─────────────────────────────────────────────────────────────────┤
 │  TOP DESTINATION BUCKETS                                        │
 │  dest          inst    rtt    ref     best     algs  coverage   │
 │  bucket-a      9,212   0.0    0.0     scalable 15    —          │
 │  bucket-b      1,644   34.9   67.1    westwood 16    —          │
-│  bucket-c      1,154   65.1   0.0     dctcp   16    —          │
+│  bucket-c      1,154   65.1   0.0     dctcp   16    —           │
 │  ...                                                            │
 ├──────────────────────────────┬──────────────────────────────────┤
-│  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD               │
+│  SWAP TARGET LEADERBOARD      │  PROOF LEADERBOARD              │
 │  alg      re    ss  pen score │  alg       good  prvd  p_max    │
 │  westwood 87.2  256 1.0 109  │  scalable  9     29    351.3     │
 │  lp       90.4  256 0.8 90.4 │  cubic     2      4    235.2     │
 │  cubic    88.8  256 0.8 88.8 │  dctcp     5      7    229.2     │
-│  ...                          │  ...                             │
+│  ...                          │  ...                            │
 ├──────────────────────────────┴──────────────────────────────────┤
 │  SWAP OUTCOMES (sustained)            RECENT SWAPS              │
 │  win   55  46%                       illinois→westwood  loss    │
-│  null  53  44%                       nv→illinois       win     │
-│  loss  13  11%                       westwood→illinois loss    │
-│  loss recovery: 5 rescued / 8 full   ...                       │
+│  null  53  44%                       nv→illinois       win      │
+│  loss  13  11%                       westwood→illinois loss     │
+│  loss recovery: 5 rescued / 8 full   ...                        │
 ├─────────────────────────────────────────────────────────────────┤
-│  RECENT PROOFS                RATE PROGRESSION                   │
+│  RECENT PROOFS                RATE PROGRESSION                  │
 │  westwood  bucket-c  63.4    thr     n    mean   min   max      │
 │  scalable  bucket-c  62.9    1000    92   2.1    0.0   29.1     │
-│  ...                          10000   60   2.1    0.0   29.1     │
-│                               ...                                │
+│  ...                          10000   60   2.1    0.0   29.1    │
+│                               ...                               │
 ├─────────────────────────────────────────────────────────────────┤
-│  [All Buckets ▼]  — dropdown filters ALL panels by bucket      │
-│                                                                  │
-│  Rate EMA per algorithm — Mb/s  ████▆▆▅▅▄▄▃▃                    │
-│  Swap Score per algorithm       ██████████████                   │
-│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                        │
-│  Swaps per bin                 ▃ ▅▇█▇▅▃ ▁▁                      │
+│  [All Buckets ▼]  — dropdown filters ALL panels by bucket       │
+│                                                                 │
+│  Rate EMA per algorithm — Mb/s  ████▆▆▅▅▄▄▃▃               │
+│  Swap Score per algorithm       ██████████████                  │
+│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄                       │
+│  Swaps per bin                 ▃ ▅▇█▇▅▃ ▁▁                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,7 +253,7 @@ Group IPs by label. The `labels-api` (port 8081) manages:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Kernel (BPF)                              │
+│                        Kernel (BPF)                             │
 │                                                                 │
 │  tcp_conn_tuner.bpf.c (sockops)                                 │
 │    ESTABLISHED → bucket key, alias lookup, prefix mask          │
@@ -264,7 +264,7 @@ Group IPs by label. The `labels-api` (port 8081) manages:
 │  Maps:                                                          │
 │    remote_host_map (LRU_HASH 4096) — per-dest state             │
 │    dest_alias_map (HASH 1024) — IP folding                      │
-│    sk_storage_map — per-socket state (swap count, settle)        │
+│    sk_storage_map — per-socket state (swap count, settle)       │
 │    tuner_config_map — prefix4, prefix6, exp_pct                 │
 │                                                                 │
 │  State: tcp_conn_tuner.state (persisted, version-checked)       │
@@ -283,26 +283,26 @@ Group IPs by label. The `labels-api` (port 8081) manages:
 │    cat /sys/kernel/tracing/trace_pipe → /var/log/bpftune-*.log  │
 │                                                                 │
 │  bpftune-collector.service (daemon, Python)                     │
-│    30s: BPF map + incremental log → current.json + SSE push    │
-│    5min: full log parsing → swap outcomes, proofs, charts        │
+│    30s: BPF map + incremental log → current.json + SSE push     │
+│    5min: full log parsing → swap outcomes, proofs, charts       │
 │    streak_writeback: corrects kernel streaks from sustained     │
 │                                                                 │
 │  labels-api.service (port 8081, Python)                         │
-│    IP label editor + auto_fold + BPF aliases map management    │
+│    IP label editor + auto_fold + BPF aliases map management     │
 │                                                                 │
 │  bpftune-render.py (hourly cron)                                │
-│    CSV → data/*.json (historical pages, swaps.json, fleet.json)│
+│    CSV → data/*.json (historical pages, swaps.json, fleet.json) │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ nginx (port 8080)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Browser (dashboard.js)                    │
+│                      Browser (dashboard.js)                     │
 │                                                                 │
 │  EventSource("/sse") → real-time data push                      │
 │  renderLiveState(doc) → all panels                              │
 │  _filterByBucket(doc, label) → per-bucket filtering             │
-│  _reFilterPanels() → instant re-render on bucket change        │
-│  Chart.js → rate_ema, swap_score, streak, swaps-per-bin        │
+│  _reFilterPanels() → instant re-render on bucket change         │
+│  Chart.js → rate_ema, swap_score, streak, swaps-per-bin         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
