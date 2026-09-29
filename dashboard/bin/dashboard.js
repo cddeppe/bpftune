@@ -1026,6 +1026,68 @@
     return Object.assign(base, extra || {});
   }
 
+  // ---- Fixed-axis helpers ----
+  // Build a continuous ts axis anchored to NOW: [floor(now - rSec), floor(now)]
+  // snapped to interval boundaries. 1h = 60s bins, 24h = 30min bins, 7d = 2h bins.
+  // Returns {ts, interval, rSec} or null for "all" (caller falls back to data's own ts).
+  function buildFixedAxis(rng, now) {
+    if (typeof now === 'undefined') now = Date.now() / 1000;
+    var cfg = {
+      "1h":  {rSec: 3600,    interval: 60},
+      "24h": {rSec: 86400,   interval: 1800},
+      "7d":  {rSec: 604800,  interval: 7200},
+    };
+    var c = cfg[rng];
+    if (!c) return null;
+    var endBin   = Math.floor(now / c.interval) * c.interval;
+    var startBin = endBin - c.rSec;
+    var ts = [];
+    for (var t = startBin; t <= endBin; t += c.interval) {
+      ts.push(t);
+    }
+    return {ts: ts, interval: c.interval, rSec: c.rSec};
+  }
+
+  // For a single targetT, find the closest origTs value within +/-maxDist.
+  // Returns the value or null if no sample is close enough.
+  function rebinValue(origTs, origVals, targetT, maxDist) {
+    if (!origTs.length) return null;
+    if (targetT <= origTs[0]) {
+      return (origTs[0] - targetT <= maxDist) ? origVals[0] : null;
+    }
+    if (targetT >= origTs[origTs.length - 1]) {
+      var lastIdx = origTs.length - 1;
+      return (targetT - origTs[lastIdx] <= maxDist) ? origVals[lastIdx] : null;
+    }
+    var lo = 0, hi = origTs.length - 1;
+    while (lo < hi - 1) {
+      var mid = (lo + hi) >> 1;
+      if (origTs[mid] <= targetT) lo = mid; else hi = mid;
+    }
+    var diffLo = Math.abs(targetT - origTs[lo]);
+    var diffHi = Math.abs(targetT - origTs[hi]);
+    var bestIdx = (diffLo <= diffHi) ? lo : hi;
+    var bestDiff = Math.min(diffLo, diffHi);
+    return (bestDiff <= maxDist) ? origVals[bestIdx] : null;
+  }
+
+  // Rebin a sparse {col: [values]} dict onto a new fixed-axis ts.
+  // Skips the 'ts' key. Values are aligned by nearest original sample;
+  // null where no sample within +/-1.5*interval.
+  function rebinOntoAxis(origTs, origSeriesByCol, newTs, interval) {
+    var maxDist = interval * 1.5;
+    var result = {};
+    for (var col in origSeriesByCol) {
+      if (col === 'ts') continue;
+      var origVals = origSeriesByCol[col];
+      if (!Array.isArray(origVals)) { result[col] = origVals; continue; }
+      result[col] = newTs.map(function(t) {
+        return rebinValue(origTs, origVals, t, maxDist);
+      });
+    }
+    return result;
+  }
+
   function renderBucket() {
     var doc = state.bucketDoc, algs = state.meta.algs;
     var rng = $("range").value;
@@ -1044,6 +1106,16 @@
         for (var k in (lb.cols || {})) s[k] = lb.cols[k];
         ts = lb.ts;
       }
+    }
+    // Build a fixed-axis ts anchored to NOW so all four charts (rate, score,
+    // streak, swaps-per-bin) share the exact same x-axis: [now-rSec, now] at
+    // fixed intervals.  Rebin original series onto this axis (null where no
+    // sample within +/-1.5*interval).  "all" range keeps the original ts.
+    var __now = (window.__filtered_doc && window.__filtered_doc.generated_ts) || (Date.now() / 1000);
+    var __fixedAxis = buildFixedAxis(rng, __now);
+    if (__fixedAxis) {
+      s = rebinOntoAxis(ts, s, __fixedAxis.ts, __fixedAxis.interval);
+      ts = __fixedAxis.ts;
     }
 
     function makeSeries(prefix, source) {
@@ -1202,15 +1274,43 @@
     if (sse && sse.swap_outcomes && sse.swap_outcomes.swaps_list) {
       var sw = sse.swap_outcomes.swaps_list;
       var now = (sse.generated_ts || (Date.now()/1000));
-      var rSec = {"1h":3600,"24h":86400,"7d":604800,"all":999999999}[rng] || 3600;
-      var bSec = {"1h":60,"24h":3600,"7d":21600,"all":86400}[rng] || 60;
-      var bins = {};
-      sw.forEach(function(s) {
-        var t = s.ts || 0;
-        if (t >= now - rSec) { var b = Math.floor(t/bSec)*bSec; bins[b] = (bins[b]||0)+1; }
-      });
-      var sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
-      if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
+      var fixedAxis = buildFixedAxis(rng, now);
+      if (fixedAxis) {
+        // Use the SAME fixed-axis ts as Rate EMA / Swap Score / Bad Streak so
+        // all four charts share an identical x-axis.  Each swap is assigned
+        // to its nearest bin via binary search.  Empty bins -> 0 bars.
+        var swapCounts = fixedAxis.ts.map(function(){return 0;});
+        sw.forEach(function(s) {
+          var t = s.ts || 0;
+          var fa = fixedAxis.ts;
+          if (t < fa[0] || t > fa[fa.length - 1]) return;
+          if (t <= fa[0]) { swapCounts[0]++; return; }
+          var hi = fa.length - 1;
+          if (t >= fa[hi]) { swapCounts[hi]++; return; }
+          var lo = 0;
+          while (lo < hi - 1) {
+            var mid = (lo + hi) >> 1;
+            if (fa[mid] <= t) lo = mid; else hi = mid;
+          }
+          if (Math.abs(t - fa[lo]) <= Math.abs(t - fa[hi])) {
+            swapCounts[lo]++;
+          } else {
+            swapCounts[hi]++;
+          }
+        });
+        d = {ts: fixedAxis.ts, swaps: swapCounts};
+      } else {
+        // "all" range: keep only-populated bins (avoid millions of empties)
+        var bSec = 86400;
+        var bins = {};
+        sw.forEach(function(s) {
+          var t = s.ts || 0;
+          var b = Math.floor(t/bSec)*bSec;
+          bins[b] = (bins[b]||0)+1;
+        });
+        var sk = Object.keys(bins).map(Number).sort(function(a,b){return a-b;});
+        if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
+      }
     }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
