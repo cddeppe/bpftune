@@ -755,7 +755,20 @@
   function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
     if (_bid === 'all') {
+      // 0.4.95: pick first bucket WITH coverage (not just most instances).
+      // Some buckets (e.g. controld) have 0% coverage and no chart data.
       if (state.meta && state.meta.buckets && state.meta.buckets.length) {
+        var f = state.fleet || {};
+        var fb = f.buckets || [];
+        var fc = f.coverage_24h || [];
+        var cov = {};
+        for (var ci = 0; ci < fb.length; ci++) cov[fb[ci]] = fc[ci];
+        for (var bi = 0; bi < state.meta.buckets.length; bi++) {
+          var b = state.meta.buckets[bi];
+          if (cov[b.id] != null && cov[b.id] > 0) {
+            return {bid: b.id, label: b.label || b.id, isAll: true};
+          }
+        }
         var top = state.meta.buckets[0];
         return {bid: top.id, label: top.label || top.id, isAll: true};
       }
