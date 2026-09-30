@@ -868,7 +868,7 @@ def run_cli_snapshot(map_raw=""):
                 tmp_map = None
         # Use incremental reading (daemon mode): only parse new log
         # lines since last cycle.  First call reads full tail.
-        doc = _cli_mod.collect_all_incremental(_log_offsets)
+        doc = _cli_mod.collect_all()
         tmp = str(CURRENT_JSON) + ".tmp"
         with open(tmp, "w") as f:
             json.dump(doc, f, separators=(",", ":"))
