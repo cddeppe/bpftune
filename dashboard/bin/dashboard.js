@@ -1293,7 +1293,13 @@
     // streak, swaps-per-bin) share the exact same x-axis: [now-rSec, now] at
     // fixed intervals.  Rebin original series onto this axis (null where no
     // sample within +/-1.5*interval).  "all" range keeps the original ts.
-    var __now = (window.__filtered_doc && window.__filtered_doc.generated_ts) || (Date.now() / 1000);
+    // 0.4.88: use __current_doc.generated_ts (always fresh on every SSE
+    // push) instead of __filtered_doc.generated_ts (which was stale —
+    // _renderFilteredPanels doesn't set __filtered_doc, so it held the
+    // value from the last bucket change).  This is why the rate/sscore/
+    // streaks charts used a slightly older "now" than the swaps-per-bin
+    // chart, making the timelines visibly different at the right edge.
+    var __now = (window.__current_doc && window.__current_doc.generated_ts) || (Date.now() / 1000);
     var __fixedAxis = buildFixedAxis(rng, __now);
     if (__fixedAxis) {
       s = rebinOntoAxis(ts, s, __fixedAxis.ts, __fixedAxis.interval);

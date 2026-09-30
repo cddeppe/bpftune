@@ -178,9 +178,36 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
 
         # Merge: append new items to base, cap sizes
         if base_result:
-            # Recent swaps: append new, keep last 20
+            # 0.4.88: dedupe + sort newest-first for time-series lists.
+            # The previous merge (old + new)[-N:] produced duplicates
+            # when the incremental log contained the same events as the
+            # previous full collect (offsets not advanced yet) AND was
+            # in oldest-first order while the JS expected newest-first.
+            # Now: dedupe by (boot_ts, from_alg, to_alg, d) for swaps,
+            # (boot_ts, alg) for proofs, then sort by boot_ts desc.
+            def _merge_dedupe_sort(old, new, max_n, key_fn, ts_field='boot_ts'):
+                merged = list(old) + list(new)
+                seen = set()
+                deduped = []
+                for item in merged:
+                    k = key_fn(item)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    deduped.append(item)
+                deduped.sort(key=lambda x: x.get(ts_field) or 0, reverse=True)
+                return deduped[:max_n]
+
+            def _swap_key(s):
+                return (s.get('boot_ts'), s.get('from_alg'),
+                        s.get('to_alg'), s.get('d'))
+            def _proof_key(p):
+                return (p.get('boot_ts'), p.get('alg'), p.get('mbps'))
+
+            # Recent swaps: dedupe + sort newest-first, keep last 20
             old_swaps = base_result.get('recent_swaps', [])
-            doc['recent_swaps'] = (old_swaps + new_swaps)[-20:]
+            doc['recent_swaps'] = _merge_dedupe_sort(
+                old_swaps, new_swaps, 20, _swap_key, 'boot_ts')
 
             # 0.4.86: rebuild recent_swaps_by_bucket from the merged list
             # so per-bucket recent swaps stay fresh between 5min full collects.
@@ -188,7 +215,10 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
             # while the flat recent_swaps list stays fresh — mismatch.
             if doc.get('recent_swaps'):
                 _by = {}
-                for _r in reversed(doc['recent_swaps']):
+                # doc['recent_swaps'] is now newest-first, so iterate in
+                # forward order to fill each bucket's list newest-first
+                # (matching the panel's expected ordering).
+                for _r in doc['recent_swaps']:
                     _b = _r.get('dest') or _r.get('_bucket') or ''
                     if not _b:
                         continue
@@ -197,15 +227,19 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
                         _lst.append({k: v for k, v in _r.items() if k != '_bucket'})
                 doc['recent_swaps_by_bucket'] = _by
 
-            # Recent proofs: append new, keep last 16
+            # Recent proofs: dedupe + sort newest-first, keep last 16
             old_proofs = base_result.get('recent_proofs', [])
-            doc['recent_proofs'] = (old_proofs + new_proofs)[-16:]
+            doc['recent_proofs'] = _merge_dedupe_sort(
+                old_proofs, new_proofs, 16, _proof_key, 'boot_ts')
 
-            # Swap outcomes: append new swaps_list, cap at 2000
+            # Swap outcomes: dedupe swaps_list by (ts, cookie), keep last 2000
             old_so = base_result.get('swap_outcomes', {})
             old_swaps_list = old_so.get('swaps_list', [])
             new_swaps_list = new_swap_outcomes.get('swaps_list', [])
-            merged_swaps_list = (old_swaps_list + new_swaps_list)[-2000:]
+            def _swaps_list_key(s):
+                return (s.get('ts'), s.get('cookie'))
+            merged_swaps_list = _merge_dedupe_sort(
+                old_swaps_list, new_swaps_list, 2000, _swaps_list_key, 'ts')
 
             # Recompute outcome counts from merged swaps_list
             # (just re-run data_swap_outcomes on the merged list)
@@ -215,11 +249,15 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
             # Churn: use new (recomputed from new log lines)
             doc['churn'] = new_churn
 
-            # Proofs/rate raw: append new, cap at 500
+            # Proofs/rate raw: dedupe by ts, keep last 500
             old_proofs_raw = base_result.get('proofs_raw', [])
-            doc['proofs_raw'] = (old_proofs_raw + new_proofs_raw)[-500:]
+            doc['proofs_raw'] = _merge_dedupe_sort(
+                old_proofs_raw, new_proofs_raw, 500,
+                lambda p: (p.get('ts'), p.get('alg')), 'ts')
             old_rate_raw = base_result.get('rate_raw', [])
-            doc['rate_raw'] = (old_rate_raw + new_rate_raw)[-500:]
+            doc['rate_raw'] = _merge_dedupe_sort(
+                old_rate_raw, new_rate_raw, 500,
+                lambda r: (r.get('ts'), r.get('thr')), 'ts')
 
             # Bucket IPs: merge
             old_bucket_ips = base_result.get('bucket_ips', {})

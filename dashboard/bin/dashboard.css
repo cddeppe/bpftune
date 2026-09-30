@@ -230,30 +230,49 @@
     font-weight: 500; letter-spacing: 0; text-transform: none;
   }
   /* 0.4.87: bucket-tag chip — shows which bucket each panel's data is from.
-     Stands out from .cnt so the user can immediately tell data origin. */
+     Stands out from .cnt so the user can immediately tell data origin.
+     0.4.88: made more prominent (larger font, brighter color, bolder)
+     after user reported chips were easy to miss. */
   .bucket-tag {
-    margin-left: 8px;
+    margin-left: 10px;
     display: inline-block;
-    color: var(--accent, #4e79a7);
-    background: rgba(78,121,167,.10);
-    border: 1px solid rgba(78,121,167,.35);
-    border-radius: 4px;
-    padding: 1px 7px;
+    color: #ffffff;
+    background: #4e79a7;
+    border: 1px solid #3a5a7e;
+    border-radius: 6px;
+    padding: 3px 10px;
     font-family: var(--mono);
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: .02em;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .03em;
     text-transform: none;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+    vertical-align: middle;
   }
   .bucket-tag.is-all {
     color: var(--muted-2);
     background: transparent;
-    border-color: var(--border);
+    border: 1px dashed var(--border);
+    box-shadow: none;
+    font-weight: 600;
   }
   .card > h2 .bucket-tag {
-    margin-left: 10px;
-    font-size: 11px;
-    vertical-align: middle;
+    margin-left: 12px;
+    font-size: 13px;
+    padding: 3px 12px;
+  }
+  /* Dark-mode variant: invert the blue so the chip still pops. */
+  html[data-theme="dark"] .bucket-tag {
+    color: #e6e8ee;
+    background: #2d4a6a;
+    border-color: #3a5a7e;
+  }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) .bucket-tag {
+      color: #e6e8ee;
+      background: #2d4a6a;
+      border-color: #3a5a7e;
+    }
   }
   .lv-grid .note {
     margin-top: 8px; padding-top: 8px;
