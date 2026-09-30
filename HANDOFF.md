@@ -10,7 +10,7 @@ per gateway), not just single-path datacenters.
 - Fork: https://github.com/cddeppe/bpftune  (active branch: `main`)
 - `diag/metric-terms` is a stale pointer (fast-forwarded into `main`).
 - Latest commit: see `git log -1` (0.4.79 tip)
-- Latest release: 0.4.79
+- Latest release: 0.4.87
 - Collector (on `dashboard` branch): sustained-ruler classification,
   single-sample acceptance.  See 2026-09-24 (late) session below.
 - Branches: `main` = tuner only; `dashboard` = dashboard only.
@@ -18,11 +18,11 @@ per gateway), not just single-path datacenters.
 
 | Role | Arch | Version | Notes |
 |------|------|---------|-------|
-| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.79** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
-| Builder amd64 (primary) | amd64 | **0.4.79** | vps-3959; runs git push origin |
-| Target amd64 | amd64 | **0.4.79** | ip-172-26-13-90; mostly idle |
-| Builder aarch64 | aarch64 | **0.4.79** | instance-20250225-1017; builds arm64 |
-| al | amd64 | **0.4.79** | VPS-IP; new host, nginx serves dashboard on 8080 |
+| Heavy-traffic (xray/YouTube) | aarch64 | **0.4.87** | instance-20260905-0931; capture -> /var/log/bpftune-met-live.log |
+| Builder amd64 (primary) | amd64 | **0.4.87** | vps-3959; runs git push origin |
+| Target amd64 | amd64 | **0.4.87** | ip-172-26-13-90; mostly idle |
+| Builder aarch64 | aarch64 | **0.4.87** | instance-20250225-1017; builds arm64 |
+| al | amd64 | **0.4.87** | VPS-IP; new host, nginx serves dashboard on 8080 |
 | shared mount: /mnt/backup/ holds .debs.  NOT always shared between hosts -- verify before assuming a file propagates. |
 
 Verify: `dpkg-query -W -f='${Package} ${Version}\n' bpftune`
