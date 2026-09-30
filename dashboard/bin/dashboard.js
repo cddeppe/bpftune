@@ -253,8 +253,9 @@
     if (!addr && state.meta && state.meta.default_bucket) {
       addr = state.meta.default_bucket;
     }
-    if (addr === 'all' && state.meta && state.meta.buckets && state.meta.buckets.length) {
-      addr = state.meta.buckets[0].id;
+    if (addr === 'all') {
+      var hb = _heaviestBucketWithCoverage();
+      if (hb) addr = hb.bid;
     }
     var byB = state.metricByBucket || {};
     var keys = Object.keys(byB);
@@ -720,9 +721,14 @@
         (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
     }
     var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
+    var soDoc = fdoc;
+    if (bid === 'all') {
+      var hb1 = _heaviestBucketWithCoverage();
+      if (hb1) soDoc = _filterByBucket(doc, hb1.label);
+    }
     _safeRender('proof',       function() { renderProof(fdoc.proof || []); });
     _safeRender('rate',        function() { renderRate(fdoc.rate || []); });
-    _safeRender('swap_outcomes', function() { renderSwapOutcomes(fdoc.swap_outcomes || null, fdoc.churn || {}); });
+    _safeRender('swap_outcomes', function() { renderSwapOutcomes(soDoc.swap_outcomes || null, soDoc.churn || {}); });
     _safeRender('recent_proofs', function() { renderRecentProofs(fdoc.recent_proofs || []); });
     window.__filtered_doc = fdoc;
     renderSwaps();
@@ -833,9 +839,14 @@
   function _renderFilteredPanels(doc) {
     var bk = _currentBucketLabel();
     var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label);
+    var _soDoc = _fdoc;
+    if (bk.bid === 'all') {
+      var hb2 = _heaviestBucketWithCoverage();
+      if (hb2) _soDoc = _filterByBucket(doc, hb2.label);
+    }
     _safeRender('proof', function() { renderProof(_fdoc.proof || []); });
     _safeRender('rate', function() { renderRate(_fdoc.rate || []); });
-    _safeRender('swap_outcomes', function() { renderSwapOutcomes(_fdoc.swap_outcomes || null, _fdoc.churn || {}); });
+    _safeRender('swap_outcomes', function() { renderSwapOutcomes(_soDoc.swap_outcomes || null, _soDoc.churn || {}); });
     _safeRender('recent_proofs', function() { renderRecentProofs(_fdoc.recent_proofs || []); });
   }
 
