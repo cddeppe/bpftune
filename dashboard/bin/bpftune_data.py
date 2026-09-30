@@ -426,7 +426,11 @@ def data_recent_swaps_by_bucket(text, n_per_bucket=16) -> Dict[str, List[RecentS
     # Iterate newest-first so each bucket gets its newest
     # n_per_bucket entries, not the oldest of the window.
     for r in reversed(rows):
-        b = r.get("_bucket") or ""
+        # 0.4.86: group by dest (labeled) instead of _bucket (raw key)
+        # so keys match meta.json bucket IDs (which use the labeled dest).
+        # Without this, selecting "home-sco" in the dropdown looks up
+        # by["home-sco"] but the dict key is "82.43.0.0" -> empty panel.
+        b = r.get("dest") or r.get("_bucket") or ""
         if not b:
             continue
         lst = out.setdefault(b, [])
