@@ -13,6 +13,8 @@ bpftune (0.4.84) unstable; urgency=medium
 
  -- Christophe Deppe <cdeppe@gmail.com>  Mon, 30 Sep 2026 00:00:00 +0200
 
+ -- Christophe Deppe <cdeppe@gmail.com>  Mon, 30 Sep 2026 00:00:00 +0200
+
 bpftune (0.4.83) unstable; urgency=medium
 
   * Peak-rate swap scoring: use post_swap_rate_max (running max of
