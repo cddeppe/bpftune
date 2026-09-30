@@ -756,7 +756,7 @@ def data_churn(text) -> ChurnInfo:
 
 
 
-def data_recent_swaps(text, n=10) -> List[RecentSwap]:
+def data_recent_swaps(text, n=16) -> List[RecentSwap]:
     sw, met, srate = _swaps_mets_srates(text)
     rows = []
     for row in sw:
