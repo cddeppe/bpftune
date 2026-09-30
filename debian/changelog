@@ -1,3 +1,16 @@
+bpftune (0.4.87) unstable; urgency=medium
+
+  * Fix: remove unused cur_rate param from score_pending_swap (Bug #4).
+    The function used post_swap_rate_max (running peak) instead,
+    which is the correct choice — peak captures best performance.
+    The unused param was misleading.
+  * Fix: run all CLI flags in order, not just the first (Bug #7).
+    'bpftune --prefix4=16 --prefix6=32' previously silently ignored
+    --prefix6 because do_prefix4 returned early.  Now all matched
+    flags run in order; error on first failure.
+
+ -- Christophe Deppe <cdeppe@gmail.com>  Thu, 01 Oct 2026 00:09:47 +0200
+
 bpftune (0.4.86) unstable; urgency=medium
 
   * Fix: init swap_target=0xff on fresh sk_storage (Bug #2).  Fresh

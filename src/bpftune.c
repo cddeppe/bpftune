@@ -625,13 +625,19 @@ int main(int argc, char *argv[])
 			use_stderr ? bpftune_log_stderr : bpftune_log_syslog,
 			NULL);
 
-	if (prefix4_seen)
-	        return do_prefix4(prefix4_arg);
-	if (prefix6_seen)
-	        return do_prefix6(prefix6_arg);
-
-	if (explore_seen)
-	        return do_explore(explore_arg);
+	/* 0.4.87: run all matched flags in order, not just the first.
+	 * Previously 'bpftune --prefix4=16 --prefix6=32' silently
+	 * ignored --prefix6 because do_prefix4 returned early. */
+	if (prefix4_seen || prefix6_seen || explore_seen) {
+		int rc = 0;
+		if (prefix4_seen)
+			rc = do_prefix4(prefix4_arg);
+		if (!rc && prefix6_seen)
+			rc = do_prefix6(prefix6_arg);
+		if (!rc && explore_seen)
+			rc = do_explore(explore_arg);
+		return rc;
+	}
 
 	if (client) {
 		char buf[BPFTUNE_SERVER_MSG_MAX];

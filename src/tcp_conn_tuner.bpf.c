@@ -423,7 +423,7 @@ int bpftune_conn_tuner(struct bpf_sock_ops *ops)
  * neutral.  Called from the vote path. */
 static __always_inline void
 score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
-                   struct conn_state *statep, __u64 now, __u64 cur_rate,
+                   struct conn_state *statep, __u64 now,
                    __u8 cur_alg)
 {
         __u8 tgt;
@@ -971,7 +971,7 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
         statep->last_rate_bps = sustained_bps;
         if (sustained_bps > statep->post_swap_rate_max)
             statep->post_swap_rate_max = sustained_bps;
-        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(), sustained_bps,
+        score_pending_swap(ops, remote_host, statep, bpf_ktime_get_ns(),
                            (__u8)s);
         statep->votes_on_alg++;
         /* Track the best reading this socket has ever produced, and
