@@ -420,11 +420,18 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
         __u64 pre, elapsed, ratio_q;
 
         if (statep->swap_target == 0xff) return;
-        if (statep->pre_swap_rate == 0)  return;
+        /* 0.4.84: use rate_ema as fallback when pre_swap_rate=0
+         * (app-limited connections). Without this, the swap is
+         * never scored and swap_score stays at default 256. */
         elapsed = now - statep->last_swap_at;
         if (elapsed < SWAP_OUTCOME_MIN_RNAL_NS) return;
 
-        pre = statep->pre_swap_rate;
+        if (statep->pre_swap_rate == 0) {
+                pre = rh->metrics[tgt].rate_ema;
+                if (pre == 0) return;
+        } else {
+                pre = statep->pre_swap_rate;
+        }
         tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
         /* 0.4.65: if the socket is no longer on the pending target,
          * the swap was rejected before the 60s window opened.  Force
@@ -477,9 +484,12 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
                         }
                 }
                 if (cur32 > 1024) cur32 = 1024;
-                /* 0.4.76: score write DISABLED -- collector owns
-                 * swap_score via swapscore_truth.jsonl. */
-                (void)cur32;
+                /* 0.4.84: re-enabled in-kernel score write.  The
+                 * collector's streak_writeback was supposed to own
+                 * this but only patches bad_streak/null_streak, not
+                 * swap_score.  On hosts where pre_swap_rate=0
+                 * (app-limited), swap_score stayed at 256 forever. */
+                rh->metrics[tgt].swap_score = (__u16)cur32;
         }
         /* 0.4.58: consecutive failed swaps to this alg.  Two in a
          * row is a pattern; a later rising rate_ema clears it in the

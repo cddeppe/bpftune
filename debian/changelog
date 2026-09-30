@@ -1,3 +1,16 @@
+bpftune (0.4.84) unstable; urgency=medium
+
+  * Fix: score_pending_swap uses rate_ema as fallback when pre_swap_rate=0
+    (app-limited connections). Previously returned early, leaving swap_score
+    at default 256 forever.
+  * Fix: re-enabled in-kernel swap_score write (was disabled since 0.4.76).
+    The collector's streak_writeback only patches bad_streak/null_streak,
+    not swap_score. So nobody was writing it. Now the kernel writes it
+    directly, same as pre-0.4.76.
+  * Affected: hosts with app-limited connections (VPS, relay hosts)
+    showed all-256 swap_scores in the Swap Target Leaderboard while
+    datacenter hosts (pre_swap_rate>0) worked fine.
+
 bpftune (0.4.83) unstable; urgency=medium
 
   * Peak-rate swap scoring: use post_swap_rate_max (running max of
