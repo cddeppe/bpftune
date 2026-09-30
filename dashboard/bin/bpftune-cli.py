@@ -182,6 +182,21 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
             old_swaps = base_result.get('recent_swaps', [])
             doc['recent_swaps'] = (old_swaps + new_swaps)[-20:]
 
+            # 0.4.86: rebuild recent_swaps_by_bucket from the merged list
+            # so per-bucket recent swaps stay fresh between 5min full collects.
+            # Without this, the per-bucket panel goes stale for up to 5min
+            # while the flat recent_swaps list stays fresh — mismatch.
+            if doc.get('recent_swaps'):
+                _by = {}
+                for _r in reversed(doc['recent_swaps']):
+                    _b = _r.get('dest') or _r.get('_bucket') or ''
+                    if not _b:
+                        continue
+                    _lst = _by.setdefault(_b, [])
+                    if len(_lst) < 16:
+                        _lst.append({k: v for k, v in _r.items() if k != '_bucket'})
+                doc['recent_swaps_by_bucket'] = _by
+
             # Recent proofs: append new, keep last 16
             old_proofs = base_result.get('recent_proofs', [])
             doc['recent_proofs'] = (old_proofs + new_proofs)[-16:]
