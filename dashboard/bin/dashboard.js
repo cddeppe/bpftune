@@ -802,8 +802,7 @@
   ];
   function _updateBucketTags() {
     var bk = _currentBucketLabel();
-    var text = bk.bid === 'all' ? 'all buckets'
-                                 : ('bucket: ' + bk.label);
+    var text = bk.bid === 'all' ? '— all' : ('— ' + bk.label);
     for (var i = 0; i < _BUCKET_TAG_IDS.length; i++) {
       var el = document.getElementById(_BUCKET_TAG_IDS[i]);
       if (el) {
@@ -1469,9 +1468,14 @@
     var rng = $("range").value;
     var d = null;
     var sse = window.__filtered_doc || window.__current_doc;
+    // 0.4.92: use __current_doc.generated_ts (fresh on every SSE push)
+    // for the timeline, not sse.generated_ts (which is from __filtered_doc,
+    // set only on bucket change — stale by up to 5 min).  This was why
+    // the swaps-per-bin chart used a different timeline than rate/sscore/
+    // streaks (3-min offset).
     if (sse && sse.swap_outcomes && sse.swap_outcomes.swaps_list) {
       var sw = sse.swap_outcomes.swaps_list;
-      var now = (sse.generated_ts || (Date.now()/1000));
+      var now = (window.__current_doc && window.__current_doc.generated_ts) || (Date.now()/1000);
       var fixedAxis = buildFixedAxis(rng, now);
       // Swap timestamps are in CLOCK_MONOTONIC (seconds since boot), NOT Unix
       // epoch.  Convert to epoch using sse.now_mono: epoch = mono + offset
