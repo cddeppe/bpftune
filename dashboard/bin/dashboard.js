@@ -230,21 +230,12 @@
   }
 
   function renderRecentSwapsForBucket() {
-    // 0.4.86: filter the flat recent_swaps list by bucket label, same
-    // pattern as _filterByBucket uses for recent_proofs.  Previously
-    // this looked up state.recentSwapsByBucket[addr] where addr was
-    // the dropdown value (labeled, e.g. "home-sco") but the dict key
-    // was the raw bucket (e.g. "82.43.0.0") — mismatch -> empty panel.
     var bk = _currentBucketLabel();
-    if (bk.bid === 'all') {
-      renderRecentSwaps(state.lastLiveSwaps || []);
-      return;
-    }
     var swaps = state.lastLiveSwaps || [];
-    var filtered = swaps.filter(function(s) {
-      return s.dest === bk.label;
-    });
-    renderRecentSwaps(filtered);
+    if (bk.bid !== 'all') {
+      swaps = swaps.filter(function(s) { return s.dest === bk.label; });
+    }
+    renderRecentSwaps(swaps.slice(0, 18));
   }
 
   function renderMetricForBucket() {
@@ -528,6 +519,7 @@
   }
 
   function renderRecentProofs(rows) {
+    rows = (rows || []).slice(0, 18);
     if (!rows.length) {
       setHTML("lv-proofs", '<div class="placeholder">(none)</div>');
       return;
