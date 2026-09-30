@@ -209,7 +209,7 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
             # Recent swaps: dedupe + sort newest-first, keep last 20
             old_swaps = base_result.get('recent_swaps', [])
             doc['recent_swaps'] = _merge_dedupe_sort(
-                old_swaps, new_swaps, 32, _swap_key, 'boot_ts')
+                old_swaps, new_swaps, 36, _swap_key, 'boot_ts')
 
             # 0.4.86: rebuild recent_swaps_by_bucket from the merged list
             # so per-bucket recent swaps stay fresh between 5min full collects.
@@ -232,7 +232,7 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
             # Recent proofs: dedupe + sort newest-first, keep last 16
             old_proofs = base_result.get('recent_proofs', [])
             doc['recent_proofs'] = _merge_dedupe_sort(
-                old_proofs, new_proofs, 16, _proof_key, 'boot_ts')
+                old_proofs, new_proofs, 18, _proof_key, 'boot_ts')
 
             # Swap outcomes: dedupe swaps_list by (ts, cookie), keep last 2000
             old_so = base_result.get('swap_outcomes', {})

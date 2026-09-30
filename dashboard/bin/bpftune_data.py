@@ -756,7 +756,7 @@ def data_churn(text) -> ChurnInfo:
 
 
 
-def data_recent_swaps(text, n=16) -> List[RecentSwap]:
+def data_recent_swaps(text, n=18) -> List[RecentSwap]:
     sw, met, srate = _swaps_mets_srates(text)
     rows = []
     for row in sw:
@@ -788,7 +788,7 @@ def data_recent_swaps(text, n=16) -> List[RecentSwap]:
 
 
 
-def data_recent_proofs(text, n=16) -> List[RecentProof]:
+def data_recent_proofs(text, n=18) -> List[RecentProof]:
     lines = [l for l in text.splitlines() if "proof cookie=" in l][-n:]
     cdest = _cookie_dest_map(text)
     out = []
