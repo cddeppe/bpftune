@@ -752,28 +752,24 @@
     }
   }
 
+  function _heaviestBucketWithCoverage() {
+    if (!state.meta || !state.meta.buckets || !state.meta.buckets.length) return null;
+    var f = state.fleet || {};
+    var fb = f.buckets || [];
+    var fc = f.coverage_24h || [];
+    var cov = {};
+    for (var ci = 0; ci < fb.length; ci++) cov[fb[ci]] = fc[ci];
+    for (var bi = 0; bi < state.meta.buckets.length; bi++) {
+      var b = state.meta.buckets[bi];
+      if (cov[b.id] != null && cov[b.id] > 0) return {bid: b.id, label: b.label || b.id};
+    }
+    var top = state.meta.buckets[0];
+    return {bid: top.id, label: top.label || top.id};
+  }
+
   function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
-    if (_bid === 'all') {
-      // 0.4.95: pick first bucket WITH coverage (not just most instances).
-      // Some buckets (e.g. controld) have 0% coverage and no chart data.
-      if (state.meta && state.meta.buckets && state.meta.buckets.length) {
-        var f = state.fleet || {};
-        var fb = f.buckets || [];
-        var fc = f.coverage_24h || [];
-        var cov = {};
-        for (var ci = 0; ci < fb.length; ci++) cov[fb[ci]] = fc[ci];
-        for (var bi = 0; bi < state.meta.buckets.length; bi++) {
-          var b = state.meta.buckets[bi];
-          if (cov[b.id] != null && cov[b.id] > 0) {
-            return {bid: b.id, label: b.label || b.id, isAll: true};
-          }
-        }
-        var top = state.meta.buckets[0];
-        return {bid: top.id, label: top.label || top.id, isAll: true};
-      }
-      return {bid: 'all', label: 'all', isAll: true};
-    }
+    if (_bid === 'all') return {bid: 'all', label: 'all'};
     var _bs2 = $('bucket');
     var _blabel = (window.__labels && window.__labels[_bid] !== _bid && window.__labels[_bid]) ||
       (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
@@ -824,7 +820,7 @@
   ];
   function _updateBucketTags() {
     var bk = _currentBucketLabel();
-    var text = bk.isAll ? ('— ' + bk.label + ' (top)') : ('— ' + bk.label);
+    var text = bk.bid === 'all' ? '— all' : ('— ' + bk.label);
     for (var i = 0; i < _BUCKET_TAG_IDS.length; i++) {
       var el = document.getElementById(_BUCKET_TAG_IDS[i]);
       if (el) {
@@ -1273,7 +1269,10 @@
     var ts = doc.generated_ts; if (!ts) return;
     var bk = _currentBucketLabel();
     var bid = bk.bid;
-    if (!bid || bid === 'all') return;
+    if (!bid || bid === 'all') {
+      var hb3 = _heaviestBucketWithCoverage();
+      if (hb3) bid = hb3.bid; else return;
+    }
     var lb = state.bucketLive[bid];
     if (!lb) { var lbl = _labelForBucketAddr(bid); if (lbl && lbl !== bid) lb = state.bucketLive[lbl]; }
     if (!lb || !lb.ts || !lb.cols) return;
@@ -1303,6 +1302,10 @@
     if (!algs) return;   // 0.4.87: meta not loaded yet — boot() still running
     var rng = $("range").value;
     var bid = $("bucket") ? $("bucket").value : null;
+    if (!bid || bid === 'all') {
+      var hb2 = _heaviestBucketWithCoverage();
+      if (hb2) bid = hb2.bid;
+    }
     var s, ts;
     if (s == null && rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
       var lb = state.bucketLive[bid];
