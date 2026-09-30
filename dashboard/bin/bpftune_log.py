@@ -238,6 +238,7 @@ ALIASES_FILE_PATH = "/etc/bpftune/aliases"
 KNOWN_TUNABLES = [
     "net.core.netdev_budget",
     "net.core.netdev_budget_usecs",
+    "net.core.rmem_default",
     "net.ipv4.tcp_rmem",
     "net.ipv4.tcp_wmem",
 ]

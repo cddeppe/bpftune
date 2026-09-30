@@ -754,7 +754,13 @@
 
   function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
-    if (_bid === 'all') return {bid: 'all', label: 'all'};
+    if (_bid === 'all') {
+      if (state.meta && state.meta.buckets && state.meta.buckets.length) {
+        var top = state.meta.buckets[0];
+        return {bid: top.id, label: top.label || top.id, isAll: true};
+      }
+      return {bid: 'all', label: 'all', isAll: true};
+    }
     var _bs2 = $('bucket');
     var _blabel = (window.__labels && window.__labels[_bid] !== _bid && window.__labels[_bid]) ||
       (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
@@ -805,7 +811,7 @@
   ];
   function _updateBucketTags() {
     var bk = _currentBucketLabel();
-    var text = bk.bid === 'all' ? '— all' : ('— ' + bk.label);
+    var text = bk.isAll ? ('— ' + bk.label + ' (top)') : ('— ' + bk.label);
     for (var i = 0; i < _BUCKET_TAG_IDS.length; i++) {
       var el = document.getElementById(_BUCKET_TAG_IDS[i]);
       if (el) {
@@ -1252,7 +1258,8 @@
   function _appendLiveMetrics(doc) {
     if (!doc.metric_by_bucket || !state.bucketLive) return;
     var ts = doc.generated_ts; if (!ts) return;
-    var bid = $('bucket') ? $('bucket').value : null;
+    var bk = _currentBucketLabel();
+    var bid = bk.bid;
     if (!bid || bid === 'all') return;
     var lb = state.bucketLive[bid];
     if (!lb) { var lbl = _labelForBucketAddr(bid); if (lbl && lbl !== bid) lb = state.bucketLive[lbl]; }
@@ -1283,15 +1290,7 @@
     if (!algs) return;   // 0.4.87: meta not loaded yet — boot() still running
     var rng = $("range").value;
     var bid = $("bucket") ? $("bucket").value : null;
-    var isAll = (bid === 'all' || !bid);
     var s, ts;
-    // 0.4.87: for "All Buckets" 1h, aggregate state.bucketLive so the
-    // chart refreshes on every SSE push instead of every 5 min.
-    if (isAll && rng === "1h") {
-      var agg = _aggregateAllBucketsLive();
-      if (agg) { s = agg.cols; ts = agg.ts; }
-    }
-    // For specific bucket 1h, use that bucket's bucket_live entry.
     if (s == null && rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
       var lb = state.bucketLive[bid];
       if (lb.ts && lb.ts.length) {

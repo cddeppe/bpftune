@@ -485,8 +485,10 @@ def data_rate(text) -> List[RateRow]:
             continue
         out_map[int(mt.group(1))].append(int(ms.group(1)))
     rows = []
+    MAX_BPS = 1250000000
     for thr in sorted(out_map.keys()):
-        vs = out_map[thr]
+        vs = [v for v in out_map[thr] if v <= MAX_BPS]
+        if not vs: vs = out_map[thr]
         rows.append({
             "thr":  thr,
             "n":    len(vs),
