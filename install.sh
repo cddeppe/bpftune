@@ -90,7 +90,7 @@ if [ "$DEB_INSTALL" = 1 ]; then
         CURRENT_VER=$(dpkg-query -W -f='${Version}' bpftune)
         warn "bpftune $CURRENT_VER already installed"
         if [ "$ASSUME_YES" = 1 ]; then
-            REINSTALL=n
+            REPLY=n
         else
             printf "  Reinstall/upgrade? [y/N] "
             read -r REPLY; REPLY="${REPLY:-n}"
