@@ -230,24 +230,21 @@
   }
 
   function renderRecentSwapsForBucket() {
-    var by = state.recentSwapsByBucket;
-    if (!by) {
-      // fallback: pristine behaviour, unfiltered recent swaps
-      renderRecentSwaps((state.lastLiveSwaps) || []);
-      return;
-    }
-    var bs = $("bucket");
-    var addr = (bs && bs.value) ? bs.value : null;
-    // "All Buckets" selected — show all swaps across all buckets
-    if (addr === 'all') {
+    // 0.4.86: filter the flat recent_swaps list by bucket label, same
+    // pattern as _filterByBucket uses for recent_proofs.  Previously
+    // this looked up state.recentSwapsByBucket[addr] where addr was
+    // the dropdown value (labeled, e.g. "home-sco") but the dict key
+    // was the raw bucket (e.g. "82.43.0.0") — mismatch -> empty panel.
+    var bk = _currentBucketLabel();
+    if (bk.bid === 'all') {
       renderRecentSwaps(state.lastLiveSwaps || []);
       return;
     }
-    if (!addr && state.meta && state.meta.default_bucket) {
-      addr = state.meta.default_bucket;
-    }
-    var rows = (addr && by[addr]) ? by[addr] : [];
-    renderRecentSwaps(rows);
+    var swaps = state.lastLiveSwaps || [];
+    var filtered = swaps.filter(function(s) {
+      return s.dest === bk.label;
+    });
+    renderRecentSwaps(filtered);
   }
 
   function renderMetricForBucket() {
