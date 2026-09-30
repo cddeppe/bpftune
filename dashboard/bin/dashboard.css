@@ -229,6 +229,32 @@
     font-family: var(--mono); font-size: 10.5px;
     font-weight: 500; letter-spacing: 0; text-transform: none;
   }
+  /* 0.4.87: bucket-tag chip — shows which bucket each panel's data is from.
+     Stands out from .cnt so the user can immediately tell data origin. */
+  .bucket-tag {
+    margin-left: 8px;
+    display: inline-block;
+    color: var(--accent, #4e79a7);
+    background: rgba(78,121,167,.10);
+    border: 1px solid rgba(78,121,167,.35);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    text-transform: none;
+  }
+  .bucket-tag.is-all {
+    color: var(--muted-2);
+    background: transparent;
+    border-color: var(--border);
+  }
+  .card > h2 .bucket-tag {
+    margin-left: 10px;
+    font-size: 11px;
+    vertical-align: middle;
+  }
   .lv-grid .note {
     margin-top: 8px; padding-top: 8px;
     border-top: 1px dashed var(--border);

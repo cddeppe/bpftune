@@ -255,8 +255,18 @@
     }
     var byB = state.metricByBucket || {};
     var keys = Object.keys(byB);
-    var rows = (addr && byB[addr]) ? byB[addr]
-                                   : (keys.length ? byB[keys[0]] : []);
+    // 0.4.87: try the raw addr first (the dropdown value), then the
+    // label form (metric_by_bucket is keyed by _label_for(addr) on
+    // the python side via read_map, so for labeled buckets only the
+    // label form matches).
+    var rows = (addr && byB[addr]) ? byB[addr] : [];
+    if (!rows.length) {
+      var lbl = _labelForBucketAddr(addr);
+      if (lbl && lbl !== addr && byB[lbl]) rows = byB[lbl];
+    }
+    // 0.4.87: do NOT silently fall back to keys[0] (the first bucket).
+    // The previous behaviour showed whichever bucket happened to sort
+    // first, which looked correct but was for the wrong destination.
     renderMetric(rows);
   }
 
@@ -696,6 +706,7 @@
   function _reFilterPanels() {
     var doc = window.__current_doc;
     if (!doc) return;
+    _updateBucketTags();   // 0.4.87: keep panel headers in sync on dropdown change
     var bid = $('bucket') ? $('bucket').value : 'all';
     var blabel = 'all';
     if (bid !== 'all') {
@@ -704,10 +715,10 @@
         (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
     }
     var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
-    renderProof(fdoc.proof || []);
-    renderRate(fdoc.rate || []);
-    renderSwapOutcomes(fdoc.swap_outcomes || null, fdoc.churn || {});
-    renderRecentProofs(fdoc.recent_proofs || []);
+    _safeRender('proof',       function() { renderProof(fdoc.proof || []); });
+    _safeRender('rate',        function() { renderRate(fdoc.rate || []); });
+    _safeRender('swap_outcomes', function() { renderSwapOutcomes(fdoc.swap_outcomes || null, fdoc.churn || {}); });
+    _safeRender('recent_proofs', function() { renderRecentProofs(fdoc.recent_proofs || []); });
     window.__filtered_doc = fdoc;
     renderSwaps();
   }
@@ -745,6 +756,61 @@
     return {bid: _bid, label: _blabel};
   }
 
+  // 0.4.87: lookup the human-readable label for any raw bucket addr.
+  // Used by renderMetricForBucket / renderBucket to find the right
+  // entry in dicts that the python side keys by _label_for(addr)
+  // (i.e. label if labeled, raw addr otherwise).  Returns null if no
+  // label is known for the addr.
+  function _labelForBucketAddr(addr) {
+    if (!addr || addr === 'all') return addr;
+    if (window.__labels && window.__labels[addr]) {
+      return window.__labels[addr];
+    }
+    // v6:hex form may be labeled under the canonical "xxxx:xxxx::" form.
+    if (addr.indexOf('v6:') === 0) {
+      var hex = addr.substring(3);
+      if (hex.length >= 8) {
+        var ip6 = hex.substring(0,4) + ':' + hex.substring(4,8) + '::';
+        if (window.__labels && window.__labels[ip6]) return window.__labels[ip6];
+      }
+    }
+    // The dropdown option text may already carry the label (set by
+    // _fetchAndApplyLabels after the /api/labels fetch).  Strip the
+    // trailing " (NN)" point count.
+    var bs = $('bucket');
+    if (bs && bs.options) {
+      for (var i = 0; i < bs.options.length; i++) {
+        if (bs.options[i].value === addr) {
+          return bs.options[i].text.replace(/ \(\d+\)$/, '');
+        }
+      }
+    }
+    return null;
+  }
+
+  // 0.4.87: update every .bucket-tag span with the current bucket's
+  // label so the user can see at a glance which bucket's data each
+  // panel is showing.  Called on every renderLiveState / bucket change.
+  var _BUCKET_TAG_IDS = [
+    'bucket-tag-metric', 'bucket-tag-swaps',
+    'bucket-tag-proof', 'bucket-tag-proofs',
+    'bucket-tag-rate', 'bucket-tag-swapout',
+    'bucket-tag-ratechart', 'bucket-tag-sscore',
+    'bucket-tag-streaks', 'bucket-tag-swapschart'
+  ];
+  function _updateBucketTags() {
+    var bk = _currentBucketLabel();
+    var text = bk.bid === 'all' ? 'all buckets'
+                                 : ('bucket: ' + bk.label);
+    for (var i = 0; i < _BUCKET_TAG_IDS.length; i++) {
+      var el = document.getElementById(_BUCKET_TAG_IDS[i]);
+      if (el) {
+        el.textContent = text;
+        el.classList.toggle('is-all', bk.bid === 'all');
+      }
+    }
+  }
+
   function _renderFilteredPanels(doc) {
     var bk = _currentBucketLabel();
     var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label);
@@ -775,6 +841,14 @@
           }
         }
       }
+      // 0.4.87: labels just landed — refresh the bucket-tag chips so
+      // panel headers reflect the new label, and re-render the panels
+      // that look up by label (metric / bucket_live chart).
+      _updateBucketTags();
+      _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
+      if ($("range") && state.bucketDoc) {
+        _safeRender('bucket_chart', function() { renderBucket(); });
+      }
     }).catch(function() {});
   }
 
@@ -786,12 +860,17 @@
     _safeRender('system', function() { renderSystem(doc.system || {}); });
     _safeRender('tunables', function() { renderTunables(doc.tunables || []); });
     _syncBucketDropdown(doc);
+    _updateBucketTags();
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
     _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
     _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
-    if ($("range") && state.bucketDoc) {
+    // 0.4.87: always call renderBucket on every SSE push — even when
+    // "All Buckets" is selected (state.bucketDoc === null).  The new
+    // All-Buckets path aggregates state.bucketLive so the rate/sscore/
+    // streaks charts refresh on every 30s tick instead of every 5 min.
+    if ($("range")) {
       _safeRender('bucket_chart', function() { renderBucket(); });
     }
     _renderFilteredPanels(doc);
@@ -1110,24 +1189,105 @@
     return result;
   }
 
+  // 0.4.87: aggregate all state.bucketLive entries into one combined
+  // {ts, cols} for the "All Buckets" 1h view.  Without this, the rate /
+  // swap-score / streaks charts only refreshed every 5 min via refreshAll
+  // when "All Buckets" was selected (because state.bucketDoc is null in
+  // that case and renderBucket was gated on it).  Now the charts refresh
+  // on every SSE push (~30s) using the same source as the per-bucket view.
+  //
+  // Per-bin aggregation: SUM across buckets for re_/ss_ (the picker's
+  // totals across the whole fleet); MAX across buckets for bs_/ns_
+  // (worst streak anywhere, since a single bad streak is the
+  // operator's signal).  Empty bins stay null.
+  function _aggregateAllBucketsLive() {
+    var keys = Object.keys(state.bucketLive || {});
+    if (!keys.length) return null;
+    var tsSet = {};
+    for (var i = 0; i < keys.length; i++) {
+      var lb = state.bucketLive[keys[i]];
+      if (lb && lb.ts) {
+        for (var j = 0; j < lb.ts.length; j++) tsSet[lb.ts[j]] = true;
+      }
+    }
+    var ts = Object.keys(tsSet).map(Number).sort(function(a, b) { return a - b; });
+    if (!ts.length) return null;
+    var tsIdx = {};
+    for (var k = 0; k < ts.length; k++) tsIdx[ts[k]] = k;
+    var cols = {};
+    var sumPrefixes = { re_: true, ss_: true };
+    var maxPrefixes = { bs_: true, ns_: true };
+    for (var b = 0; b < keys.length; b++) {
+      var lb2 = state.bucketLive[keys[b]];
+      if (!lb2 || !lb2.cols) continue;
+      var lbTs = lb2.ts || [];
+      for (var col in lb2.cols) {
+        if (!cols[col]) cols[col] = new Array(ts.length).fill(null);
+        var vals = lb2.cols[col];
+        var isMax = !!maxPrefixes[col.substring(0, 3)];
+        for (var v = 0; v < vals.length; v++) {
+          var idx = tsIdx[lbTs[v]];
+          if (idx == null) continue;
+          var cur = cols[col][idx];
+          var val = vals[v];
+          if (val == null) continue;
+          if (cur == null) {
+            cols[col][idx] = val;
+          } else if (isMax) {
+            if (val > cur) cols[col][idx] = val;
+          } else {
+            cols[col][idx] = cur + val;
+          }
+        }
+      }
+    }
+    return {ts: ts, cols: cols};
+  }
+
   function renderBucket() {
     var doc = state.bucketDoc, algs = state.meta.algs;
+    if (!algs) return;   // 0.4.87: meta not loaded yet — boot() still running
     var rng = $("range").value;
-    var s = doc.series[rng];
-    var ts = s.ts;
-    // 0.4.79: for the 1h range, prefer the CLI-provided ring
-    // (60s freshness) for all four series.  bucket_live now
-    // carries re_/ss_/bs_/ns_, so the same source serves the
-    // rate, score, and streak charts.  Other ranges still load
-    // the 15-minute renderer output on demand.
     var bid = $("bucket") ? $("bucket").value : null;
-    if (rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
+    var isAll = (bid === 'all' || !bid);
+    var s, ts;
+    // 0.4.87: for "All Buckets" 1h, aggregate state.bucketLive so the
+    // chart refreshes on every SSE push instead of every 5 min.
+    if (isAll && rng === "1h") {
+      var agg = _aggregateAllBucketsLive();
+      if (agg) { s = agg.cols; ts = agg.ts; }
+    }
+    // For specific bucket 1h, use that bucket's bucket_live entry.
+    if (s == null && rng === "1h" && bid && state.bucketLive && state.bucketLive[bid]) {
       var lb = state.bucketLive[bid];
       if (lb.ts && lb.ts.length) {
         s = {};
         for (var k in (lb.cols || {})) s[k] = lb.cols[k];
         ts = lb.ts;
       }
+    } else if (s == null && rng === "1h" && bid && state.bucketLive) {
+      // 0.4.87: bucket_live is keyed by _label_for(addr) on the python
+      // side (bpftune_data.py:385), so for labeled buckets the dropdown's
+      // raw addr (b.id from meta.json) doesn't match.  Try the label
+      // form before falling back to the 15-min renderer output.
+      var _lbl = _labelForBucketAddr(bid);
+      if (_lbl && _lbl !== bid && state.bucketLive[_lbl]) {
+        var _lb = state.bucketLive[_lbl];
+        if (_lb.ts && _lb.ts.length) {
+          s = {};
+          for (var _k in (_lb.cols || {})) s[_k] = _lb.cols[_k];
+          ts = _lb.ts;
+        }
+      }
+    }
+    // Fall back to the renderer's 15-min bucket_<id>.json output for
+    // longer ranges, or for 1h if bucket_live didn't have the entry.
+    if (s == null) {
+      if (!doc) return;   // "All Buckets" + range > 1h: no historical aggregate
+      var sDoc = doc.series[rng];
+      if (!sDoc) return;
+      s = sDoc;
+      ts = sDoc.ts;
     }
     // Build a fixed-axis ts anchored to NOW so all four charts (rate, score,
     // streak, swaps-per-bin) share the exact same x-axis: [now-rSec, now] at
@@ -1448,7 +1608,11 @@ function _populateBucketSelect(desiredBucket) {
   var stillThere = false;
   for (var k = 0; k < state.meta.buckets.length; k++) {
     var b = state.meta.buckets[k];
-    html += '<option value="' + b.id + '">' + b.id +
+    // 0.4.87: prefer b.label (added in emit_meta) for the visible
+    // text; fall back to b.id.  The <option>.value stays as b.id so
+    // loadBucket / data/bucket_<id>.json lookups keep working.
+    var disp = (b.label && b.label !== b.id) ? b.label : b.id;
+    html += '<option value="' + b.id + '">' + disp +
             ' (' + b.points + ')</option>';
     if (b.id === desiredBucket) stillThere = true;
   }
@@ -1546,11 +1710,18 @@ function _populateBucketSelect(desiredBucket) {
           loadBucket(bs.value);
           renderMetricForBucket();
           renderRecentSwapsForBucket();
+          _updateBucketTags();   // 0.4.87: panel headers follow the dropdown
         };
         try { localStorage.setItem("bpftune.bucket", bs.value); } catch (e) {}
+        // 0.4.87: merge the two rs.onchange assignments — the previous
+        // code overwrote the first (which persisted to localStorage)
+        // with the second (which didn't), so the user's range choice
+        // was lost on reload.
         rs.onchange = function () {
+          try { localStorage.setItem("bpftune.range", rs.value); } catch (e) {}
           renderBucket();
           renderSwaps();
+          _updateBucketTags();
         };
 
         /* 0.4.79 fix: load the bucket the dropdown actually shows

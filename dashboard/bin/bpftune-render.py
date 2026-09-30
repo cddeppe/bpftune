@@ -432,8 +432,13 @@ def emit_meta(buckets, algs, now, primary=None):
         inst = [to_float(r.get("instances")) for r in rs]
         inst = [v for v in inst if v is not None]
         last = max((ts_of(r) or 0) for r in rs)
+        # 0.4.87: also emit the human-readable label so the dropdown
+        # can show "home-sco" instead of "76.76.0.0".  Falls back to
+        # the raw addr if no label is defined.
+        label = _label_for(bid)
         entries.append({
             "id": bid,
+            "label": label if label and label != bid else bid,
             "points": len(rs),
             "instances_mean": round(sum(inst) / len(inst), 2) if inst else 0,
             "last_ts": int(last),

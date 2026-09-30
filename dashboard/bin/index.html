@@ -79,7 +79,7 @@
     </section>
 
     <section class="c8">
-      <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span></h3>
+      <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span> <span class="bucket-tag" id="bucket-tag-metric"></span></h3>
       <div id="lv-metric"></div>
       <div class="note">
         <b>score</b> = <code>Rate EMA &times; Swap Score / 256 &times; penalty</code>.
@@ -88,12 +88,12 @@
     </section>
 
     <section class="c4">
-      <h3>recent swaps <span class="cnt">target + outcome</span></h3>
+      <h3>recent swaps <span class="cnt">target + outcome</span> <span class="bucket-tag" id="bucket-tag-swaps"></span></h3>
       <div id="lv-swaps"></div>
     </section>
 
     <section class="c8">
-      <h3>proof leaderboard <span class="cnt">Mb/s</span></h3>
+      <h3>proof leaderboard <span class="cnt">Mb/s</span> <span class="bucket-tag" id="bucket-tag-proof"></span></h3>
       <div id="lv-proof"></div>
       <div class="note">
         bar colors:
@@ -104,17 +104,17 @@
     </section>
 
     <section class="c4">
-      <h3>recent proofs <span class="cnt">Mb/s</span></h3>
+      <h3>recent proofs <span class="cnt">Mb/s</span> <span class="bucket-tag" id="bucket-tag-proofs"></span></h3>
       <div id="lv-proofs"></div>
     </section>
 
     <section class="c8">
-      <h3>rate progression <span class="cnt">client &middot; Mb/s</span></h3>
+      <h3>rate progression <span class="cnt">client &middot; Mb/s</span> <span class="bucket-tag" id="bucket-tag-rate"></span></h3>
       <div id="lv-rate"></div>
     </section>
 
     <section class="c4">
-      <h3>swap outcomes <span class="cnt">sustained</span> <span id="time-window-outcomes" class="cnt"></span></h3>
+      <h3>swap outcomes <span class="cnt">sustained</span> <span id="time-window-outcomes" class="cnt"></span> <span class="bucket-tag" id="bucket-tag-swapout"></span></h3>
       <div id="lv-swapout"></div>
       <div class="note">
         <b>sustained</b> = median srate in [t+60, t+300].
@@ -123,22 +123,22 @@
   </div>
 
   <section class="card">
-    <h2><span class="dot"></span>Rate EMA per algorithm &mdash; Mb/s</h2>
+    <h2><span class="dot"></span>Rate EMA per algorithm &mdash; Mb/s <span class="bucket-tag" id="bucket-tag-ratechart"></span></h2>
     <div class="chart-box h-lg"><canvas id="rate"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>Swap Score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span></h2>
+    <h2><span class="dot"></span>Swap Score per algorithm <span class="sub">256 = neutral &middot; above = swaps into this alg have been helping</span> <span class="bucket-tag" id="bucket-tag-sscore"></span></h2>
     <div class="chart-box h-lg"><canvas id="sscore"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>Bad Streak / Null Streak per algorithm <span class="sub">above 0 = picker penalty in effect</span></h2>
+    <h2><span class="dot"></span>Bad Streak / Null Streak per algorithm <span class="sub">above 0 = picker penalty in effect</span> <span class="bucket-tag" id="bucket-tag-streaks"></span></h2>
     <div class="chart-box h-lg"><canvas id="streaks"></canvas></div>
   </section>
 
   <section class="card">
-    <h2><span class="dot"></span>swaps per bin</h2>
+    <h2><span class="dot"></span>swaps per bin <span class="bucket-tag" id="bucket-tag-swapschart"></span></h2>
     <div class="chart-box h-sm"><canvas id="swaps"></canvas></div>
   </section>
 
