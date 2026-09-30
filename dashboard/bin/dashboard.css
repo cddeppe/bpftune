@@ -173,6 +173,7 @@
     font-size: 11px; font-weight: 400; text-transform: none;
     letter-spacing: 0;
   }
+  #nowbucket { margin-left: 6px !important; }
   .card > h2 .bucket-tag {
     white-space: nowrap;
   }

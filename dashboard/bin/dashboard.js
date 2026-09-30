@@ -989,8 +989,10 @@
     if (!_live.buckets) return;
     var doc = state.bucketDoc;  // may be null for 'all' — used for doc.last below
     var sub = $("nowbucket");
-    if (sub) sub.textContent = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
+    var _nowLabel = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
       ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
+    if ($("bucket").value === 'all') _nowLabel += ' (top)';
+    if (sub) sub.textContent = _nowLabel;
     // Build label from the dropdown text (already updated by renderLiveState)
     var _dropdownLabel = bid;
     var _bs2 = $("bucket");
