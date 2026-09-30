@@ -11,6 +11,8 @@ bpftune (0.4.84) unstable; urgency=medium
     showed all-256 swap_scores in the Swap Target Leaderboard while
     datacenter hosts (pre_swap_rate>0) worked fine.
 
+ -- Christophe Deppe <cdeppe@gmail.com>  Mon, 30 Sep 2026 00:00:00 +0200
+
 bpftune (0.4.83) unstable; urgency=medium
 
   * Peak-rate swap scoring: use post_swap_rate_max (running max of
