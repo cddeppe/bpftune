@@ -987,6 +987,7 @@
     }
     var _live = window.__current_doc || {};
     if (!_live.buckets) return;
+    var doc = state.bucketDoc;  // may be null for 'all' — used for doc.last below
     var sub = $("nowbucket");
     if (sub) sub.textContent = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
       ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
@@ -1014,7 +1015,7 @@
       min_rtt: _bkt ? _bkt.rtt_us : null,
       best_alg: _bkt ? _bkt.best_alg : null,
       collected_ts: _live.generated_ts,
-      tcp_rmem_max: (doc.last || {}).tcp_rmem_max || null,
+      tcp_rmem_max: ((doc || {}).last || {}).tcp_rmem_max || null,
       re: {}
     };
     // Build rate_ema dict from metric_by_bucket (live, 100KB/s units)
