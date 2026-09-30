@@ -927,7 +927,7 @@ def _proofs_with_dest(text):
         c = m.group(1)
         a = int(m.group(2))
         v4, v6 = cdest.get(c, (None, None))
-        dest = _resolve_remote_host(v4 or v6) if (v4 or v6) else None
+        dest = _label_for(_dest_str(v4, v6))
         out.append({
             "alg":  CONGS[a] if a < 16 else "alg%d" % a,
             "dest": dest,
@@ -952,7 +952,7 @@ def _rate_samples_with_dest(text):
             continue
         c = mc.group(1)
         v4, v6 = cdest.get(c, (None, None))
-        dest = _resolve_remote_host(v4 or v6) if (v4 or v6) else None
+        dest = _label_for(_dest_str(v4, v6))
         out.append({
             "dest":  dest,
             "thr":   int(mt.group(1)),
