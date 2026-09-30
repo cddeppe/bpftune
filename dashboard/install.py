@@ -271,8 +271,10 @@ def selinux_relabel():
     say("  selinux: relabeled cron + unit + logrotate files")
 
 
-BIN_FILES = ["bpftune-cli.py", "bpftune-collector.py", "bpftune-render.py"]
-ASSET_FILES = ["index.html"]
+BIN_FILES = ["bpftune-cli.py", "bpftune-collector.py", "bpftune-render.py",
+             "bpftune_log.py", "bpftune_data.py", "streak_writeback.py",
+             "labels-api.py"]
+ASSET_FILES = ["index.html", "dashboard.js", "dashboard.css"]
 
 
 def _port_in_use(port):
@@ -305,6 +307,20 @@ def install_bin():
             copy_file(src, INSTALL_BIN / name, 0o644)
     say("  installed %d scripts + %d assets into %s"
         % (len(BIN_FILES), len(ASSET_FILES), INSTALL_BIN))
+    # 0.4.91: symlink asset files from HIST so nginx/http.server can
+    # serve them.  index.html already had a symlink; dashboard.js and
+    # dashboard.css need one too or the browser gets 404 / stale copies.
+    HIST.mkdir(parents=True, exist_ok=True)
+    for name in ASSET_FILES:
+        src = INSTALL_BIN / name
+        dst = HIST / name
+        if src.exists():
+            try:
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink()
+                os.symlink(str(src), str(dst))
+            except OSError:
+                pass  # maybe no permission, or already correct
     for name in BIN_FILES:
         r = subprocess.run(
             [sys.executable, "-m", "py_compile", str(INSTALL_BIN / name)],
