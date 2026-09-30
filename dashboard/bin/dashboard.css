@@ -130,9 +130,7 @@
     --bad: #e5484d; --bad-dim: #e5484d1a;
     --warn: #d97706; --warn-dim: #d977061a;
   }
-  html[data-theme="light"] .bucket-tag {
-    color: #ffffff; background: #4e79a7; border-color: #3a5a7e;
-  }
+  /* 0.4.98: removed blue box — bucket tags are plain text in all themes */
   #theme-toggle {
     position: fixed; top: 12px; right: 12px; z-index: 100;
     background: var(--card-bg); border: 1px solid var(--border);

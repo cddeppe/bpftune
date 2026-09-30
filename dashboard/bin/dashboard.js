@@ -817,21 +817,34 @@
   // 0.4.87: update every .bucket-tag span with the current bucket's
   // label so the user can see at a glance which bucket's data each
   // panel is showing.  Called on every renderLiveState / bucket change.
-  var _BUCKET_TAG_IDS = [
-    'bucket-tag-metric', 'bucket-tag-swaps',
-    'bucket-tag-proof', 'bucket-tag-proofs',
-    'bucket-tag-rate', 'bucket-tag-swapout',
+  var _TOP_BUCKET_TAG_IDS = [
+    'bucket-tag-metric', 'bucket-tag-swapout',
     'bucket-tag-ratechart', 'bucket-tag-sscore',
     'bucket-tag-streaks', 'bucket-tag-swapschart'
   ];
+  var _ALL_BUCKET_TAG_IDS = [
+    'bucket-tag-swaps', 'bucket-tag-proof',
+    'bucket-tag-proofs', 'bucket-tag-rate'
+  ];
   function _updateBucketTags() {
     var bk = _currentBucketLabel();
-    var text = bk.bid === 'all' ? '— all' : ('— ' + bk.label);
-    for (var i = 0; i < _BUCKET_TAG_IDS.length; i++) {
-      var el = document.getElementById(_BUCKET_TAG_IDS[i]);
-      if (el) {
-        el.textContent = text;
-        el.classList.toggle('is-all', bk.bid === 'all');
+    if (bk.bid === 'all') {
+      var hb = _heaviestBucketWithCoverage();
+      var topText = hb ? ('— ' + hb.label) : '— all';
+      for (var i = 0; i < _TOP_BUCKET_TAG_IDS.length; i++) {
+        var el = document.getElementById(_TOP_BUCKET_TAG_IDS[i]);
+        if (el) el.textContent = topText;
+      }
+      for (var j = 0; j < _ALL_BUCKET_TAG_IDS.length; j++) {
+        var el2 = document.getElementById(_ALL_BUCKET_TAG_IDS[j]);
+        if (el2) el2.textContent = '— all';
+      }
+    } else {
+      var text = '— ' + bk.label;
+      var allIds = _TOP_BUCKET_TAG_IDS.concat(_ALL_BUCKET_TAG_IDS);
+      for (var k = 0; k < allIds.length; k++) {
+        var el3 = document.getElementById(allIds[k]);
+        if (el3) el3.textContent = text;
       }
     }
   }
