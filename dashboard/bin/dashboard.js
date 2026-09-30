@@ -976,6 +976,8 @@
   function startPollingFallback() {
     if (_pollFallback) return;
     console.log("Polling fallback active (30s interval)");
+    liveRefresh();
+    refreshNowCardAndChart();
     _pollFallback = setInterval(function () {
       liveRefresh();
       refreshNowCardAndChart();
@@ -987,6 +989,7 @@
     if (bid === 'all') {
       var hb = _heaviestBucketWithCoverage();
       if (hb) bid = hb.bid;
+      else if (state.meta && state.meta.buckets && state.meta.buckets.length) bid = state.meta.buckets[0].id;
     }
     var _live = window.__current_doc || {};
     if (!_live.buckets) return;
@@ -1685,6 +1688,11 @@
     return j("data/bucket_" + safe.replace(/:/g, "_") + ".json").then(function (doc) {
       state.bucketDoc = doc;
       renderBucket();
+      renderNow();
+      renderRecentSwapsForBucket();
+      renderMetricForBucket();
+    }).catch(function (e) {
+      state.bucketDoc = null;
       renderNow();
       renderRecentSwapsForBucket();
       renderMetricForBucket();
