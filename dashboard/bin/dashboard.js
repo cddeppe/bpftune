@@ -703,7 +703,7 @@
     var blabel = 'all';
     if (bid !== 'all') {
       var bs = $('bucket');
-      blabel = (window.__labels && window.__labels[bid]) ||
+      blabel = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
         (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
     }
     var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
@@ -743,7 +743,7 @@
     var _bid = $('bucket') ? $('bucket').value : 'all';
     if (_bid === 'all') return {bid: 'all', label: 'all'};
     var _bs2 = $('bucket');
-    var _blabel = (window.__labels && window.__labels[_bid]) ||
+    var _blabel = (window.__labels && window.__labels[_bid] !== _bid && window.__labels[_bid]) ||
       (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
     return {bid: _bid, label: _blabel};
   }
@@ -866,7 +866,7 @@
     var doc = state.bucketDoc;
     if (!doc) return;
     var bid = $("bucket").value;
-    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid]) || ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
+    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) || ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
     // Live data from current.json (not stale bucket document)
     var _live = window.__current_doc || {};
     // Build label from the dropdown text (already updated by renderLiveState)
@@ -880,7 +880,7 @@
         }
       }
     }
-    var _bidLabel = (window.__labels && window.__labels[bid]) || _dropdownLabel || bid;
+    var _bidLabel = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) || _dropdownLabel || bid;
     // Find this bucket in doc.buckets (for instances, ref_rate, min_rtt, best_alg)
     var _bkt = null;
     var _bidDisplay = shortAddr(bid);
