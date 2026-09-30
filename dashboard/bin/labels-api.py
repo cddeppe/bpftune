@@ -496,7 +496,8 @@ class LabelsHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ip": ip, "label": labels.get(ip, "")})
         else:
             aliases = [r["raw"] for r in load_aliases_rules()]
-            self._send_json(200, {"labels": labels, "aliases": aliases})
+            groups = build_groups_from_aliases()
+            self._send_json(200, {"labels": labels, "aliases": aliases, "groups": groups})
 
     def do_POST(self):
         parsed = urlparse(self.path)

@@ -1872,15 +1872,24 @@ function _populateBucketSelect(desiredBucket) {
     }).catch(function(err) { alert('Error: ' + err); });
   }
   function closeLabelEditor() { document.getElementById('label-modal').style.display = 'none'; }
-  function _le_render(labels) {
-    // Group IPs by label (labels.json is the single source of truth)
+  function _le_render(labels, groups) {
     var allLabels = {};
-    Object.keys(labels).forEach(function(ip) {
+    Object.keys(labels || {}).forEach(function(ip) {
       var label = labels[ip];
-      if (!allLabels[label]) allLabels[label] = { ips: [] };
+      if (!allLabels[label]) allLabels[label] = { ips: [], canonical: ip };
       if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
     });
-    // Render
+    if (groups) {
+      Object.keys(groups).forEach(function(label) {
+        var g = groups[label];
+        if (!allLabels[label]) allLabels[label] = { ips: [], canonical: g.to_ip || '' };
+        if (g.from_ips) {
+          g.from_ips.forEach(function(ip) {
+            if (allLabels[label].ips.indexOf(ip) < 0) allLabels[label].ips.push(ip);
+          });
+        }
+      });
+    }
     var html = '';
     Object.keys(allLabels).sort().forEach(function(label) {
       var g = allLabels[label];
@@ -1890,7 +1899,6 @@ function _populateBucketSelect(desiredBucket) {
         '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
         (count > 1 ? ' <button id="le-btn-' + _le_esc(label) + '" onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
         '</td><td></td></tr>';
-      // Show individual IPs with delete buttons
       g.ips.forEach(function(ip, idx) {
         var style = count > 1 ? ' style="display:none"' : '';
         html += '<tr class="le-ips-' + _le_esc(label) + '"' + style + '><td colspan="2" style="padding-left:24px;font-size:11px">' +
