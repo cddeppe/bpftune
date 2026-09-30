@@ -426,13 +426,13 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
         elapsed = now - statep->last_swap_at;
         if (elapsed < SWAP_OUTCOME_MIN_RNAL_NS) return;
 
+        tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
         if (statep->pre_swap_rate == 0) {
                 pre = rh->metrics[tgt].rate_ema;
                 if (pre == 0) return;
         } else {
                 pre = statep->pre_swap_rate;
         }
-        tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
         /* 0.4.65: if the socket is no longer on the pending target,
          * the swap was rejected before the 60s window opened.  Force
          * the ratio to loss-class regardless of the current rate.
