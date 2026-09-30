@@ -423,9 +423,9 @@ def data_recent_swaps_by_bucket(text, n_per_bucket=16) -> Dict[str, List[RecentS
     {bucket_str: [row, ...]} ordered newest-first within each."""
     rows = data_recent_swaps(text, n=200)
     out = {}
-    # Iterate newest-first so each bucket gets its newest
-    # n_per_bucket entries, not the oldest of the window.
-    for r in reversed(rows):
+    # 0.4.90: data_recent_swaps now returns newest-first (was oldest-first),
+    # so iterate forward (not reversed) to fill each bucket newest-first.
+    for r in rows:
         # 0.4.86: group by dest (labeled) instead of _bucket (raw key)
         # so keys match meta.json bucket IDs (which use the labeled dest).
         # Without this, selecting "home-sco" in the dropdown looks up
@@ -782,7 +782,7 @@ def data_recent_swaps(text, n=10) -> List[RecentSwap]:
             "_bucket":  _bucket_of(row[9] if len(row) > 9 else None,
                                     row[10] if len(row) > 10 else None),
         })
-    return rows[-n:]
+    return rows[-n:][::-1]  # 0.4.90: newest-first
 
 
 
@@ -804,7 +804,9 @@ def data_recent_proofs(text, n=16) -> List[RecentProof]:
             "tier": "proved" if m.group(5) == "2" else "good",
             "dest": _label_for(_dest_str(*(cdest.get(c) or (None, None)))),
         })
-    return out
+    # 0.4.90: return newest-first (was oldest-first) so the JS
+    # renderRecentProofs doesn't need to .reverse().
+    return out[::-1]
 
 
 

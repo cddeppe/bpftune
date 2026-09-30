@@ -292,7 +292,9 @@ class TestDataPipeline(unittest.TestCase):
     def test_data_recent_swaps(self):
         rows = self.cli.data_recent_swaps(MOCK_LOG, n=10)
         self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[-1]["to_alg"], "dctcp")
+        # 0.4.90: data_recent_swaps now returns newest-first.
+        self.assertEqual(rows[0]["to_alg"], "dctcp")
+        self.assertEqual(rows[-1]["to_alg"], "bbr")
 
     def test_proof_events(self):
         events, samples = self.cli._proof_events(MOCK_LOG)

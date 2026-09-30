@@ -119,6 +119,20 @@
     --warn: #fbbf24;
     --warn-dim: #fbbf2422;
   }
+  /* 0.4.90: light-theme override so toggle works when OS is dark */
+  html[data-theme="light"] {
+    --bg: #f6f7f9; --fg: #131720; --muted: #6b7280; --muted-2: #9aa0a6;
+    --border: #e6e8ec; --border-strong: #d6d9df; --card-bg: #ffffff;
+    --code-bg: #fbfbfd; --subtle: #f2f4f7;
+    --shadow: 0 1px 2px rgba(16,24,40,.04);
+    --accent: #2f6feb; --accent-dim: #2f6feb1a;
+    --good: #12a150; --good-dim: #12a1501a;
+    --bad: #e5484d; --bad-dim: #e5484d1a;
+    --warn: #d97706; --warn-dim: #d977061a;
+  }
+  html[data-theme="light"] .bucket-tag {
+    color: #ffffff; background: #4e79a7; border-color: #3a5a7e;
+  }
   #theme-toggle {
     position: fixed; top: 12px; right: 12px; z-index: 100;
     background: var(--card-bg); border: 1px solid var(--border);

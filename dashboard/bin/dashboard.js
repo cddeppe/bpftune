@@ -529,7 +529,9 @@
       return;
     }
     var html = '<div class="list">';
-    rows.slice().reverse().forEach(function (r) {
+    // 0.4.90: data_recent_proofs now returns newest-first, so render
+    // forward (was .slice().reverse() which assumed oldest-first input).
+    rows.forEach(function (r) {
       html += '<div class="item">' +
         '<span class="flow">' + esc(r.alg) + '</span>' +
         '<span class="meta">' + esc(shortAddr(r.dest)) +
