@@ -1,3 +1,18 @@
+bpftune (0.4.85) unstable; urgency=medium
+
+  * Fix: score_pending_swap used tgt before initialization in the
+    pre_swap_rate==0 fallback (added in 0.4.84).  tgt was declared at
+    the top of the function but only initialized 6 lines later, after
+    the if block that reads rh->metrics[tgt].rate_ema.  In C this is
+    undefined behavior — tgt was garbage (usually 0 = cubic), so the
+    'pre' value was read from cubic's rate_ema instead of the actual
+    target alg's.  This made ratio_q wrong -> wrong win/loss/null
+    classification -> wrong bad_streak increments.
+  * Fix: move tgt = ... above the if (pre_swap_rate == 0) block so
+    it's initialized before any use.  One-line reorder, no logic change.
+
+ -- Christophe Deppe <cdeppe@gmail.com>  Wed, 30 Sep 2026 16:47:28 +0200
+
 bpftune (0.4.84) unstable; urgency=medium
 
   * Fix: score_pending_swap uses rate_ema as fallback when pre_swap_rate=0
@@ -10,8 +25,6 @@ bpftune (0.4.84) unstable; urgency=medium
   * Affected: hosts with app-limited connections (VPS, relay hosts)
     showed all-256 swap_scores in the Swap Target Leaderboard while
     datacenter hosts (pre_swap_rate>0) worked fine.
-
- -- Christophe Deppe <cdeppe@gmail.com>  Mon, 30 Sep 2026 00:00:00 +0200
 
  -- Christophe Deppe <cdeppe@gmail.com>  Mon, 30 Sep 2026 00:00:00 +0200
 
