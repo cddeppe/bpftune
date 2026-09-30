@@ -1,3 +1,20 @@
+bpftune (0.4.86) unstable; urgency=medium
+
+  * Fix: init swap_target=0xff on fresh sk_storage (Bug #2).  Fresh
+    storage was zeroed -> swap_target=0 (cubic) -> score_pending_swap
+    fired on every fresh socket with tgt=0.  If cur_alg != 0, ratio_q
+    was forced to 0 (catastrophic loss for cubic).  This is why cubic
+    was disproportionately punished — the uninitialized swap_target
+    defaults to 0 = cubic's index.
+  * Fix: unit mismatch in rate_ema fallback (Bug #1).  rate_ema is in
+    100KB/s units but post_swap_rate_max is in B/s.  Multiply rate_ema
+    by RATE_EMA_BYTES_PER_UNIT to convert.  Without this, ratio was
+    ~100000x too high -> clamped to 1024 -> always a win.
+  * Fix: use _settle_ns instead of T_SETTLE_NS for BBR settle window
+    (Bug #3).  Regression in 0.4.81 final.
+
+ -- Christophe Deppe <cdeppe@gmail.com>  Wed, 30 Sep 2026 23:55:55 +0200
+
 bpftune (0.4.85) unstable; urgency=medium
 
   * Fix: score_pending_swap used tgt before initialization in the

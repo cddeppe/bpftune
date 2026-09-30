@@ -234,6 +234,16 @@ static __always_inline int set_cong(struct bpf_sock_ops *ops,
 	statep = bpf_sk_storage_get(&sk_storage_map, sk, 0,
 	                            BPF_SK_STORAGE_GET_F_CREATE);
 	if (statep) {
+		/* 0.4.86: init swap_target to 0xff on fresh storage.
+		 * Fresh sk_storage is zeroed, so swap_target == 0 (cubic).
+		 * score_pending_swap checks for 0xff, so it did not early-return
+		 * on fresh sockets.  Every fresh socket triggered score_pending_swap
+		 * with tgt=0 (cubic), and if cur_alg != 0, ratio_q was forced to 0
+		 * (catastrophic loss for cubic).  This is why cubic was
+		 * disproportionately punished. */
+		if (statep->last_swap_at == 0) {
+			statep->swap_target = 0xff;
+		}
 		/* 0.4.44: count socket against alg on first contact. */
 		__u8 idx = i & (NUM_TCP_CONG_ALGS - 1);
 		__u64 bit = 1ULL << idx;
@@ -428,7 +438,11 @@ score_pending_swap(struct bpf_sock_ops *ops, struct remote_host *rh,
 
         tgt = (__u8)(statep->swap_target & (NUM_TCP_CONG_ALGS - 1));
         if (statep->pre_swap_rate == 0) {
-                pre = rh->metrics[tgt].rate_ema;
+                /* 0.4.86: convert rate_ema from 100KB/s units to B/s.
+                 * rate_ema is stored as rate_delivered / RATE_EMA_BYTES_PER_UNIT
+                 * (100000).  post_swap_rate_max is in raw B/s.  Without
+                 * conversion, ratio was ~100000x too high -> always a win. */
+                pre = (__u64)rh->metrics[tgt].rate_ema * RATE_EMA_BYTES_PER_UNIT;
                 if (pre == 0) return;
         } else {
                 pre = statep->pre_swap_rate;
@@ -1188,7 +1202,9 @@ int bpftune_conn_tuner_vote(struct bpf_sock_ops *ops)
              * for the new algorithm to settle, and the 2-bad-check
              * requirement above already prevents thrash. */
             __u64 _settle_ns = (s == ALG_BBR_INDEX || swap_tgt == ALG_BBR_INDEX) ? T_SETTLE_NS * 2 : T_SETTLE_NS;
-            bool settle_expired = (now >= statep->last_swap_at + T_SETTLE_NS);
+            /* 0.4.86: use _settle_ns so BBR gets the doubled settle
+             * window.  Regression in 0.4.81 final. */
+            bool settle_expired = (now >= statep->last_swap_at + _settle_ns);
 
             __u64 eff_ref = remote_host->max_rate_delivered;
             if (eff_ref < REF_FLOOR_BPS)
