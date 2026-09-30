@@ -60,16 +60,14 @@ def _raw_score_from_outcomes(outcomes):
 def _patch_streaks(buf,alg_idx,bad,null,outcomes=None):
     base=OFF_METRICS_ARRAY+(alg_idx*SIZEOF_TCP_CONN_METRIC)
     buf[base+OFF_METRIC_BAD_STREAK]=bad&0xff; buf[base+OFF_METRIC_NULL_STREAK]=null&0xff
-    if outcomes:
-        current_ss=struct.unpack_from('<H',buf,base+OFF_METRIC_SWAP_SCORE)[0]
-        if current_ss==256:
-            rate_ema=struct.unpack_from('<H',buf,base+OFF_METRIC_RATE_EMA)[0]
-            if rate_ema>0:
-                raw_score=_raw_score_from_outcomes(outcomes)
-                penalty=max(0,1.0-(bad*0.2+null*0.1))
-                new_ss=int(rate_ema*raw_score/256*penalty)
-                new_ss=max(0,min(65535,new_ss))
-                struct.pack_into('<H',buf,base+OFF_METRIC_SWAP_SCORE,new_ss)
+    # 0.4.86: do NOT recalculate swap_score here.  The kernel (0.4.84+)
+    # writes swap_score directly based on actual rate ratios.  The old
+    # recalculation (new_ss = rate_ema * raw_score / 256 * penalty) tied
+    # swap_score to rate_ema, which made low-rate algs get unfairly low
+    # scores.  Every time the user reset swap_score to 256 (neutral),
+    # the writeback immediately overwrote it with rate_ema-based value.
+    # Now the writeback only patches bad_streak/null_streak; the kernel
+    # owns swap_score.
 
 def _streaks_from_history(outcomes):
     bad=0; null=0
