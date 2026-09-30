@@ -172,7 +172,7 @@ if [ "$DO_DASHBOARD" = 1 ]; then
         mkdir -p "$DASH_BIN" "$SERVED"
         cp dashboard/bin/*.py dashboard/bin/*.js dashboard/bin/*.css "$DASH_BIN"/
         chmod 644 "$DASH_BIN"/*.py "$DASH_BIN"/*.css "$DASH_BIN"/*.js
-        chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py 2>/dev/null || true
+        chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
         [ -f dashboard/bin/index.html ] && cp dashboard/bin/index.html "$SERVED"/
         cp "$DASH_BIN"/dashboard.css "$SERVED"/ 2>/dev/null || true
         cp "$DASH_BIN"/dashboard.js  "$SERVED"/ 2>/dev/null || true
@@ -203,6 +203,57 @@ if [ "$DO_DASHBOARD" = 1 ]; then
             :
         else
             warn "collector not yet serving /current.json (journalctl -u bpftune-collector -f)"
+        fi
+
+        # --- 2c. refresh bpftune-met-trace.service (fix trace_pipe truncation) ---
+        MET_SVC=/etc/systemd/system/bpftune-met-trace.service
+        NEW_MET=$(cat <<'METEOF'
+[Unit]
+Description=bpftune trace_pipe capture to /var/log/bpftune-met-live.log
+After=bpftune.service
+Wants=bpftune.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'while true; do cat /sys/kernel/tracing/trace_pipe >> /var/log/bpftune-met-live.log 2>&1; sleep 0.1; done'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+METEOF
+)
+        if [ -f "$MET_SVC" ]; then
+            OLD_MD5=$(md5sum "$MET_SVC" | awk '{print $1}')
+            NEW_MD5=$(printf "%s\n" "$NEW_MET" | md5sum | awk '{print $1}')
+            if [ "$OLD_MD5" != "$NEW_MD5" ]; then
+                printf "%s\n" "$NEW_MET" > "$MET_SVC"
+                systemctl daemon-reload
+                systemctl restart bpftune-met-trace 2>/dev/null && ok "bpftune-met-trace.service refreshed (trace_pipe loop)" || warn "bpftune-met-trace restart failed"
+            else
+                ok "bpftune-met-trace.service already up-to-date"
+            fi
+        fi
+
+        # --- 2d. ensure render.py executable + data/ symlinks exist ---
+        chmod 755 "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
+        mkdir -p "$SERVED/data"
+        for f in "$SERVED"/data/*.json; do
+            [ -f "$f" ] || continue
+            bn=$(basename "$f")
+            [ -L "$SERVED/$bn" ] || ln -sf "data/$bn" "$SERVED/$bn"
+        done
+
+        # --- 2e. ensure cron has the symlink step ---
+        CRON_FILE=/etc/cron.d/bpftune-history
+        if [ -f "$CRON_FILE" ] && ! grep -q 'ln -sf' "$CRON_FILE"; then
+            cat > "$CRON_FILE" <<'CRONEOF'
+# managed by bpftune install.sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+2 * * * * root /opt/bpftune-dashboard/bin/bpftune-render.py && for f in /var/lib/bpftune/history/data/*.json; do [ -f "$f" ] && ln -sf "data/$(basename "$f")" "/var/lib/bpftune/history/$(basename "$f")"; done >> /var/log/bpftune-render.log 2>&1
+CRONEOF
+            chmod 644 "$CRON_FILE"
+            ok "cron updated with symlink step"
         fi
     fi
 fi

@@ -202,7 +202,7 @@ if [ "$DASHBOARD" = 1 ]; then
     mkdir -p "$DASH_BIN" "$SERVED"
     cp dashboard/bin/*.py dashboard/bin/*.js dashboard/bin/*.css "$DASH_BIN"/
     chmod 644 "$DASH_BIN"/*.py "$DASH_BIN"/*.css "$DASH_BIN"/*.js
-    chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py 2>/dev/null || true
+    chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
     [ -f dashboard/bin/index.html ] && cp dashboard/bin/index.html "$SERVED"/
     cp "$DASH_BIN"/dashboard.css "$SERVED"/ 2>/dev/null || true
     cp "$DASH_BIN"/dashboard.js  "$SERVED"/ 2>/dev/null || true
@@ -253,7 +253,7 @@ Wants=bpftune.service
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c 'exec cat /sys/kernel/tracing/trace_pipe > /var/log/bpftune-met-live.log 2>&1'
+ExecStart=/bin/sh -c 'while true; do cat /sys/kernel/tracing/trace_pipe >> /var/log/bpftune-met-live.log 2>&1; sleep 0.1; done'
 Restart=always
 RestartSec=3
 
@@ -325,7 +325,7 @@ EOF
     cat > /etc/cron.d/bpftune-history <<'EOF'
 # managed by bpftune install.sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-2 * * * * root /opt/bpftune-dashboard/bin/bpftune-render.py >> /var/log/bpftune-render.log 2>&1
+2 * * * * root /opt/bpftune-dashboard/bin/bpftune-render.py && for f in /var/lib/bpftune/history/data/*.json; do [ -f "$f" ] && ln -sf "data/$(basename "$f")" "/var/lib/bpftune/history/$(basename "$f")"; done >> /var/log/bpftune-render.log 2>&1
 EOF
     chmod 644 /etc/cron.d/bpftune-history
 
@@ -342,6 +342,17 @@ EOF
         ok "initial collection done — current.json ready"
     else
         warn "initial collection failed — daemon will retry (journalctl -u bpftune-collector -f)"
+    fi
+
+    # --- 3f.1: render.py output dir + symlinks (data/*.json -> root) ---
+    mkdir -p "$SERVED/data"
+    if [ -d "$SERVED/data" ]; then
+        for f in "$SERVED"/data/*.json; do
+            [ -f "$f" ] || continue
+            bn=$(basename "$f")
+            [ -L "$SERVED/$bn" ] || ln -sf "data/$bn" "$SERVED/$bn"
+        done
+        ok "data/ symlinks created in $SERVED"
     fi
 
     # --- 3g. tests ---
