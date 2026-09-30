@@ -162,7 +162,7 @@ for a in d.get('assets', []):
             if ! dpkg -i "$DEB"; then
                 fail "dpkg -i failed — fix apt with 'apt-get install -f' and re-run"
             fi
-            systemctl enable --now bpftune
+            systemctl restart bpftune
             ok "bpftune $(dpkg-query -W -f='${Version}' bpftune) installed and started"
         fi
     fi

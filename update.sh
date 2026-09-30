@@ -129,7 +129,7 @@ for a in d.get('assets', []):
             if ! dpkg -i "$DEB_TO_INSTALL"; then
                 fail "dpkg -i failed — run 'apt-get install -f' then re-run this script"
             fi
-            systemctl start bpftune
+            systemctl restart bpftune
             sleep 1
             ok "bpftune downgraded to $(dpkg-query -W -f='${Version}' bpftune)"
         else
@@ -142,7 +142,7 @@ for a in d.get('assets', []):
         if ! dpkg -i "$DEB_TO_INSTALL"; then
             fail "dpkg -i failed — run 'apt-get install -f' then re-run this script"
         fi
-        systemctl start bpftune
+        systemctl restart bpftune
         sleep 1
         ok "bpftune upgraded to $(dpkg-query -W -f='${Version}' bpftune)"
     fi
