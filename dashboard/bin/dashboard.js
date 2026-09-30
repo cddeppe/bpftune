@@ -980,10 +980,19 @@
   }
 
   function renderNow() {
-    var doc = state.bucketDoc;
-    if (!doc) return;
+    // 0.4.100: for All Buckets, use the heaviest bucket with coverage.
+    // The NOW panel uses _live (current.json) data, not state.bucketDoc,
+    // so we don't need the bucketDoc gate — just need the right bid.
     var bid = $("bucket").value;
-    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) || ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
+    if (bid === 'all') {
+      var hb = _heaviestBucketWithCoverage();
+      if (hb) bid = hb.bid;
+    }
+    var _live = window.__current_doc || {};
+    if (!_live.buckets) return;  // wait for first SSE push
+    var sub = $("nowbucket");
+    if (sub) sub.textContent = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
+      ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
     // Live data from current.json (not stale bucket document)
     var _live = window.__current_doc || {};
     // Build label from the dropdown text (already updated by renderLiveState)
