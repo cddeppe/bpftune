@@ -103,10 +103,20 @@ def _load_fold():
 
 def _fold_v6(addr):
     """0.4.79: replace a v6 /32 bucket key with its canonical v4 bucket
-    if that /32 is declared in /etc/bpftune/aliases."""
+    if that /32 is declared in /etc/bpftune/aliases.
+    0.4.85: if no fold rule matches, convert v6:hex to standard IPv6
+    /32 so _label_for can normalize and find the label."""
     if not addr or not addr.startswith("v6:"):
         return addr
-    return _load_fold().get(addr, addr)
+    folded = _load_fold().get(addr)
+    if folded:
+        return folded
+    # No fold rule — convert v6:hex to standard IPv6 /32
+    try:
+        n = int(addr[3:], 16)
+        return "%x:%x::" % ((n >> 16) & 0xFFFF, n & 0xFFFF)
+    except (ValueError, TypeError):
+        return addr
 
 
 

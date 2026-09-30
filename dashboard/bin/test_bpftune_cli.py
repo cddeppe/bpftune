@@ -160,8 +160,9 @@ class TestLabelFor(unittest.TestCase):
         self.assertEqual(self.cli._label_for("abcd:f234::"), "v6-peer")
 
     def test_v6_bucket_form_with_label(self):
+        # v6:abcd1234 has no fold rule → converts to standard IPv6 abcd:1234::
         result = self.cli._label_for("v6:abcd1234")
-        self.assertEqual(result, "v6:abcd1234")
+        self.assertEqual(result, "abcd:1234::")
 
     def test_v6_no_label_returns_normalized(self):
         result = self.cli._label_for("1234:5678::")
