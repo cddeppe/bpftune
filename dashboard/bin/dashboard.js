@@ -866,7 +866,7 @@
     var doc = state.bucketDoc;
     if (!doc) return;
     var bid = $("bucket").value;
-    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid]) || bid;
+    var sub = $("nowbucket"); if (sub) sub.textContent = (window.__labels && window.__labels[bid]) || ($("bucket") && $("bucket").selectedIndex >= 0 ? $("bucket").options[$("bucket").selectedIndex].text.replace(/ \(\d+\)$/, "") : bid);
     // Live data from current.json (not stale bucket document)
     var _live = window.__current_doc || {};
     // Build label from the dropdown text (already updated by renderLiveState)
