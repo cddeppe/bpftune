@@ -253,6 +253,9 @@
     if (!addr && state.meta && state.meta.default_bucket) {
       addr = state.meta.default_bucket;
     }
+    if (addr === 'all' && state.meta && state.meta.buckets && state.meta.buckets.length) {
+      addr = state.meta.buckets[0].id;
+    }
     var byB = state.metricByBucket || {};
     var keys = Object.keys(byB);
     // 0.4.87: try the raw addr first (the dropdown value), then the
@@ -864,6 +867,7 @@
     _updateBucketTags();
     state.metricByBucket = doc.metric_by_bucket || {};
     state.bucketLive = doc.bucket_live || {};
+    _appendLiveMetrics(doc);
     state.recentSwapsByBucket = doc.recent_swaps_by_bucket || null;
     _safeRender('metric_for_bucket', function() { renderMetricForBucket(); });
     _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
@@ -1243,6 +1247,35 @@
       }
     }
     return {ts: ts, cols: cols};
+  }
+
+  function _appendLiveMetrics(doc) {
+    if (!doc.metric_by_bucket || !state.bucketLive) return;
+    var ts = doc.generated_ts; if (!ts) return;
+    var bid = $('bucket') ? $('bucket').value : null;
+    if (!bid || bid === 'all') return;
+    var lb = state.bucketLive[bid];
+    if (!lb) { var lbl = _labelForBucketAddr(bid); if (lbl && lbl !== bid) lb = state.bucketLive[lbl]; }
+    if (!lb || !lb.ts || !lb.cols) return;
+    if (lb.ts.length > 0 && lb.ts[lb.ts.length - 1] >= ts) return;
+    var mbRows = doc.metric_by_bucket[bid];
+    if (!mbRows) { var lbl2 = _labelForBucketAddr(bid); if (lbl2 && lbl2 !== bid) mbRows = doc.metric_by_bucket[lbl2]; }
+    if (!mbRows || !mbRows.length) return;
+    lb.ts.push(ts);
+    for (var i = 0; i < mbRows.length; i++) {
+      var r = mbRows[i]; if (!r.alg) continue;
+      var prefixes = [['re_', 'rate_ema'], ['ss_', 'swap_score'], ['bs_', 'bad_streak'], ['ns_', 'null_streak']];
+      for (var p = 0; p < prefixes.length; p++) {
+        var key = prefixes[p][0] + r.alg;
+        if (!lb.cols[key]) lb.cols[key] = [];
+        lb.cols[key].push(r[prefixes[p][1]] != null ? r[prefixes[p][1]] : null);
+      }
+    }
+    var MAX = 240;
+    if (lb.ts.length > MAX) {
+      lb.ts = lb.ts.slice(-MAX);
+      for (var k in lb.cols) { if (Array.isArray(lb.cols[k])) lb.cols[k] = lb.cols[k].slice(-MAX); }
+    }
   }
 
   function renderBucket() {

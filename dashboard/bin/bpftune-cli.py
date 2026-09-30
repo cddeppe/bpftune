@@ -156,6 +156,7 @@ def collect_lightweight(offsets, map_raw=None, base_result=None):
     doc['hostname'] = os.uname().nodename
     doc['now_mono'] = _uptime_now()
     doc['buckets'] = _safe(lambda: data_buckets(hosts), [], 'lw_buckets')
+    doc['metric_by_bucket'] = _safe(lambda: data_metric_by_bucket(hosts), {}, 'lw_metric_by_bucket')
     doc['build'] = _safe(lambda: data_build(logpath), {}, 'lw_build')
     doc['system'] = _safe(data_system, {}, 'lw_system')
 

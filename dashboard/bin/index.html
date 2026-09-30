@@ -79,7 +79,7 @@
     </section>
 
     <section class="c8">
-      <h3>swap target leaderboard <span class="cnt">top row = picker's choice</span> <span class="bucket-tag" id="bucket-tag-metric"></span></h3>
+      <h3>swap target leaderboard <span class="bucket-tag" id="bucket-tag-metric"></span> <span class="cnt">live</span></h3>
       <div id="lv-metric"></div>
       <div class="note">
         <b>score</b> = <code>Rate EMA &times; Swap Score / 256 &times; penalty</code>.
@@ -88,12 +88,12 @@
     </section>
 
     <section class="c4">
-      <h3>recent swaps <span class="cnt">target + outcome</span> <span class="bucket-tag" id="bucket-tag-swaps"></span></h3>
+      <h3>recent swaps <span class="bucket-tag" id="bucket-tag-swaps"></span> <span class="cnt">target + outcome</span></h3>
       <div id="lv-swaps"></div>
     </section>
 
     <section class="c8">
-      <h3>proof leaderboard <span class="cnt">Mb/s</span> <span class="bucket-tag" id="bucket-tag-proof"></span></h3>
+      <h3>proof leaderboard <span class="bucket-tag" id="bucket-tag-proof"></span> <span class="cnt">live &middot; Mb/s</span></h3>
       <div id="lv-proof"></div>
       <div class="note">
         bar colors:
@@ -104,17 +104,17 @@
     </section>
 
     <section class="c4">
-      <h3>recent proofs <span class="cnt">Mb/s</span> <span class="bucket-tag" id="bucket-tag-proofs"></span></h3>
+      <h3>recent proofs <span class="bucket-tag" id="bucket-tag-proofs"></span> <span class="cnt">Mb/s</span></h3>
       <div id="lv-proofs"></div>
     </section>
 
     <section class="c8">
-      <h3>rate progression <span class="cnt">client &middot; Mb/s</span> <span class="bucket-tag" id="bucket-tag-rate"></span></h3>
+      <h3>rate progression <span class="bucket-tag" id="bucket-tag-rate"></span> <span class="cnt">live &middot; client &middot; Mb/s</span></h3>
       <div id="lv-rate"></div>
     </section>
 
     <section class="c4">
-      <h3>swap outcomes <span class="cnt">sustained</span> <span id="time-window-outcomes" class="cnt"></span> <span class="bucket-tag" id="bucket-tag-swapout"></span></h3>
+      <h3>swap outcomes <span class="bucket-tag" id="bucket-tag-swapout"></span> <span class="cnt">sustained</span> <span id="time-window-outcomes" class="cnt"></span></h3>
       <div id="lv-swapout"></div>
       <div class="note">
         <b>sustained</b> = median srate in [t+60, t+300].
