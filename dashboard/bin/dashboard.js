@@ -743,7 +743,7 @@
     var _bid = $('bucket') ? $('bucket').value : 'all';
     if (_bid === 'all') return {bid: 'all', label: 'all'};
     var _bs2 = $('bucket');
-    var _lbl2 = window.__labels && window.__labels[_bid]; var _blabel = (_lbl2 && _lbl2 !== _bid) ? _lbl2 ||
+    var _blabel = (window.__labels && window.__labels[_bid]) ||
       (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
     return {bid: _bid, label: _blabel};
   }
