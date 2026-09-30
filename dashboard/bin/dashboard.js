@@ -1669,20 +1669,18 @@
   }
 
   function loadBucket(id) {
-    // "All Buckets" view uses live aggregate data (current.json via
-    // renderLiveState), not a historical bucket_*.json file.  Skip the
-    // fetch entirely — otherwise we hit a 404 on data/bucket_all.json
-    // and renderBucket() throws on null doc.series.
     if (id === "all") {
-      state.bucketDoc = null;
-      renderNow();
-      renderRecentSwapsForBucket();
-      renderMetricForBucket();
-      return Promise.resolve();
+      var hb = _heaviestBucketWithCoverage();
+      if (hb) {
+        id = hb.bid;
+      } else {
+        state.bucketDoc = null;
+        renderNow();
+        renderRecentSwapsForBucket();
+        renderMetricForBucket();
+        return Promise.resolve();
+      }
     }
-    // 0.4.78.1: sanitize the same way the renderer did when it
-    // wrote the file -- bucket ids like "v6:XXXXXXXX" become
-    // "v6_XXXXXXXX" on disk.
     var safe = (id || "").replace(/[^A-Za-z0-9._-]/g, "_");
     return j("data/bucket_" + safe.replace(/:/g, "_") + ".json").then(function (doc) {
       state.bucketDoc = doc;
