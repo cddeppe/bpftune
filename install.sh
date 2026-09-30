@@ -107,7 +107,7 @@ if [ "$DEB_INSTALL" = 1 ]; then
     if [ "${_DO_DEB:-0}" = 1 ]; then
         DEB=""
         if [ -d "$BACKUP_DIR" ]; then
-            DEB=$(ls "$BACKUP_DIR"/bpftune_*_"$ARCH".deb 2>/dev/null | sort -V | tail -1 || true)
+            DEB=$(ls "$BACKUP_DIR"/bpftune-custom-*-"$ARCH".deb 2>/dev/null | sort -V | tail -1 || true)
         fi
 
         if [ -z "$DEB" ]; then
@@ -120,7 +120,7 @@ try:
 except Exception:
     sys.exit(0)
 for a in d.get('assets', []):
-    if '${ARCH}' in a.get('name', ''):
+    if '${ARCH}' in a.get('name', '') and 'bpftune-custom' in a.get('name', ''):
         print(a.get('browser_download_url', ''))
         break
 " 2>/dev/null || true)
@@ -133,7 +133,7 @@ for a in d.get('assets', []):
    (a) build on the builder host:
        cd /root/bpftune && git pull && sudo dpkg-buildpackage -b -us -uc
    (b) create a GitHub release with the .deb assets
-   (c) place a bpftune_*_${ARCH}.deb in ${BACKUP_DIR}/"
+   (c) place a bpftune-custom-*-${ARCH}.deb in ${BACKUP_DIR}/"
             fi
         fi
 

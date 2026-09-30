@@ -78,7 +78,7 @@ if [ "$DO_TUNER" = 1 ]; then
 
     LOCAL_DEB=""
     if [ -d "$BACKUP_DIR" ]; then
-        LOCAL_DEB=$(ls "$BACKUP_DIR"/bpftune_*_"$ARCH".deb 2>/dev/null | sort -V | tail -1 || true)
+        LOCAL_DEB=$(ls "$BACKUP_DIR"/bpftune-custom-*-"$ARCH".deb 2>/dev/null | sort -V | tail -1 || true)
     fi
 
     NEW_VER=""
@@ -98,7 +98,7 @@ try:
 except Exception:
     sys.exit(0)
 for a in d.get('assets', []):
-    if '${ARCH}' in a.get('name', ''):
+    if '${ARCH}' in a.get('name', '') and 'bpftune-custom' in a.get('name', ''):
         tag = d.get('tag_name', '').lstrip('v')
         if tag:
             print(tag + ' ' + a.get('browser_download_url', ''))
