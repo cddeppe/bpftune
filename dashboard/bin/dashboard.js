@@ -1898,7 +1898,7 @@ function _populateBucketSelect(desiredBucket) {
       html += '<tr><td><input type="text" value="' + _le_esc(label) + '" data-old-label="' + _le_esc(label) + '" class="label-edit-input" data-ips=' + JSON.stringify(g.ips).replace(/"/g,'&quot;') + ' style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
         '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
         (count > 1 ? ' <button id="le-btn-' + _le_esc(label) + '" onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
-        '</td><td></td></tr>';
+        '</td><td><button onclick="_le_del_group(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:2px 6px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Delete</button></td></tr>';
       g.ips.forEach(function(ip, idx) {
         var style = count > 1 ? ' style="display:none"' : '';
         html += '<tr class="le-ips-' + _le_esc(label) + '"' + style + '><td colspan="2" style="padding-left:24px;font-size:11px">' +
@@ -1952,6 +1952,27 @@ function _populateBucketSelect(desiredBucket) {
       body: JSON.stringify({ip: ip, label: ''})})
       .then(function(r) { return r.json(); })
       .then(function(d) { _le_render(d.labels||{}); if (window.__liveFetch) window.__liveFetch(); });
+  }
+
+  function _le_del_group(label) {
+    if (!confirm('Delete entire group "' + label + '" and all its IPs?')) return;
+    var input = document.querySelector('input[data-old-label="' + label + '"]');
+    if (!input) return;
+    var ips = JSON.parse(input.getAttribute('data-ips') || '[]');
+    if (!ips.length) return;
+    fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ips: ips, label: ''})})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _le_render(d.labels || {}, d.groups || {});
+        if (window.__liveFetch) window.__liveFetch();
+      });
+  }
+
+  function _le_save_all() {
+    document.querySelectorAll('.label-edit-input').forEach(function(input) {
+      input.blur();
+    });
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},

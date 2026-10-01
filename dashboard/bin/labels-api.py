@@ -533,12 +533,15 @@ class LabelsHandler(BaseHTTPRequestHandler):
             return
         if not label:
             labels.pop(ip, None)
+            _remove_ip_from_aliases(ip)
+            bpf_aliases_delete(ip)
         else:
             labels[ip] = label
         save_labels(labels)
         fold_results = auto_fold()
         self._send_json(200, {"ok": True, "ip": ip, "label": label,
-                              "labels": labels, "fold_results": fold_results})
+                              "labels": labels, "groups": build_groups_from_aliases(),
+                              "fold_results": fold_results})
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
@@ -549,9 +552,14 @@ class LabelsHandler(BaseHTTPRequestHandler):
             return
         labels = load_labels()
         labels.pop(ip, None)
+        _remove_ip_from_aliases(ip)
+        bpf_aliases_delete(ip)
         save_labels(labels)
         fold_results = auto_fold()
-        self._send_json(200, {"ok": True, "ip": ip, "fold_results": fold_results})
+        self._send_json(200, {"ok": True, "ip": ip,
+                              "labels": load_labels(),
+                              "groups": build_groups_from_aliases(),
+                              "fold_results": fold_results})
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[labels-api] %s %s\n" % (self.client_address[0], fmt % args))
