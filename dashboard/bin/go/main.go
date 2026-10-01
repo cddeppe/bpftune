@@ -464,8 +464,8 @@ func (c *Collector) collect() {
 	// Notify SSE clients
 	c.notifySSE()
 
-	fmt.Fprintf(os.Stderr, "collector: collected %d buckets, %d swaps, ts=%d\n",
-		len(buckets), len(topSwaps), now)
+	// v0.4.4: removed per-cycle "collected N buckets, M swaps" log line
+	// (was too spammy — printed every 30s.  Startup banner + errors still log.)
 }
 
 // voteSum sums metric_count across all algs for one bucket.  Used to
