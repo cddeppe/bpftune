@@ -139,37 +139,85 @@ func (c *Collector) collect() {
 		return
 	}
 
-	labels := loadLabels()
-	now := time.Now().Unix()
+labels := loadLabels()
+now := time.Now().Unix()
 
-	// Build buckets list
-	type bucket struct {
-		Dest    string  `json:"dest"`
-		Inst    int     `json:"inst"`
-		RttUs   float64 `json:"rtt_us"`
-		RefMbps float64 `json:"ref_mbps"`
-		BestAlg string  `json:"best_alg"`
-		NAlg    int     `json:"n_alg"`
-	}
-	var buckets []bucket
-	for addr, raw := range hosts {
-		v, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
+// 0.2: CONGS array for best_i -> algorithm name mapping
+congs := []string{"cubic", "bbr", "htcp", "dctcp", "scalable", "vegas",
+	"veno", "westwood", "reno", "illinois", "yeah", "lp",
+	"bic", "highspeed", "hybla", "nv"}
+
+type bucket struct {
+	Dest    string  `json:"dest"`
+	Inst    int     `json:"inst"`
+	RttUs   float64 `json:"rtt_us"`
+	RefMbps float64 `json:"ref_mbps"`
+	BestAlg string  `json:"best_alg"`
+	NAlg    int     `json:"n_alg"`
+}
+var buckets []bucket
+metricByBucket := make(map[string]interface{})
+bucketLive := make(map[string]interface{})
+var liveLeaders []interface{}
+
+for addr, raw := range hosts {
+	v, ok := raw.(map[string]interface{})
+	if !ok { continue }
+	inst := toInt(v["instances"])
+	if inst < 2 { continue }
+	bestI := toInt(v["best_i"])
+	bestAlg := ""
+	if bestI >= 0 && bestI < len(congs) { bestAlg = congs[bestI] }
+	nAlg := toInt(v["selection_count"])
+	lbl := labelFor(addr, labels)
+	buckets = append(buckets, bucket{Dest: lbl, Inst: inst,
+		RttUs: toFloat(v["min_rtt"]),
+		RefMbps: toFloat(v["max_rate_delivered"]) / 125000.0,
+		BestAlg: bestAlg, NAlg: nAlg})
+	if metrics, ok := v["metrics"].([]interface{}); ok {
+		var metricRows []interface{}
+		for i, m := range metrics {
+			if i >= len(congs) { break }
+			mi, ok := m.(map[string]interface{})
+			if !ok { continue }
+			metricRows = append(metricRows, map[string]interface{}{
+				"alg": congs[i], "rate_ema": toFloat(mi["rate_ema"]),
+				"swap_score": toInt(mi["swap_score"]),
+				"bad_streak": toInt(mi["bad_streak"]),
+				"null_streak": toInt(mi["null_streak"]),
+				"count": toInt(mi["metric_count"]),
+				"alive": toInt(mi["sockets_alive"]),
+				"active": toInt(mi["metric_count"]) > 0 || toInt(mi["sockets_alive"]) > 0 || toFloat(mi["rate_ema"]) > 0,
+			})
 		}
-		inst := toInt(v["instances"])
-		if inst < 2 {
-			continue
+		if len(metricRows) > 0 { metricByBucket[lbl] = metricRows }
+		cols := map[string]interface{}{}
+		for i, m := range metrics {
+			if i >= len(congs) { break }
+			mi, _ := m.(map[string]interface{})
+			cols["re_"+congs[i]] = []interface{}{toFloat(mi["rate_ema"])}
+			cols["ss_"+congs[i]] = []interface{}{toInt(mi["swap_score"])}
+			cols["bs_"+congs[i]] = []interface{}{toInt(mi["bad_streak"])}
+			cols["ns_"+congs[i]] = []interface{}{toInt(mi["null_streak"])}
 		}
-		buckets = append(buckets, bucket{
-			Dest:    labelFor(addr, labels),
-			Inst:    inst,
-			RttUs:   toFloat(v["min_rtt"]),
-			RefMbps: toFloat(v["max_rate_delivered"]) / 125000.0, // B/s -> Mb/s
-			BestAlg: toString(v["best_alg"]),
-			NAlg:    toInt(v["n_alg"]),
+		bucketLive[lbl] = map[string]interface{}{"ts": []interface{}{now}, "cols": cols}
+		bestScore := 0.0; bestAlgIdx := 0
+		for i, m := range metrics {
+			if i >= len(congs) { break }
+			mi, _ := m.(map[string]interface{})
+			score := toFloat(mi["rate_ema"]) * toFloat(mi["swap_score"]) / 256.0
+			if score > bestScore { bestScore = score; bestAlgIdx = i }
+		}
+		liveLeaders = append(liveLeaders, map[string]interface{}{
+			"dest": lbl, "inst": inst,
+			"top": []interface{}{map[string]interface{}{
+				"alg": congs[bestAlgIdx], "weighted": int(bestScore),
+				"rate_ema": toFloat(metrics[bestAlgIdx].(map[string]interface{})["rate_ema"]),
+				"swap_score": toInt(metrics[bestAlgIdx].(map[string]interface{})["swap_score"]),
+			}},
 		})
 	}
+}
 
 	// Build current.json
 	doc := map[string]interface{}{
@@ -187,9 +235,9 @@ func (c *Collector) collect() {
 			"default_cc": readProc("/proc/sys/net/ipv4/tcp_congestion_control"),
 		},
 		"buckets":        buckets,
-		"metric_by_bucket": map[string]interface{}{},
-		"bucket_live":    map[string]interface{}{},
-		"live_leaders":   []interface{}{},
+		"metric_by_bucket": metricByBucket,
+		"bucket_live":    bucketLive,
+		"live_leaders":   liveLeaders,
 		"recent_swaps":   []interface{}{},
 		"recent_proofs":  []interface{}{},
 		"swap_outcomes": map[string]interface{}{
