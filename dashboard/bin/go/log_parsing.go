@@ -393,7 +393,7 @@ func buildSwapOutcomes(swaps []swapRow,
 		swapsList = append(swapsList, swapOutRow{
 			Ts: sw.Ts, Cookie: sw.Cookie,
 			Outcome: o, OutcomeSrate: o2, OutcomeSustained: o3,
-				Dest: labelFor(destStr(sw.Dest, sw.Dest6)),
+			Dest: labelFor(destStr(sw.Dest, sw.Dest6)),
 		})
 	}
 
@@ -560,6 +560,7 @@ func buildSwapsListForOutcomes(swaps []swapOutRow) []interface{} {
 		out = append(out, map[string]interface{}{
 			"ts":                s.Ts,
 			"cookie":            s.Cookie,
+			"dest":              s.Dest,
 			"outcome":           s.Outcome,
 			"outcome_sustained": s.OutcomeSustained,
 		})

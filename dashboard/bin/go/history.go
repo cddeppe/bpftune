@@ -429,7 +429,7 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 		bucketEntries = append(bucketEntries, map[string]interface{}{
 			"id":             e.id,
 			"label":          e.label,
-			"points":          len(h.raw[e.id]),
+			"points":         len(h.raw[e.id]),
 			"instances_mean": e.instancesMean,
 			"last_ts":        e.lastTs,
 		})
