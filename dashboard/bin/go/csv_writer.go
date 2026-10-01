@@ -338,7 +338,7 @@ func loadCSVTailIntoRingBuffer() {
 
 	// Read the last ~2880*10 = 28800 lines (24h at 30s, ~10 buckets per cycle)
 	// But cap at 50000 to avoid excessive memory
-	start := len(lines) - 50000
+	start := len(lines) - 20000
 	if start < 1 {
 		start = 1
 	}
@@ -410,7 +410,13 @@ func loadCSVTailIntoRingBuffer() {
 			}
 		}
 
-		hist.addSnapshot(addr, snap)
+		// v0.5.6: directly populate raw (no addSnapshot side effects)
+		hist.mu.Lock()
+		hist.raw[addr] = append(hist.raw[addr], snap)
+		if len(hist.raw[addr]) > 2880 {
+			hist.raw[addr] = hist.raw[addr][len(hist.raw[addr])-2880:]
+		}
+		hist.mu.Unlock()
 	}
 }
 

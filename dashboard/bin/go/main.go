@@ -58,7 +58,7 @@ func NewCollector() *Collector {
 	hist.loadFromDisk()
 	// v0.5.1: load CSV tail (last 24h) into ring buffer so 1h/24h charts
 	// work immediately after restart
-	loadCSVTailIntoRingBuffer()
+	go loadCSVTailIntoRingBuffer() // v0.5.6: async so HTTP starts immediately
 	return c
 }
 
