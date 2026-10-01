@@ -604,16 +604,7 @@ func (c *Collector) notifySSE() {
 
 func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-		c.serveStatic(w, r, filepath.Join(histDir, "index.html"), "text/html; charset=utf-8")
-		return
-	}
-	if r.URL.Path == "/dashboard.js" || r.URL.Path == "/dashboard.css" {
-		c.serveStatic(w, r, filepath.Join(binDir, r.URL.Path), "")
-		return
-	}
-	// v0.5: dynamic /data/ files served from in-memory ring buffer
-	// (replaces the Python renderer cron + SQLite + CSV)
-	if strings.HasPrefix(r.URL.Path, "/data/") {
+		// v0.5.20: swaps.json served as static file (built by renderToDisk)
 		sub := r.URL.Path[len("/data/"):]
 		if sub == "" || strings.HasSuffix(sub, ".csv") || strings.Contains(sub, "..") || strings.HasPrefix(sub, ".") {
 			http.NotFound(w, r)
