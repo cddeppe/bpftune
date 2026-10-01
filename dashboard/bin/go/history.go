@@ -191,6 +191,14 @@ func aggregateSnapshots(snaps []bucketSnapshot) bucketSnapshot {
 // RANGES — mirrors Python renderer RANGES dict
 // ============================================================================
 
+// sortedAlgs returns CONGS in alphabetical order (matches Python renderer).
+func sortedAlgs() []string {
+	out := make([]string, len(CONGS))
+	copy(out, CONGS)
+	sort.Strings(out)
+	return out
+}
+
 var ranges = map[string][2]interface{}{
 	"1h":  {3600, 60},        // span=3600s, bin_width=60s
 	"24h": {86400, 300},      // span=86400s, bin_width=300s (5 min)
@@ -421,6 +429,7 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 		bucketEntries = append(bucketEntries, map[string]interface{}{
 			"id":             e.id,
 			"label":          e.label,
+			"points":          len(h.raw[e.id]),
 			"instances_mean": e.instancesMean,
 			"last_ts":        e.lastTs,
 		})
@@ -476,18 +485,14 @@ func (h *historyStore) handleFleetJSON(w http.ResponseWriter, r *http.Request, b
 			continue
 		}
 		// Coverage = fraction of 5-min bins in last 24h with rate_best_v > 0
-		snaps := h.bin5m[id]
+		snaps := readBucketCSV(id, 86400)
 		if len(snaps) == 0 {
 			continue
 		}
-		cutoff := time.Now().Unix() - 86400
 		var have, seen int
 		for _, s := range snaps {
-			if s.Ts < cutoff {
-				continue
-			}
 			seen++
-			if s.RateBestV > 0 {
+			if s.RefRate > 0 {
 				have++
 			}
 		}

@@ -242,8 +242,12 @@ func buildRecentSwapRows(swaps []swapRow,
 		fromAlg := algName(sw.From)
 		toAlg := algName(sw.To)
 
+		// v0.5.2: convert boot_ts (uptime) to epoch seconds
+		uptime := readProcUptime()
+		nowEpoch := float64(time.Now().Unix())
+		epochTs := nowEpoch - uptime + sw.Ts
 		row := map[string]interface{}{
-			"boot_ts":           sw.Ts,
+			"boot_ts":           epochTs,
 			"from_alg":          fromAlg,
 			"to_alg":            toAlg,
 			"d":                 d,
@@ -367,6 +371,7 @@ type swapOutRow struct {
 	Outcome          string
 	OutcomeSrate     string
 	OutcomeSustained string
+	Dest             string
 }
 
 func buildSwapOutcomes(swaps []swapRow,
@@ -388,6 +393,7 @@ func buildSwapOutcomes(swaps []swapRow,
 		swapsList = append(swapsList, swapOutRow{
 			Ts: sw.Ts, Cookie: sw.Cookie,
 			Outcome: o, OutcomeSrate: o2, OutcomeSustained: o3,
+				Dest: labelFor(destStr(sw.Dest, sw.Dest6)),
 		})
 	}
 
