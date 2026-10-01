@@ -260,15 +260,21 @@
       if (!target) return;
     }
     if (!confirm('Move ' + ip + ' from ' + fromBucket + ' to ' + target + '?')) return;
-    // Add the IP to the target group (writes to /etc/bpftune/aliases)
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: target})})
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function(d) {
-        // Reload everything
+        if (d.errors && d.errors.length) console.error('move errors:', d.errors);
         loadBucketIps();
         _le_render(d.labels || {}, d.groups || {});
         if (window.__liveFetch) window.__liveFetch();
+      })
+      .catch(function(e) {
+        console.error('_bi_move failed:', e);
+        alert('Move failed: ' + e.message + '. Check if labels-api is running.');
       });
   }
 

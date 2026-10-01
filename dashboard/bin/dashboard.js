@@ -1715,15 +1715,25 @@ function _populateBucketSelect(desiredBucket) {
   var bs = $("bucket");
   var html = "";
   var stillThere = false;
+  var metaIds = {};
   for (var k = 0; k < state.meta.buckets.length; k++) {
     var b = state.meta.buckets[k];
-    // 0.4.87: prefer b.label (added in emit_meta) for the visible
-    // text; fall back to b.id.  The <option>.value stays as b.id so
-    // loadBucket / data/bucket_<id>.json lookups keep working.
+    metaIds[b.id] = true;
     var disp = (b.label && b.label !== b.id) ? b.label : b.id;
     html += '<option value="' + b.id + '">' + disp +
             ' (' + b.points + ')</option>';
     if (b.id === desiredBucket) stillThere = true;
+  }
+  if (window.__labels) {
+    var customLabels = {};
+    Object.keys(window.__labels).forEach(function(ip) {
+      var lbl = window.__labels[ip];
+      if (lbl && lbl !== ip && !metaIds[ip] && !metaIds[lbl] && !customLabels[lbl]) {
+        customLabels[lbl] = true;
+        html += '<option value="' + lbl + '">' + lbl + ' (custom)</option>';
+        if (lbl === desiredBucket) stillThere = true;
+      }
+    });
   }
   bs.innerHTML = html;
   bs.add(new Option('All Buckets', 'all'), 0);

@@ -566,7 +566,10 @@ class LabelsHandler(BaseHTTPRequestHandler):
                 for ip in ips:
                     labels[ip] = label
                 save_labels(labels)
-                fold_results = auto_fold()
+                try:
+                    fold_results = auto_fold()
+                except Exception as e:
+                    fold_results = {"error": str(e)}
                 self._send_json(200, {"ok": True, "labels": labels,
                                       "groups": build_groups_from_aliases(),
                                       "fold_results": fold_results})
@@ -591,7 +594,10 @@ class LabelsHandler(BaseHTTPRequestHandler):
         else:
             labels[ip] = label
             save_labels(labels)
-            fold_results = auto_fold()
+            try:
+                fold_results = auto_fold()
+            except Exception as e:
+                fold_results = {"error": str(e)}
             self._send_json(200, {"ok": True, "ip": ip, "label": label,
                                   "labels": labels, "groups": build_groups_from_aliases(),
                                   "fold_results": fold_results})
