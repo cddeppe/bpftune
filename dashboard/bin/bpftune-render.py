@@ -282,8 +282,8 @@ def aggregate_all_sqlite(algs, now):
         # Stream + bin (same logic as aggregate_all)
         rkeys = list(RANGES.keys()); rspecs = [RANGES[k] for k in rkeys]
         ai = cols.get("addr"); ti = cols.get("collected_ts")
-        sums = [[None]*len(wanted) for _ in rspecs]
-        cnts = [[0]*len(wanted) for _ in rspecs]
+        sums = [[[] for _ in wanted] for _ in rspecs]
+        cnts = [[[] for _ in wanted] for _ in rspecs]
         ts_lists = [None]*len(rspecs); meta_stats = {}
         for row in conn.execute("SELECT * FROM buckets ORDER BY collected_ts"):
             a = _label_for(row[ai] or "unknown")
@@ -302,9 +302,12 @@ def aggregate_all_sqlite(algs, now):
                 lo = now-span if span else 0
                 b2 = int((t-lo)//width)
                 if ts_lists[ri] is None: ts_lists[ri] = []
-                if not ts_lists[ri] or ts_lists[ri][-1] != int(lo+b2*width+width/2):
-                    ts_lists[ri].append(int(lo+b2*width+width/2))
-                    for ci in range(len(wanted)): sums[ri][ci] = None; cnts[ri][ci] = 0
+                bin_ts = int(lo+b2*width+width/2)
+                if not ts_lists[ri] or ts_lists[ri][-1] != bin_ts:
+                    ts_lists[ri].append(bin_ts)
+                    for ci in range(len(wanted)):
+                        sums[ri][ci].append(0.0)
+                        cnts[ri][ci].append(0)
                 idx = len(ts_lists[ri])-1
                 for ci,(cname,cidx) in enumerate(wanted):
                     try:
@@ -312,8 +315,7 @@ def aggregate_all_sqlite(algs, now):
                         v = float(v) if v not in (None,"","None") else None
                     except: v = None
                     if v is None: continue
-                    if sums[ri][ci] is None: sums[ri][ci] = 0.0
-                    sums[ri][ci] += v; cnts[ri][ci] += 1
+                    sums[ri][ci][idx] += v; cnts[ri][ci][idx] += 1
         conn.close()
         docs = []
         for bid in top:
@@ -323,7 +325,7 @@ def aggregate_all_sqlite(algs, now):
                 series = {"ts": ts}
                 for ci,(cname,cidx) in enumerate(wanted):
                     s = sums[ri][ci]; k = cnts[ri][ci]
-                    series[cname] = [(s[i]/k[i]) if k and k[i] else None for i in range(len(s) if s else 0)]
+                    series[cname] = [(s[i]/k[i]) if k[i] else None for i in range(len(s))]
                 doc["series"][rng] = series
             st = meta_stats.get(bid, {})
             doc["last"] = {"collected_ts": st.get("last_ts",0), "best_alg": "", "best_i": None,
@@ -795,7 +797,23 @@ def main():
     except (OSError, AttributeError):
         pass
     now = int(time.time())
-    bfile = buckets_source()
+    # Phase 3 piece 2c: try SQLite first, fall back to CSV
+    use_sqlite = False
+    sc = _sqlite_conn()
+    if sc is not None:
+        sc.close()
+        use_sqlite = True
+        print("renderer: using SQLite")
+    if use_sqlite:
+        algs = get_algs_from_sqlite()
+        if not algs:
+            use_sqlite = False
+    if use_sqlite:
+        _, swaps = load_sqlite_table("swaps", MAX_ROWS_SWAPS)
+        _, srate = load_sqlite_table("srate", MAX_ROWS_SRATE)
+        header, cols, docs, meta_stats = aggregate_all_sqlite(algs, now)
+    else:
+        bfile = buckets_source()
     if not bfile:
         print("renderer: no buckets CSV found yet")
         return 1
