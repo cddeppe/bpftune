@@ -341,6 +341,7 @@ def aggregate_all_sqlite(algs, now, requested_ranges=None):
         {union_sql}
         ORDER BY rng, addr, bin_ts
         """
+        range_data = [None] * len(rkeys)
         rng_map = {rkeys[i]: i for i in range(len(rkeys))}
         for row in conn.execute(cte_sql):
             addr = row[0]
