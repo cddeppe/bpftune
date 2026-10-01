@@ -1,8 +1,19 @@
 package main
 
-// Label resolution + v6 fold rules.  Mirrors bpftune_log.py:
-//   _load_labels, _load_fold, _load_aliases_labels,
-//   _fold_v6, _canon_bucket, _normalize_ip, _label_for.
+// Label resolution + v6 fold rules + prefix-aware bucketing.
+//
+// v0.4.2 redesign (per user spec):
+//   - Labels.json supports ANY prefix width (longest-prefix match wins).
+//     Keys can be in any form: "82.43.0.0" (/16), "82.43.215.0" (/24),
+//     "82.43.215.97" (/32), "2606:1a40::" (/32 v6).  The prefix length
+//     is INFERRED from trailing zero bytes — no CIDR notation needed.
+//   - Custom labels are sticky: a /32 label matches only that exact IP,
+//     even if a /16 label also matches.  Longest-prefix wins.
+//   - When no label matches, the bucket key uses the CURRENT prefix4
+//     or prefix6 setting (read from /var/lib/bpftune/prefix4 and
+//     /var/lib/bpftune/prefix6, mtime-cached).  Default 16/32.
+//   - explore_pct is also read from /var/lib/bpftune/explore_pct
+//     (default 100) and surfaced in current.json's build section.
 //
 // All file reads are mtime-cached so we don't re-read the same file
 // every collect() cycle.
@@ -11,6 +22,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -154,19 +166,47 @@ func loadAliasesLabelsMap() map[string]string {
 // Address normalization + label lookup
 // ============================================================================
 
-// canonBucket collapses to /16 (v4) or leaves as-is (v6:hex).
-func canonBucket(addr string) string {
+// canonBucketWithPrefix collapses a v4 address to /prefix4, or a v6
+// address (in standard form OR v6:hex form) to /prefix6.
+//
+// v0.4.2: prefix4/prefix6 are read from /var/lib/bpftune/prefix4 and
+// /var/lib/bpftune/prefix6 (mtime-cached, defaults 16 and 32).  When
+// the user changes the prefix, buckets merge or split on the next
+// collect cycle.
+func canonBucketWithPrefix(addr string, prefix4, prefix6 int) string {
 	if addr == "" {
-		return addr
+		return ""
 	}
+	// Handle v6:hex form (e.g., "v6:2606abcd" — top 32 bits of v6).
 	if strings.HasPrefix(addr, "v6:") {
+		h := strings.TrimPrefix(addr, "v6:")
+		n, err := strconv.ParseUint(h, 16, 64)
+		if err != nil {
+			return addr
+		}
+		ip := make([]byte, 16)
+		ip[0] = byte(n >> 24)
+		ip[1] = byte(n >> 16)
+		ip[2] = byte(n >> 8)
+		ip[3] = byte(n)
+		mask := net.CIDRMask(prefix6, 128)
+		masked := net.IP(ip).Mask(mask)
+		return masked.String()
+	}
+	// Standard IP form (v4 dotted or v6 canonical).
+	ip := net.ParseIP(addr)
+	if ip == nil {
 		return addr
 	}
-	parts := strings.Split(addr, ".")
-	if len(parts) == 4 {
-		return parts[0] + "." + parts[1] + ".0.0"
+	if v4 := ip.To4(); v4 != nil {
+		mask := net.CIDRMask(prefix4, 32)
+		masked := v4.Mask(mask)
+		return masked.String()
 	}
-	return addr
+	ip16 := ip.To16()
+	mask := net.CIDRMask(prefix6, 128)
+	masked := net.IP(ip16).Mask(mask)
+	return masked.String()
 }
 
 // normalizeIP returns the canonical form (handles v4 + v6).
@@ -197,29 +237,205 @@ func foldV6(addr string) string {
 }
 
 // labelFor resolves an address to a human-readable label.
-// Chain: fold v6 → canon bucket → normalize → labels.json → aliases labels.
+//
+// v0.4.2 chain (per user spec):
+//  1. Apply v6 fold rules (v6:hex → v4 if /etc/bpftune/aliases declares it)
+//  2. Convert v6:hex to standard IPv6 form (for label matching)
+//  3. Try longest-prefix label match in labels.json + aliases labels
+//     (a /32 label wins over a /16 label for the same IP)
+//  4. Fall back to canonBucketWithPrefix (with current prefix4/prefix6
+//     from /var/lib/bpftune/prefix4 and prefix6)
 func labelFor(addr string) string {
 	if addr == "" {
 		return ""
 	}
+	// Step 1+2: fold + v6:hex → standard form.
 	addr = foldV6(addr)
-	addr = canonBucket(addr)
-	addr = normalizeIP(addr)
+	// Step 3: longest-prefix label match.
+	if lbl := longestPrefixLabel(addr); lbl != "" {
+		return lbl
+	}
+	// Step 4: canon bucket with current prefix4/prefix6.
+	return canonBucketWithPrefix(addr, prefix4Value(), prefix6Value())
+}
+
+// longestPrefixLabel finds the most specific label match for addr.
+// Iterates labels.json + aliases labels, computes each key's natural
+// prefix length (from trailing zero bytes), and picks the longest
+// matching prefix.  Returns "" if no match.
+func longestPrefixLabel(addr string) string {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return ""
+	}
+	// Fast path: exact string match (covers /32 v4 and /128 v6 labels
+	// which is the common case — saves the CIDR construction overhead).
 	labels := loadLabels()
 	if lbl, ok := labels[addr]; ok && lbl != "" {
 		return lbl
 	}
-	// Slow path: some labels.json keys are not normalized.
+	// Slow path: longest-prefix match.
+	bestLabel := ""
+	bestPrefix := -1
 	for k, v := range labels {
-		if normalizeIP(k) == addr && v != "" {
-			return v
+		cidr := labelKeyToCIDR(k)
+		if cidr == nil {
+			continue
+		}
+		if !cidr.Contains(ip) {
+			continue
+		}
+		ones, _ := cidr.Mask.Size()
+		if ones > bestPrefix {
+			bestPrefix = ones
+			bestLabel = v
 		}
 	}
-	aliasLabels := loadAliasesLabelsMap()
-	if lbl, ok := aliasLabels[addr]; ok && lbl != "" {
-		return lbl
+	if bestLabel == "" {
+		// Try aliases labels as fallback.
+		aliasLabels := loadAliasesLabelsMap()
+		for k, v := range aliasLabels {
+			cidr := labelKeyToCIDR(k)
+			if cidr == nil {
+				continue
+			}
+			if !cidr.Contains(ip) {
+				continue
+			}
+			ones, _ := cidr.Mask.Size()
+			if ones > bestPrefix {
+				bestPrefix = ones
+				bestLabel = v
+			}
+		}
 	}
-	return addr
+	return bestLabel
+}
+
+// labelKeyToCIDR parses a labels.json key as a CIDR.
+//   - If the key has "/N" suffix (e.g., "82.43.0.0/16"), parse directly.
+//   - Otherwise, infer prefix length from trailing zero bytes:
+//     "82.43.0.0"     → /16  (2 trailing zero bytes out of 4)
+//     "82.43.215.0"   → /24  (1 trailing zero byte)
+//     "82.43.215.97"  → /32  (0 trailing zero bytes)
+//     "2606:1a40::"   → /32  (12 trailing zero bytes out of 16)
+//     "2a14:7583:abcd:1234::" → /64 (8 trailing zero bytes)
+func labelKeyToCIDR(k string) *net.IPNet {
+	if strings.Contains(k, "/") {
+		_, ipNet, err := net.ParseCIDR(k)
+		if err != nil {
+			return nil
+		}
+		return ipNet
+	}
+	ip := net.ParseIP(k)
+	if ip == nil {
+		return nil
+	}
+	var b []byte
+	if v4 := ip.To4(); v4 != nil {
+		b = v4
+	} else {
+		b = ip.To16()
+	}
+	trailingZeroBytes := 0
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] == 0 {
+			trailingZeroBytes++
+		} else {
+			break
+		}
+	}
+	prefixLen := len(b)*8 - trailingZeroBytes*8
+	mask := net.CIDRMask(prefixLen, len(b)*8)
+	return &net.IPNet{IP: ip.Mask(mask), Mask: mask}
+}
+
+// ============================================================================
+// Prefix readers (prefix4 / prefix6 / explore_pct)
+// ============================================================================
+
+// mtimeIntCache is an mtime-based int file cache (for prefix4/prefix6/explore_pct).
+type mtimeIntCache struct {
+	mu    sync.Mutex
+	val   int
+	set   bool
+	mtime time.Time
+}
+
+func (c *mtimeIntCache) get(path string, defaultVal int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fi, err := os.Stat(path)
+	if err != nil {
+		c.val = defaultVal
+		c.set = true
+		c.mtime = time.Time{}
+		return defaultVal
+	}
+	if c.set && fi.ModTime().Equal(c.mtime) {
+		return c.val
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		c.val = defaultVal
+		c.set = true
+		c.mtime = fi.ModTime()
+		return defaultVal
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		c.val = defaultVal
+		c.set = true
+		c.mtime = fi.ModTime()
+		return defaultVal
+	}
+	c.val = n
+	c.set = true
+	c.mtime = fi.ModTime()
+	return n
+}
+
+var (
+	prefix4Holder    mtimeIntCache
+	prefix6Holder    mtimeIntCache
+	explorePctHolder mtimeIntCache
+)
+
+const (
+	prefix4Path    = "/var/lib/bpftune/prefix4"
+	prefix6Path    = "/var/lib/bpftune/prefix6"
+	explorePctPath = "/var/lib/bpftune/explore_pct"
+)
+
+// prefix4Value reads /var/lib/bpftune/prefix4 (default 16).  Range: 0-32.
+// Returns 16 if file missing or out of range.
+func prefix4Value() int {
+	n := prefix4Holder.get(prefix4Path, 16)
+	if n < 0 || n > 32 {
+		return 16
+	}
+	return n
+}
+
+// prefix6Value reads /var/lib/bpftune/prefix6 (default 32).  Range: 0-128.
+// Returns 32 if file missing or out of range.
+func prefix6Value() int {
+	n := prefix6Holder.get(prefix6Path, 32)
+	if n < 0 || n > 128 {
+		return 32
+	}
+	return n
+}
+
+// explorePctValue reads /var/lib/bpftune/explore_pct (default 100).  Range: 0-100.
+// Returns 100 if file missing or out of range.
+func explorePctValue() int {
+	n := explorePctHolder.get(explorePctPath, 100)
+	if n < 0 || n > 100 {
+		return 100
+	}
+	return n
 }
 
 // ============================================================================

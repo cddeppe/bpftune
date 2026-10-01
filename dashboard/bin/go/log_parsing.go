@@ -16,6 +16,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -630,21 +631,30 @@ func cookieDestMap(text string) map[string][2]string {
 }
 
 // ============================================================================
-// buildBucketIPs — all dest IPs grouped by /16 (v4) or /32 (v6)
+// buildBucketIPs — all dest IPs grouped by /prefix4 (v4) or /prefix6 (v6)
+// v0.4.2: respects current prefix4/prefix6 from /var/lib/bpftune/.
 // ============================================================================
 
 func buildBucketIPs(text string) map[string]interface{} {
 	buckets := map[string][]string{}
+	p4 := prefix4Value()
+	p6 := prefix6Value()
 	for _, line := range strings.Split(text, "\n") {
 		if m := rxDestInt.FindStringSubmatch(line); m != nil && len(m) > 1 {
 			n, err := strconv.ParseUint(m[1], 10, 64)
 			if err != nil || n == 0 {
 				continue
 			}
-			full := fmt.Sprintf("%d.%d.%d.%d",
-				(n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
-			masked := fmt.Sprintf("%d.%d.0.0",
-				(n>>24)&0xff, (n>>16)&0xff)
+			// Build 4-byte v4 IP.
+			b := make([]byte, 4)
+			b[0] = byte(n >> 24)
+			b[1] = byte(n >> 16)
+			b[2] = byte(n >> 8)
+			b[3] = byte(n)
+			full := net.IP(b).String()
+			// Mask with prefix4.
+			mask := net.CIDRMask(p4, 32)
+			masked := net.IP(b).Mask(mask).String()
 			if !contains(buckets[masked], full) {
 				buckets[masked] = append(buckets[masked], full)
 			}
@@ -654,20 +664,30 @@ func buildBucketIPs(text string) map[string]interface{} {
 			if err != nil || n6 == 0 {
 				continue
 			}
-			hi := (n6 >> 16) & 0xFFFF
-			lo := n6 & 0xFFFF
-			maskedV6 := fmt.Sprintf("%x:%x::", hi, lo)
-			fullV6 := maskedV6
+			// Build 16-byte v6 IP (top 32 bits = n6, rest = 0).
+			ip := make([]byte, 16)
+			ip[0] = byte(n6 >> 24)
+			ip[1] = byte(n6 >> 16)
+			ip[2] = byte(n6 >> 8)
+			ip[3] = byte(n6)
+			// Build full form (may include dest6b for /64 form).
+			fullIP := make([]byte, 16)
+			copy(fullIP, ip)
 			if m2 := rxDest6B.FindStringSubmatch(line); m2 != nil && len(m2) > 1 {
 				n6b, err := strconv.ParseUint(m2[1], 10, 64)
 				if err == nil && n6b != 0 {
-					hi2 := (n6b >> 16) & 0xFFFF
-					lo2 := n6b & 0xFFFF
-					fullV6 = fmt.Sprintf("%x:%x:%x:%x::", hi, lo, hi2, lo2)
+					fullIP[4] = byte(n6b >> 24)
+					fullIP[5] = byte(n6b >> 16)
+					fullIP[6] = byte(n6b >> 8)
+					fullIP[7] = byte(n6b)
 				}
 			}
-			if !contains(buckets[maskedV6], fullV6) {
-				buckets[maskedV6] = append(buckets[maskedV6], fullV6)
+			fullV6 := net.IP(fullIP).String()
+			// Mask with prefix6.
+			mask := net.CIDRMask(p6, 128)
+			masked := net.IP(ip).Mask(mask).String()
+			if !contains(buckets[masked], fullV6) {
+				buckets[masked] = append(buckets[masked], fullV6)
 			}
 		}
 	}
@@ -877,26 +897,27 @@ func destStr(v4, v6 string) string {
 	return destIP(v4)
 }
 
-// bucketOf returns the /16 (v4) or v6:hex (v6) bucket key.
-// Mirrors bpftune_log.py:_bucket_of.
+// bucketOf returns the /prefix4 (v4) or /prefix6 (v6) bucket key.
+// v0.4.2: respects current prefix4/prefix6 from /var/lib/bpftune/.
+// Mirrors bpftune_log.py:_bucket_of (but Python hardcodes /16; we make
+// it prefix-aware per user spec).
 func bucketOf(v4, v6 string) string {
-	if v6 != "" {
-		if n6, err := strconv.ParseInt(v6, 10, 64); err == nil && n6 != 0 {
-			return fmt.Sprintf("v6:%08x", uint64(n6)&0xFFFFFFFF)
+	// Build the address string in standard or v6:hex form.
+	addr := destStr(v4, v6)
+	if addr == "" {
+		return ""
+	}
+	// Filter 0.0.0.0/127.x.x.x (only applies to v4).
+	if v6 == "" && v4 != "" {
+		n, err := strconv.ParseInt(v4, 10, 64)
+		if err == nil {
+			first := (n >> 24) & 0xFF
+			if first == 0 || first == 127 {
+				return ""
+			}
 		}
 	}
-	if v4 == "" {
-		return ""
-	}
-	n, err := strconv.ParseInt(v4, 10, 64)
-	if err != nil {
-		return ""
-	}
-	first := (n >> 24) & 0xFF
-	if first == 0 || first == 127 {
-		return ""
-	}
-	return fmt.Sprintf("%d.%d.0.0", (n>>24)&0xFF, (n>>16)&0xFF)
+	return canonBucketWithPrefix(addr, prefix4Value(), prefix6Value())
 }
 
 // destIP converts a numeric dest (as decimal string) to dotted-quad.
