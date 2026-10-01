@@ -359,7 +359,7 @@ func loadCSVTailIntoRingBuffer() {
 		if err != nil || ts < cutoff {
 			continue
 		}
-		addr := cols[1] // already labeled in the CSV
+		addr := labelFor(cols[1]) // v0.5.4: label old raw IPs to match BPF map keys
 		inst, _ := strconv.Atoi(cols[2])
 		minRtt, _ := strconv.ParseFloat(cols[3], 64)
 		refRate, _ := strconv.ParseFloat(cols[4], 64)
@@ -472,7 +472,7 @@ func readBucketCSV(bucketID string, span int64) []bucketSnapshot {
 		}
 
 		// Filter by bucket ID (addr column)
-		addr := cols[1]
+		addr := labelFor(cols[1]) // v0.5.4: label to match bucket ID
 		if addr != bucketID {
 			continue
 		}

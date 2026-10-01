@@ -606,8 +606,12 @@ func buildRecentProofRows(text string, cdest map[string][2]string) []interface{}
 				dest = ds
 			}
 		}
+		// v0.5.4: convert boot_ts (uptime) to epoch for recent_proofs
+		uptime := readProcUptime()
+		nowEpoch := float64(time.Now().Unix())
+		epochTs := nowEpoch - uptime + ts
 		out = append(out, map[string]interface{}{
-			"boot_ts": ts,
+			"boot_ts": epochTs,
 			"alg":     algName(alg),
 			"mbps":    round1(float64(rate) / bpsToMbps),
 			"tier":    tierLabel,

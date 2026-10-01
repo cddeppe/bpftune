@@ -126,7 +126,6 @@
       rows.push(["uptime", h + "h " + m + "m"]);
     }
     if (b.started_utc) rows.push(["started", b.started_utc + " UTC", "dim"]);
-    if (b.log_path)   rows.push(["log", b.log_path, "dim"]);
     if (b.prefix4 != null) rows.push(["prefix4 (v4)", "/" + b.prefix4, "dim"]);
     if (b.prefix6 != null) rows.push(["prefix6 (v6)", "/" + b.prefix6, "dim"]);
     if (b.explore_pct != null) rows.push(["exploration", b.explore_pct + "%", b.explore_pct > 0 ? "hi" : "dim"]);
@@ -2217,4 +2216,5 @@ function _populateBucketSelect(desiredBucket) {
         if (window.__liveFetch) window.__liveFetch();
       });
   }
+    if (b.log_path)   rows.push(["log", b.log_path, "dim"]);
 
