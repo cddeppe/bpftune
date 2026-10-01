@@ -442,7 +442,7 @@ func (c *Collector) collect() {
 		"bucket_live":      bucketLive,
 		"live_leaders":     liveLeaders,
 		"hostname":         readProc("/proc/sys/kernel/hostname"),
-		"now_mono":         now,
+		"now_mono":         readProcUptime(),
 	}
 
 	// 0.4 full port: parse log files for recent_swaps, recent_proofs,
