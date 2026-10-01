@@ -1,0 +1,19 @@
+[Unit]
+Description=bpftune dashboard collector (Go) — replaces Python collector
+After=network.target sys-kernel-debug.mount
+ConditionPathExists=/sys/fs/bpf
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/bpftune/history
+ExecStart=/opt/bpftune-dashboard/bin/bpftune-collector-go --port 8080 --bind 0.0.0.0
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+# Note: needs CAP_BPF + CAP_NET_ADMIN to read bpftool maps; can't use
+# ProtectSystem=strict because we write to /var/lib/bpftune/history.
+User=root
+
+[Install]
+WantedBy=multi-user.target
