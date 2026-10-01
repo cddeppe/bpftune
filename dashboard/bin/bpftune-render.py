@@ -814,21 +814,21 @@ def main():
         header, cols, docs, meta_stats = aggregate_all_sqlite(algs, now)
     else:
         bfile = buckets_source()
-    if not bfile:
-        print("renderer: no buckets CSV found yet")
-        return 1
+        if not bfile:
+            print("renderer: no buckets CSV found yet")
+            return 1
 
-    # Peek at the header first — algs is derived from it, and
-    # aggregate_all needs algs.
-    with open(bfile, "r", newline="") as _f:
-        _hdr = next(csv.reader(_f))
-    algs = sorted({c[3:] for c in _hdr if c.startswith("re_")})
+        # Peek at the header first — algs is derived from it, and
+        # aggregate_all needs algs.
+        with open(bfile, "r", newline="") as _f:
+            _hdr = next(csv.reader(_f))
+        algs = sorted({c[3:] for c in _hdr if c.startswith("re_")})
 
-    _, swaps = load_csv(os.path.join(HIST, "swaps.csv"),
-                        max_rows=MAX_ROWS_SWAPS)
-    _, srate = load_csv(os.path.join(HIST, "srate.csv"),
-                        max_rows=MAX_ROWS_SRATE)
-    header, cols, docs, meta_stats = aggregate_all(bfile, algs, now)
+        _, swaps = load_csv(os.path.join(HIST, "swaps.csv"),
+                            max_rows=MAX_ROWS_SWAPS)
+        _, srate = load_csv(os.path.join(HIST, "srate.csv"),
+                            max_rows=MAX_ROWS_SRATE)
+        header, cols, docs, meta_stats = aggregate_all(bfile, algs, now)
 
     # meta needs the same stats we gathered during streaming.
     meta_rows = []
