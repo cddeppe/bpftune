@@ -356,7 +356,12 @@ def aggregate_all_sqlite(algs, now, requested_ranges=None):
                 continue
             if range_data[ri] is None:
                 range_data[ri] = {}
-            lb = range_data[ri]
+            # 0.4.133.2: add label nesting level
+            # range_data[ri] = {label: {bin_ts: {col: val}}}
+            label_bins = range_data[ri]
+            if a not in label_bins:
+                label_bins[a] = {}
+            lb = label_bins[a]  # {bin_ts: {col: val}}
             if bin_ts in lb:
                 old = lb[bin_ts]
                 old_n = old["_n"]
