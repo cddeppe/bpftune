@@ -793,7 +793,57 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 }
 
 func (h *historyStore) renderSwapsToDisk(so map[string]interface{}) {
-	writeJSONToDisk("swaps.json", so)
+	// v0.5.19: build per-range binned swaps.json (matching Python renderer format)
+	// dashboard.js reads state.swaps[rng].swaps for the swaps-per-bin chart
+	sl, _ := so["swaps_list"].([]interface{})
+	if len(sl) == 0 {
+		writeJSONToDisk("swaps.json", map[string]interface{}{})
+		return
+	}
+	uptime := readProcUptime()
+	nowEpoch := float64(time.Now().Unix())
+	doc := map[string]interface{}{}
+	for rngName, rngCfg := range ranges {
+		span, _ := rngCfg[0].(int)
+		width, _ := rngCfg[1].(int)
+		if width == 0 {
+			width = 60
+		}
+		var cutoff float64
+		if span > 0 {
+			cutoff = nowEpoch - float64(span)
+		}
+		binCounts := map[int64]int{}
+		for _, s := range sl {
+			sm, ok := s.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ts, ok := sm["ts"].(float64)
+			if !ok {
+				continue
+			}
+			epochTs := nowEpoch - uptime + ts
+			if span > 0 && epochTs < cutoff {
+				continue
+			}
+			binIdx := int64(epochTs / float64(width))
+			binCounts[binIdx]++
+		}
+		var binIdxs []int64
+		for bi := range binCounts {
+			binIdxs = append(binIdxs, bi)
+		}
+		sort.Slice(binIdxs, func(i, j int) bool { return binIdxs[i] < binIdxs[j] })
+		swapsArr := make([]interface{}, len(binIdxs))
+		for i, bi := range binIdxs {
+			swapsArr[i] = binCounts[bi]
+		}
+		doc[rngName] = map[string]interface{}{
+			"swaps": swapsArr,
+		}
+	}
+	writeJSONToDisk("swaps.json", doc)
 }
 
 func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
