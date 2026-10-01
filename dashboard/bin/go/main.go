@@ -44,13 +44,18 @@ type Collector struct {
 	current   map[string]interface{} // current.json data
 	keyHashes map[string]string      // per-key md5 for SSE delta
 	sseClients map[chan []byte]bool
+	logOffsets  map[string]int64
+	recentSwaps []interface{}
+	recentProofs []interface{}
 }
 
 func NewCollector() *Collector {
 	return &Collector{
 		current:    make(map[string]interface{}),
 		keyHashes:  make(map[string]string),
-		sseClients: make(map[chan []byte]bool),
+		sseClients:   make(map[chan []byte]bool),
+		logOffsets:   make(map[string]int64),
+		logOffsets:   make(map[string]int64),
 	}
 }
 
@@ -168,7 +173,11 @@ for addr, raw := range hosts {
 	bestI := toInt(v["best_i"])
 	bestAlg := ""
 	if bestI >= 0 && bestI < len(congs) { bestAlg = congs[bestI] }
-	nAlg := toInt(v["selection_count"])
+			if mets, ok := v["metrics"].([]interface{}); ok {
+				for _, m := range mets {
+					if mi, ok := m.(map[string]interface{}); ok && toInt(mi["metric_count"]) > 0 { nAlg++ }
+				}
+			}
 	lbl := labelFor(addr, labels)
 	buckets = append(buckets, bucket{Dest: lbl, Inst: inst,
 		RttUs: toFloat(v["min_rtt"]),
@@ -238,14 +247,7 @@ for addr, raw := range hosts {
 		"metric_by_bucket": metricByBucket,
 		"bucket_live":    bucketLive,
 		"live_leaders":   liveLeaders,
-		"recent_swaps":   []interface{}{},
-		"recent_proofs":  []interface{}{},
-		"swap_outcomes": map[string]interface{}{
-			"composite": map[string]interface{}{
-				"measurable": 0, "win": 0, "loss": 0, "null": 0,
-			},
-		},
-		"bucket_ips":    map[string]interface{}{},
+				"bucket_ips":    map[string]interface{}{},
 		"log_window":    map[string]interface{}{},
 		"hostname":      readProc("/proc/sys/kernel/hostname"),
 		"now_mono":      now,
@@ -257,7 +259,17 @@ for addr, raw := range hosts {
 	c.keyHashes = computeKeyHashes(doc)
 	c.mu.Unlock()
 
+	// 0.3: parse log files for recent_swaps, recent_proofs, swap_outcomes
+	topSwaps, topProofs, swapOutcomes := c.parseLogs()
+	doc["recent_swaps"] = topSwaps
+	doc["recent_proofs"] = topProofs
+	doc["swap_outcomes"] = swapOutcomes
+
 	// Write current.json to disk
+	topSwaps, topProofs, swapOutcomes := c.parseLogs()
+	doc["recent_swaps"] = topSwaps
+	doc["recent_proofs"] = topProofs
+	doc["swap_outcomes"] = swapOutcomes
 	c.writeCurrentJSON()
 
 	// Notify SSE clients
