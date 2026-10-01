@@ -2109,9 +2109,16 @@ function _populateBucketSelect(desiredBucket) {
     var btn = document.getElementById('le-save-btn');
     if (btn) { btn.textContent = 'Saving...'; btn.style.opacity = '0.6'; }
     var count = 0;
+    // 0.4.127: don't rely on input.blur() to trigger the rename via the
+    // document-level blur listener — that only fires if the input had
+    // focus, which it often doesn't. Instead, directly invoke the
+    // rename for each changed input.
     document.querySelectorAll('.label-edit-input').forEach(function(input) {
-      if (input.value.trim() !== input.getAttribute('data-old-label')) {
-        input.blur(); count++;
+      var newLabel = input.value.trim();
+      var oldLabel = input.getAttribute('data-old-label');
+      if (newLabel && newLabel !== oldLabel) {
+        count++;
+        _le_do_rename(input, newLabel, oldLabel);
       }
     });
     if (btn) setTimeout(function() {
@@ -2119,6 +2126,32 @@ function _populateBucketSelect(desiredBucket) {
       btn.style.opacity = '1';
       setTimeout(function() { btn.textContent = 'Save'; }, 1500);
     }, 500);
+  }
+  // 0.4.127: extracted rename logic so both _le_save_all (Save button)
+  // and the blur listener (per-input blur) can call it. Eliminates
+  // the silent-failure mode where input.blur() was a no-op because
+  // the input didn't have focus.
+  function _le_do_rename(input, newLabel, oldLabel) {
+    var ips;
+    try { ips = JSON.parse(decodeURIComponent(input.getAttribute('data-ips') || '[]')); }
+    catch (e) { ips = []; }
+    if (!ips.length) return;
+    ips.forEach(function(ip) {
+      fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ip: ip, label: ''})});
+    });
+    setTimeout(function() {
+      ips.forEach(function(ip) {
+        fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ip: ip, label: newLabel})});
+      });
+      setTimeout(function() {
+        fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
+          _le_render(d.labels || {}, d.groups || {});
+          if (window.__liveFetch) window.__liveFetch();
+        });
+      }, 300);
+    }, 300);
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -2132,24 +2165,7 @@ function _populateBucketSelect(desiredBucket) {
       var newLabel = e.target.value.trim();
       var oldLabel = e.target.getAttribute('data-old-label');
       if (newLabel && newLabel !== oldLabel) {
-        // Rename: delete old, add new for each IP
-        var ips = JSON.parse(e.target.getAttribute('data-ips') || '[]');
-        ips.forEach(function(ip) {
-          fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ip: ip, label: ''})});
-        });
-        setTimeout(function() {
-          ips.forEach(function(ip) {
-            fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({ip: ip, label: newLabel})});
-          });
-          setTimeout(function() {
-            fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
-              _le_render(d.labels || {}, d.groups || {});
-              if (window.__liveFetch) window.__liveFetch();
-            });
-          }, 300);
-        }, 300);
+        _le_do_rename(e.target, newLabel, oldLabel);
       }
     }
   }, true);
