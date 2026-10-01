@@ -300,32 +300,83 @@ def aggregate_all_sqlite(algs, now):
         rkeys = list(RANGES.keys())
         rspecs = [RANGES[k] for k in rkeys]
 
-        # For each range: ONE SQL query with GROUP BY + AVG
+        # 0.4.132.2: single table scan — compute all 4 range bins in one pass
+        # Old approach: 4 separate queries, 2 of which scan ALL 180K rows = 2x wasted I/O
+        # New approach: 1 CTE scan + 4 GROUP BYs on materialized (in-memory) data
+        now_int = int(now)
+        lo_1h = now_int - 3600
+        lo_24h = now_int - 86400
+        lo_7d = now_int - 604800
+        w_1h, w_24h, w_7d, w_all = 60, 300, 3600, 21600
+
+        # Build the AVG column list once
+        agg_cols = ", ".join(f"AVG({c}) AS {c}" for c in wanted_names)
+        col_list = ", ".join(wanted_names)
+
+        # Single CTE: scan table once, compute all 4 bins per row
+        cte_sql = f"""
+        WITH binned AS (
+            SELECT
+                addr,
+                CASE WHEN collected_ts > {lo_1h}
+                     THEN {lo_1h} + (CAST(collected_ts AS INTEGER) - {lo_1h}) / {w_1h} * {w_1h} + {w_1h // 2}
+                     ELSE NULL END AS bin_1h,
+                CASE WHEN collected_ts > {lo_24h}
+                     THEN {lo_24h} + (CAST(collected_ts AS INTEGER) - {lo_24h}) / {w_24h} * {w_24h} + {w_24h // 2}
+                     ELSE NULL END AS bin_24h,
+                CASE WHEN collected_ts > {lo_7d}
+                     THEN {lo_7d} + (CAST(collected_ts AS INTEGER) - {lo_7d}) / {w_7d} * {w_7d} + {w_7d // 2}
+                     ELSE NULL END AS bin_7d,
+                {lo_7d} + (CAST(collected_ts AS INTEGER) - {lo_7d}) / {w_all} * {w_all} + {w_all // 2} AS bin_all,
+                {col_list}
+            FROM buckets
+        )
+        SELECT addr, '1h' AS rng, bin_1h AS bin_ts, {agg_cols}, COUNT(*) AS _n
+            FROM binned WHERE bin_1h IS NOT NULL GROUP BY addr, bin_1h
+        UNION ALL
+        SELECT addr, '24h' AS rng, bin_24h AS bin_ts, {agg_cols}, COUNT(*) AS _n
+            FROM binned WHERE bin_24h IS NOT NULL GROUP BY addr, bin_24h
+        UNION ALL
+        SELECT addr, '7d' AS rng, bin_7d AS bin_ts, {agg_cols}, COUNT(*) AS _n
+            FROM binned WHERE bin_7d IS NOT NULL GROUP BY addr, bin_7d
+        UNION ALL
+        SELECT addr, 'all' AS rng, bin_all AS bin_ts, {agg_cols}, COUNT(*) AS _n
+            FROM binned GROUP BY addr, bin_all
+        ORDER BY rng, addr, bin_ts
+        """
+
         range_data = [None] * len(rkeys)
-        for ri, (rng, (span, width)) in enumerate(zip(rkeys, rspecs)):
-            lo = int(now - span) if span is not None else 0
-            where = f"WHERE collected_ts > {int(now-span)}" if span else ""
-            bin_expr = f"({lo} + ((CAST(collected_ts AS INTEGER) - {lo}) / {int(width)}) * {int(width)} + {int(width//2)})"
-            sql = f"SELECT addr, {bin_expr} AS bin_ts, {agg_cols_sql}, COUNT(*) AS _n FROM buckets {where} GROUP BY addr, bin_ts ORDER BY addr, bin_ts"
-            label_bins = {}
-            for row in conn.execute(sql):
-                a = _lbl(row[0])
-                if a not in topset: continue
-                bin_ts = row[1]
-                n = row[-1]
-                lb = label_bins.setdefault(a, {})
-                if bin_ts in lb:
-                    old = lb[bin_ts]; old_n = old["_n"]; total_n = old_n + n
-                    for ci, cname in enumerate(wanted_names):
-                        ov = old.get(cname); nv = row[2+ci]
-                        if ov is not None and nv is not None:
-                            old[cname] = (ov*old_n + nv*n) / total_n
-                        elif nv is not None: old[cname] = nv
-                    old["_n"] = total_n
-                else:
-                    lb[bin_ts] = {cname: row[2+ci] for ci, cname in enumerate(wanted_names)}
-                    lb[bin_ts]["_n"] = n
-            range_data[ri] = label_bins
+        rng_map = {rkeys[i]: i for i in range(len(rkeys))}
+        for row in conn.execute(cte_sql):
+            addr = row[0]
+            rng_name = row[1]
+            bin_ts = row[2]
+            n = row[-1]
+            a = _lbl(addr)
+            if a not in topset:
+                continue
+            ri = rng_map.get(rng_name)
+            if ri is None:
+                continue
+            if range_data[ri] is None:
+                range_data[ri] = {}
+            lb = range_data[ri]
+            if bin_ts in lb:
+                old = lb[bin_ts]
+                old_n = old["_n"]
+                total_n = old_n + n
+                for ci, cname in enumerate(wanted_names):
+                    ov = old.get(cname)
+                    nv = row[3 + ci]
+                    if ov is not None and nv is not None:
+                        old[cname] = (ov * old_n + nv * n) / total_n
+                    elif nv is not None:
+                        old[cname] = nv
+                old["_n"] = total_n
+            else:
+                lb[bin_ts] = {cname: row[3 + ci] for ci, cname in enumerate(wanted_names)}
+                lb[bin_ts]["_n"] = n
+        
 
         # Build docs
         docs = []
