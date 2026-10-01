@@ -543,18 +543,31 @@
   }
 
   function shortAddr(a) {
+    // 0.4.124: added /16 scan so '89.168.0.0' (a /16 in meta.json)
+    // resolves to 'vps-de' when labels has '89.168.90.153' -> 'vps-de'.
     a = a || "";
-    if (window.__labels && window.__labels[a]) return window.__labels[a];
+    var L = window.__labels || {};
+    if (L[a]) return L[a];
     if (a.indexOf("v6:") === 0) {
       var hex = a.substring(3);
       if (hex.length >= 8) {
         var ip6 = hex.substring(0,4) + ":" + hex.substring(4,8) + "::";
-        if (window.__labels && window.__labels[ip6]) return window.__labels[ip6];
+        if (L[ip6]) return L[ip6];
       }
       return a;
     }
     var p = a.split(".");
-    if (p.length === 4) return p[0] + "." + p[1] + ".0.0";
+    if (p.length === 4) {
+      var slash16 = p[0] + "." + p[1] + ".0.0";
+      if (L[slash16]) return L[slash16];
+      var prefix = p[0] + "." + p[1] + ".";
+      for (var ip in L) {
+        if (ip.indexOf(prefix) === 0 && ip !== slash16) {
+          return L[ip];
+        }
+      }
+      return slash16;
+    }
     return a;
   }
 
@@ -843,7 +856,8 @@
     var bk = _currentBucketLabel();
     if (bk.bid === 'all') {
       var hb = _heaviestBucketWithCoverage();
-      var topText = hb ? ('— ' + hb.label + ' (top)') : '— all';
+      // 0.4.124: resolve hb.label via shortAddr
+      var topText = hb ? ('— ' + shortAddr(hb.bid) + ' (top)') : '— all';
       for (var i = 0; i < _TOP_BUCKET_TAG_IDS.length; i++) {
         var el = document.getElementById(_TOP_BUCKET_TAG_IDS[i]);
         if (el) el.textContent = topText;
@@ -879,11 +893,22 @@
   function _fetchAndApplyLabels() {
     fetch('/api/labels', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(ld) {
       window.__labels = ld.labels || {};
+      // 0.4.123: build a /16 -> label index so a bucket id like
+      // '89.168.0.0' can find '89.168.90.153' -> 'vps-de' in labels.
+      var _slash16 = {};
+      Object.keys(window.__labels).forEach(function(ip) {
+        var parts = ip.split('.');
+        if (parts.length === 4) {
+          var p = parts[0] + '.' + parts[1] + '.0.0';
+          if (!_slash16[p]) _slash16[p] = window.__labels[ip];
+        }
+      });
       var bs = $('bucket');
       if (bs && bs.options) {
         for (var i = 0; i < bs.options.length; i++) {
           var ip = bs.options[i].value;
           var label = window.__labels[ip];
+          if (!label && _slash16[ip]) label = _slash16[ip];
           if (!label && ip.indexOf("v6:") === 0) {
             var hex = ip.substring(3);
             if (hex.length >= 8) {
@@ -1744,29 +1769,48 @@
 
 function _populateBucketSelect(desiredBucket) {
   var bs = $("bucket");
-  var html = "";
   var stillThere = false;
   var metaIds = {};
+  var usedLabels = {};  // 0.4.124: track labels already shown
+  var slash16Label = {};
+  var L0 = window.__labels || {};
+  Object.keys(L0).forEach(function(ip) {
+    var parts = ip.split('.');
+    if (parts.length === 4) {
+      var p = parts[0] + '.' + parts[1] + '.0.0';
+      if (!slash16Label[p]) slash16Label[p] = L0[ip];
+    }
+  });
+  var metaHtml = "";
   for (var k = 0; k < state.meta.buckets.length; k++) {
     var b = state.meta.buckets[k];
     metaIds[b.id] = true;
-    var disp = (b.label && b.label !== b.id) ? b.label : b.id;
-    html += '<option value="' + b.id + '">' + disp +
+    var disp = shortAddr(b.id);
+    if (disp === b.id && b.label && b.label !== b.id) disp = b.label;
+    if (disp && disp !== b.id) usedLabels[disp] = true;
+    metaHtml += '<option value="' + b.id + '">' + disp +
             ' (' + b.points + ')</option>';
     if (b.id === desiredBucket) stillThere = true;
   }
+  var customHtml = "";
   if (window.__labels) {
     var customLabels = {};
     Object.keys(window.__labels).forEach(function(ip) {
       var lbl = window.__labels[ip];
       if (lbl && lbl !== ip && !metaIds[ip] && !metaIds[lbl] && !customLabels[lbl]) {
+        if (usedLabels[lbl]) return;
+        var parts = ip.split('.');
+        if (parts.length === 4) {
+          var s16 = parts[0] + '.' + parts[1] + '.0.0';
+          if (metaIds[s16]) return;
+        }
         customLabels[lbl] = true;
-        html += '<option value="' + lbl + '">' + lbl + ' (custom)</option>';
+        customHtml += '<option value="' + lbl + '">' + lbl + ' (custom)</option>';
         if (lbl === desiredBucket) stillThere = true;
       }
     });
   }
-  bs.innerHTML = html;
+  bs.innerHTML = customHtml + metaHtml;
   bs.add(new Option('All Buckets', 'all'), 0);
   bs.value = stillThere ? desiredBucket : 'all';
   if (window.__current_doc) _reFilterPanels();
@@ -1846,6 +1890,9 @@ function _populateBucketSelect(desiredBucket) {
         var saved_bucket = null;
         try { saved_bucket = localStorage.getItem("bpftune.bucket"); } catch (e) {}
         _populateBucketSelect(saved_bucket);
+        // 0.4.123: fetch /api/labels NOW so the dropdown options
+        // get human-readable text on first paint.
+        _fetchAndApplyLabels();
 
         var rs = $("range");
         var rhtml = "";
