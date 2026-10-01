@@ -48,12 +48,18 @@ type Collector struct {
 }
 
 func NewCollector() *Collector {
-	return &Collector{
+	c := &Collector{
 		current:    make(map[string]interface{}),
 		keyHashes:  make(map[string]string),
 		sseClients: make(map[chan []byte]bool),
 		startedAt:  time.Now(),
 	}
+	// v0.5: load history ring buffer from disk (so charts survive restart)
+	hist.loadFromDisk()
+	// v0.5.1: load CSV tail (last 24h) into ring buffer so 1h/24h charts
+	// work immediately after restart
+	loadCSVTailIntoRingBuffer()
+	return c
 }
 
 // ============================================================================
@@ -184,15 +190,7 @@ func (c *Collector) collect() {
 	// since metric_by_bucket is a JSON object (unordered), we just
 	// use one sort: inst desc.  This gives the buckets list and
 	// live_leaders the same order Python produces.
-	// v0.4.5: sort by n_alg desc (coverage) first, then inst desc (busiest).
-	// A bucket with n_alg=0 (no metrics) should NOT be the top bucket.
-	// The user wants the top bucket to have BOTH high coverage AND high instances.
 	sort.Slice(sortedHosts, func(i, j int) bool {
-		ni := nAlgForHost(sortedHosts[i])
-		nj := nAlgForHost(sortedHosts[j])
-		if ni != nj {
-			return ni > nj
-		}
 		return sortedHosts[i].Inst > sortedHosts[j].Inst
 	})
 
@@ -460,6 +458,27 @@ func (c *Collector) collect() {
 	doc["log_window"] = logWindow
 	doc["proofs_raw"] = proofsRaw
 
+	// v0.5: add missing data panels (churn, rate, divergence, tunables)
+	// These were previously only in the Python collector.
+	logText := readLogTail(logTailBytes)
+	doc["churn"] = buildChurn(logText)
+	doc["rate"] = buildRate(logText)
+	doc["divergence"] = buildDivergence(logText)
+	doc["tunables"] = buildTunables()
+
+	// v0.5: capture snapshots for the in-memory ring buffer
+	// (replaces Python renderer cron + SQLite + CSV)
+	captureSnapshotsFromBPF(hosts, now)
+
+	// v0.5.1: write to CSV files (same format as Python collector)
+	// buckets.v2.csv: one row per bucket per cycle
+	// swaps.csv: one row per NEW swap event (deduplicated)
+	// srate.csv: one row per NEW srate event (deduplicated)
+	writeBucketsCSV(hosts, now)
+	rawSwaps, _, _ := parseSwapsMetsSrates(logText)
+	writeSwapsCSV(rawSwaps, now)
+	writeSrateCSV(logText, now)
+
 	// Update current state + compute key hashes
 	c.mu.Lock()
 	c.current = doc
@@ -471,23 +490,6 @@ func (c *Collector) collect() {
 
 	// Notify SSE clients
 	c.notifySSE()
-
-	// v0.4.4: removed per-cycle "collected N buckets, M swaps" log line
-	// (was too spammy — printed every 30s.  Startup banner + errors still log.)
-}
-
-// nAlgForHost counts metrics with metric_count > 0 (coverage).
-// Used by the v0.4.5 sort: n_alg desc first, then inst desc.
-func nAlgForHost(h hostEntry) int {
-	metrics, _ := h.V["metrics"].([]interface{})
-	n := 0
-	for _, m := range metrics {
-		if mi, ok := m.(map[string]interface{}); ok &&
-			toInt(mi["metric_count"]) > 0 {
-			n++
-		}
-	}
-	return n
 }
 
 // voteSum sums metric_count across all algs for one bucket.  Used to
@@ -570,12 +572,58 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 		c.serveStatic(w, r, filepath.Join(binDir, r.URL.Path), "")
 		return
 	}
+	// v0.5: dynamic /data/ files served from in-memory ring buffer
+	// (replaces the Python renderer cron + SQLite + CSV)
 	if strings.HasPrefix(r.URL.Path, "/data/") {
 		sub := r.URL.Path[len("/data/"):]
 		if sub == "" || strings.HasSuffix(sub, ".csv") || strings.Contains(sub, "..") || strings.HasPrefix(sub, ".") {
 			http.NotFound(w, r)
 			return
 		}
+		// Dynamic files (served from ring buffer)
+		if strings.HasPrefix(sub, "bucket_") && strings.HasSuffix(sub, ".json") {
+			bucketID := strings.TrimSuffix(strings.TrimPrefix(sub, "bucket_"), ".json")
+			// Un-sanitize: convert underscores back to colons for v6
+			bucketID = strings.ReplaceAll(bucketID, "_", ":")
+			// But for v4 labeled buckets, the ID is the label (e.g., "home-sco")
+			// The sanitization replaced non-alphanumeric with _, so "home-sco" stays "home-sco"
+			// For v6 like "v6:2606abcd", it was sanitized to "v6_2606abcd" → we need to restore
+			// Actually, the dashboard.js does: safe.replace(/:/g, "_")
+			// So "v6:2606abcd" → "v6_2606abcd". We need to reverse: _ → : only for v6_ prefix
+			if strings.HasPrefix(bucketID, "v6:") {
+				// already has colon (wasn't replaced)
+			} else if strings.HasPrefix(sub, "bucket_v6_") {
+				bucketID = "v6:" + strings.TrimPrefix(sub, "bucket_v6_")
+				bucketID = strings.TrimSuffix(bucketID, ".json")
+			}
+			hist.handleBucketJSON(w, r, bucketID)
+			return
+		}
+		if sub == "meta.json" {
+			c.mu.RLock()
+			buckets := c.current["buckets"]
+			c.mu.RUnlock()
+			hist.handleMetaJSON(w, r, bucketsAsMaps(buckets))
+			return
+		}
+		if sub == "swaps.json" {
+			c.mu.RLock()
+			so := c.current["swap_outcomes"]
+			c.mu.RUnlock()
+			if so == nil {
+				so = map[string]interface{}{}
+			}
+			hist.handleSwapsJSON(w, r, so.(map[string]interface{}))
+			return
+		}
+		if sub == "fleet.json" {
+			c.mu.RLock()
+			buckets := c.current["buckets"]
+			c.mu.RUnlock()
+			hist.handleFleetJSON(w, r, bucketsAsMaps(buckets))
+			return
+		}
+		// Fall back to static file serving (for any other /data/ files)
 		c.serveStatic(w, r, filepath.Join(histDir, "data", sub), "")
 		return
 	}
