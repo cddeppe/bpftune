@@ -7,7 +7,7 @@ current.json (every 30s).
 
 load_csv is bounded-memory: keeps the last N rows only.
 """
-import bisect, csv, io, json, math, os, sqlite3, time
+import bisect, csv, io, json, math, os, sqlite3, sys, time
 from pathlib import Path
 from collections import defaultdict, deque
 
