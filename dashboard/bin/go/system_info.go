@@ -8,8 +8,11 @@ package main
 // Mirrors Python's bpftune_data.py:data_build (lines 40-70).
 
 import (
+	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -155,4 +158,74 @@ func startedUTC() string {
 func uptimeMin() int {
 	t := bpftuneServiceStartedAt(time.Now())
 	return int(time.Since(t).Minutes())
+}
+
+func readSystemInfo() map[string]interface{} {
+	out := map[string]interface{}{
+		"kernel":     readProc("/proc/sys/kernel/osrelease"),
+		"default_cc": readProc("/proc/sys/net/ipv4/tcp_congestion_control"),
+		"cpu_count":  runtime.NumCPU(),
+	}
+	if la, err := os.ReadFile("/proc/loadavg"); err == nil {
+		parts := strings.Fields(string(la))
+		if len(parts) >= 3 {
+			if v, err := strconv.ParseFloat(parts[0], 64); err == nil {
+				out["load_1"] = round2(v)
+			}
+			if v, err := strconv.ParseFloat(parts[1], 64); err == nil {
+				out["load_5"] = round2(v)
+			}
+			if v, err := strconv.ParseFloat(parts[2], 64); err == nil {
+				out["load_15"] = round2(v)
+			}
+		}
+		if len(parts) >= 4 && strings.Contains(parts[3], "/") {
+			ps := strings.SplitN(parts[3], "/", 2)
+			if len(ps) == 2 {
+				if v, err := strconv.Atoi(ps[0]); err == nil {
+					out["procs_running"] = v
+				}
+				if v, err := strconv.Atoi(ps[1]); err == nil {
+					out["procs_total"] = v
+				}
+			}
+		}
+	}
+	if data, err := os.ReadFile("/proc/uptime"); err == nil {
+		parts := strings.Fields(string(data))
+		if len(parts) > 0 {
+			if v, err := strconv.ParseFloat(parts[0], 64); err == nil {
+				out["host_uptime_s"] = int(v)
+			}
+		}
+	}
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		mi := map[string]int64{}
+		for _, line := range strings.Split(string(data), "\n") {
+			kv := strings.SplitN(line, ":", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := strings.TrimSpace(kv[0])
+			bits := strings.Fields(strings.TrimSpace(kv[1]))
+			if len(bits) > 0 {
+				if v, err := strconv.ParseInt(bits[0], 10, 64); err == nil {
+					mi[key] = v * 1024
+				}
+			}
+		}
+		total := mi["MemTotal"]
+		avail := mi["MemAvailable"]
+		if avail == 0 {
+			avail = mi["MemFree"]
+		}
+		if total > 0 && avail >= 0 {
+			used := total - avail
+			out["mem_total_bytes"] = total
+			out["mem_avail_bytes"] = avail
+			out["mem_used_bytes"] = used
+			out["mem_used_pct"] = round1(float64(used) * 100.0 / float64(total))
+		}
+	}
+	return out
 }

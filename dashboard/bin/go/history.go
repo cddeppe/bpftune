@@ -82,8 +82,8 @@ func (h *historyStore) addSnapshot(bucketID string, snap bucketSnapshot) {
 
 	// Add to raw (cap at 240 = 2h at 30s)
 	h.raw[bucketID] = append(h.raw[bucketID], snap)
-	if len(h.raw[bucketID]) > 240 {
-		h.raw[bucketID] = h.raw[bucketID][len(h.raw[bucketID])-240:]
+	if len(h.raw[bucketID]) > 2880 {
+		h.raw[bucketID] = h.raw[bucketID][len(h.raw[bucketID])-2880:]
 	}
 
 	h.cycleCount++
@@ -247,7 +247,7 @@ func (h *historyStore) handleBucketJSON(w http.ResponseWriter, r *http.Request, 
 				snaps = filtered
 			}
 		case "24h":
-			snaps = h.bin5m[bucketID]
+			snaps = h.raw[bucketID]
 			if span > 0 {
 				cutoff := time.Now().Unix() - int64(span)
 				var filtered []bucketSnapshot

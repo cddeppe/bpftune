@@ -436,10 +436,7 @@ func (c *Collector) collect() {
 			"prefix6":     prefix6Value(),
 			"explore_pct": explorePctValue(),
 		},
-		"system": map[string]interface{}{
-			"kernel":     readProc("/proc/sys/kernel/osrelease"),
-			"default_cc": readProc("/proc/sys/net/ipv4/tcp_congestion_control"),
-		},
+		"system":           readSystemInfo(),
 		"buckets":          buckets,
 		"metric_by_bucket": metricByBucket,
 		"bucket_live":      bucketLive,
@@ -457,6 +454,7 @@ func (c *Collector) collect() {
 	doc["bucket_ips"] = bucketIPs
 	doc["log_window"] = logWindow
 	doc["proofs_raw"] = proofsRaw
+	doc["proof"] = proofsRaw
 
 	// v0.5: add missing data panels (churn, rate, divergence, tunables)
 	// These were previously only in the Python collector.
