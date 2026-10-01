@@ -1954,7 +1954,7 @@ function _populateBucketSelect(desiredBucket) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: ''})})
       .then(function(r) { return r.json(); })
-      .then(function(d) { _le_render(d.labels||{}); if (window.__liveFetch) window.__liveFetch(); });
+      .then(function(d) { _le_render(d.labels || {}, d.groups || {}); if (window.__liveFetch) window.__liveFetch(); });
   }
 
   function _le_del_group(label) {
@@ -1995,7 +1995,7 @@ function _populateBucketSelect(desiredBucket) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: label})})
       .then(function(r) { return r.json(); })
-      .then(function(d) { _le_render(d.labels||{}); if (window.__liveFetch) window.__liveFetch(); });
+      .then(function(d) { _le_render(d.labels || {}, d.groups || {}); if (window.__liveFetch) window.__liveFetch(); });
   }
 
   document.addEventListener('blur', function(e) {
@@ -2016,7 +2016,7 @@ function _populateBucketSelect(desiredBucket) {
           });
           setTimeout(function() {
             fetch('/api/labels').then(function(r){return r.json()}).then(function(d){
-              _le_render(d.labels||{});
+              _le_render(d.labels || {}, d.groups || {});
               if (window.__liveFetch) window.__liveFetch();
             });
           }, 300);
