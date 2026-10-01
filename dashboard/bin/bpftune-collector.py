@@ -38,7 +38,7 @@ STATE_VERSION 2: pending_swaps / rport / met-list added.  On version
 mismatch the state is reset; only caches and in-flight pendings are
 lost (at most 300 seconds of unresolved swaps).
 """
-import csv, io, json, os, re, socket, struct, subprocess, sys, tempfile, time
+import csv, io, json, os, re, socket, sqlite3, struct, subprocess, sys, tempfile, time
 import importlib.util
 import threading, hashlib
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -161,6 +161,40 @@ HIST.mkdir(parents=True, exist_ok=True)
 BUCKETS_CSV  = HIST / "buckets.v2.csv"
 SWAPS_CSV    = HIST / "swaps.csv"
 SRATE_CSV    = HIST / "srate.csv"
+
+SQLITE_DB = HIST / "bpftune.db"
+_sqlite_conn = None
+
+def _init_sqlite():
+    global _sqlite_conn
+    try:
+        _sqlite_conn = sqlite3.connect(str(SQLITE_DB), check_same_thread=False)
+        _sqlite_conn.execute("PRAGMA journal_mode=WAL")
+        _sqlite_conn.execute("PRAGMA synchronous=NORMAL")
+        alg_cols = []
+        for alg in CONGS:
+            for prefix in ("re_", "ss_", "bs_", "ns_", "mv_"):
+                alg_cols.append(f"{prefix}{alg} REAL")
+        cols = ["collected_ts REAL", "addr TEXT", "best_alg TEXT",
+                "instances REAL", "ref_rate REAL", "min_rtt REAL",
+                "rate_best_i REAL", "rate_best_v REAL", "tcp_rmem_max REAL"
+               ] + alg_cols
+        _sqlite_conn.execute(f"CREATE TABLE IF NOT EXISTS buckets ({', '.join(cols)})")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_ts ON buckets(collected_ts)")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_addr ON buckets(addr)")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_ts_addr ON buckets(collected_ts, addr)")
+        _sqlite_conn.execute("CREATE TABLE IF NOT EXISTS swaps (collected_ts REAL, boot_ts REAL, cookie TEXT, from_alg TEXT, to_alg TEXT, d INTEGER, mt_alg TEXT, rb_alg TEXT, diverges INTEGER, outcome TEXT, socket_rate_before REAL, dest TEXT, dest_raw TEXT, f_ema REAL, t_ema REAL, srate_before REAL, direction TEXT, rport TEXT)")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_swaps_ts ON swaps(boot_ts)")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_swaps_dest ON swaps(dest)")
+        _sqlite_conn.execute("CREATE TABLE IF NOT EXISTS srate (collected_ts REAL, boot_ts REAL, cookie TEXT, alg TEXT, srate REAL)")
+        _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_srate_ts ON srate(collected_ts)")
+        _sqlite_conn.commit()
+        print(f"collector: SQLite DB ready at {SQLITE_DB}", file=sys.stderr)
+    except Exception as e:
+        print(f"collector: SQLite init failed (CSV still works): {e}", file=sys.stderr)
+        _sqlite_conn = None
+
+_init_sqlite()
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
@@ -329,7 +363,29 @@ def flush_csv_buffers():
             if needs_header:
                 w.writerow(_CSV_HEADER_CACHE[key])
             w.writerows(rows)
+        if _sqlite_conn is not None:
+            try:
+                _sqlite_write_buffered(key, rows)
+            except Exception as e:
+                print(f"collector: SQLite write failed for {key}: {e}", file=sys.stderr)
     _CSV_BUFFERS.clear()
+
+
+def _sqlite_write_buffered(csv_key, rows):
+    if csv_key == str(BUCKETS_CSV):
+        cols = _CSV_HEADER_CACHE.get(csv_key, [])
+        if not cols: return
+        placeholders = ",".join(["?"] * len(cols))
+        _sqlite_conn.executemany(f"INSERT INTO buckets ({','.join(cols)}) VALUES ({placeholders})", rows)
+    elif csv_key == str(SWAPS_CSV):
+        cols = SWAP_FIELDS
+        placeholders = ",".join(["?"] * len(cols))
+        _sqlite_conn.executemany(f"INSERT INTO swaps ({','.join(cols)}) VALUES ({placeholders})", rows)
+    elif csv_key == str(SRATE_CSV):
+        cols = SRATE_FIELDS
+        placeholders = ",".join(["?"] * len(cols))
+        _sqlite_conn.executemany(f"INSERT INTO srate ({','.join(cols)}) VALUES ({placeholders})", rows)
+    _sqlite_conn.commit()
 
 
 def list_logs():
