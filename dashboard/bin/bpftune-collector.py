@@ -42,6 +42,19 @@ import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
 import importlib.util
 import threading, hashlib
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+# Phase 2: import the labels module so the collector can serve /api/labels
+# directly, without needing the separate labels-api process on :8081.
+import sys as _sys
+_sys.path.insert(0, "/opt/bpftune-dashboard/bin")
+try:
+    import bpftune_labels_api as _labels
+except ImportError:
+    try:
+        _sys.path.insert(0, "/root/bpftune/dashboard/bin")
+        import bpftune_labels_api as _labels
+    except ImportError:
+        _labels = None
 from pathlib import Path
 
 # SSE server state — _last_result holds the latest collect_all() output.
@@ -949,6 +962,9 @@ class SSEHandler(BaseHTTPRequestHandler):
     """HTTP handler for SSE push + in-memory current.json."""
     protocol_version = "HTTP/1.1"  # required for SSE streaming
     def do_GET(self):
+        # Phase 2: serve /api/labels directly (no separate labels-api process)
+        if self.path.startswith("/api/labels"):
+            return self._handle_labels_get()
         if self.path == "/sse":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -997,8 +1013,137 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    # ---- Phase 2: /api/labels handlers (delegating to bpftune_labels_api) ----
+    def _send_json(self, code, data):
+        body = json.dumps(data).encode() if not isinstance(data, bytes) else data
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try: self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError): pass
+
+    def _handle_labels_get(self):
+        if _labels is None:
+            self._send_json(503, {"error": "labels module not loaded"}); return
+        try:
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            labels = _labels.load_labels()
+            if "ip" in qs:
+                ip = qs["ip"][0]
+                self._send_json(200, {"ip": ip, "label": labels.get(ip, "")})
+            else:
+                aliases = [r["raw"] for r in _labels.load_aliases_rules()]
+                groups = _labels.build_groups_from_aliases()
+                self._send_json(200, {"labels": labels, "aliases": aliases, "groups": groups})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def do_POST(self):
+        if self.path.startswith("/api/labels") or self.path == "/":
+            return self._handle_labels_post()
+        self.send_response(404); self.end_headers()
+
+    def _handle_labels_post(self):
+        if _labels is None:
+            self._send_json(503, {"error": "labels module not loaded"}); return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode()
+            req = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            self._send_json(400, {"error": "invalid JSON"}); return
+        try:
+            labels = _labels.load_labels()
+            if "ips" in req and isinstance(req["ips"], list):
+                label = req.get("label", "").strip()
+                ips = [ip.strip() for ip in req["ips"] if ip.strip()]
+                if not label:
+                    errors = []
+                    for ip in ips:
+                        try:
+                            labels.pop(ip, None)
+                            _labels._remove_ip_from_aliases(ip)
+                            _labels.bpf_aliases_delete(ip)
+                        except Exception as e: errors.append(str(e))
+                    _labels.save_labels(labels)
+                    self._send_json(200, {"ok": True, "labels": labels,
+                                          "groups": _labels.build_groups_from_aliases(),
+                                          "errors": errors})
+                else:
+                    for ip in ips: labels[ip] = label
+                    _labels.save_labels(labels)
+                    try: fold_results = _labels.auto_fold()
+                    except Exception as e: fold_results = {"error": str(e)}
+                    self._send_json(200, {"ok": True, "labels": labels,
+                                          "groups": _labels.build_groups_from_aliases(),
+                                          "fold_results": fold_results})
+                return
+            ip = req.get("ip", "").strip()
+            label = req.get("label", "").strip()
+            if not ip:
+                self._send_json(400, {"error": "ip is required"}); return
+            if not label:
+                errors = []
+                try:
+                    labels.pop(ip, None)
+                    _labels._remove_ip_from_aliases(ip)
+                    _labels.bpf_aliases_delete(ip)
+                except Exception as e: errors.append(str(e))
+                _labels.save_labels(labels)
+                self._send_json(200, {"ok": True, "ip": ip, "label": label,
+                                      "labels": labels,
+                                      "groups": _labels.build_groups_from_aliases(),
+                                      "errors": errors})
+            else:
+                labels[ip] = label
+                _labels.save_labels(labels)
+                try: fold_results = _labels.auto_fold()
+                except Exception as e: fold_results = {"error": str(e)}
+                self._send_json(200, {"ok": True, "ip": ip, "label": label,
+                                      "labels": labels,
+                                      "groups": _labels.build_groups_from_aliases(),
+                                      "fold_results": fold_results})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def do_DELETE(self):
+        if self.path.startswith("/api/labels"):
+            return self._handle_labels_delete()
+        self.send_response(404); self.end_headers()
+
+    def _handle_labels_delete(self):
+        if _labels is None:
+            self._send_json(503, {"error": "labels module not loaded"}); return
+        try:
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            ip = qs.get("ip", [""])[0]
+            if not ip:
+                self._send_json(400, {"error": "ip is required"}); return
+            labels = _labels.load_labels()
+            labels.pop(ip, None)
+            _labels._remove_ip_from_aliases(ip)
+            _labels.bpf_aliases_delete(ip)
+            _labels.save_labels(labels)
+            fold_results = _labels.auto_fold()
+            self._send_json(200, {"ok": True, "ip": ip,
+                                  "labels": _labels.load_labels(),
+                                  "groups": _labels.build_groups_from_aliases(),
+                                  "fold_results": fold_results})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def do_OPTIONS(self):
+        self._send_json(200, {"ok": True})
+
     def log_message(self, fmt, *args):
-        pass  # quiet — don't spam stderr per request
+        pass  # quiet
 
 
 def _start_sse_server(port=8082):

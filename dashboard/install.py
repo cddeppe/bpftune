@@ -273,7 +273,7 @@ def selinux_relabel():
 
 BIN_FILES = ["bpftune-cli.py", "bpftune-collector.py", "bpftune-render.py",
              "bpftune_log.py", "bpftune_data.py", "streak_writeback.py",
-             "labels-api.py"]
+             "labels-api.py", "bpftune_labels_api.py"]
 ASSET_FILES = ["index.html", "dashboard.js", "dashboard.css"]
 
 
