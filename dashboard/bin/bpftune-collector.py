@@ -194,7 +194,7 @@ def _init_sqlite():
         print(f"collector: SQLite init failed (CSV still works): {e}", file=sys.stderr)
         _sqlite_conn = None
 
-_init_sqlite()
+# _init_sqlite() moved to after CONGS
 SWAPS_POS    = HIST / ".swaps_pos.json"
 CURRENT_JSON = HIST / "current.json"
 
@@ -219,6 +219,9 @@ except Exception as _e:
 CONGS = ["cubic", "bbr", "htcp", "dctcp", "scalable", "vegas", "veno",
          "westwood", "reno", "illinois", "yeah", "lp", "bic", "highspeed",
          "hybla", "nv"]
+
+_init_sqlite()
+
 MIN_INST = 2
 
 MET_CACHE_TTL_S = 600.0
