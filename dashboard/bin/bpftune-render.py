@@ -352,14 +352,23 @@ def aggregate_all_sqlite(algs, now, requested_ranges=None):
             "all": ("bin_all", "bin_21600", w_all, None),
         }
         compute_ranges = requested_ranges if requested_ranges else list(range_configs.keys())
+        _table_cols = set(r[1] for r in conn.execute("PRAGMA table_info(buckets)").fetchall())
+        _has_bin = "bin_60" in _table_cols
         bin_cols = []
         for rng in compute_ranges:
             col_name, bin_col, width, where = range_configs[rng]
             w = int(width)
+            _lo = {"1h": lo_1h, "24h": lo_24h, "7d": lo_7d, "all": lo_7d}.get(rng, lo_7d)
             if where:
-                bin_cols.append(f"CASE WHEN {where}{addr_filter} THEN {bin_col} * {w} + {w // 2} ELSE NULL END AS {col_name}")
+                if _has_bin:
+                    bin_cols.append(f"CASE WHEN {where}{addr_filter} THEN {bin_col} * {w} + {w // 2} ELSE NULL END AS {col_name}")
+                else:
+                    bin_cols.append(f"CASE WHEN {where}{addr_filter} THEN {_lo} + (CAST(collected_ts AS INTEGER) - {_lo}) / {w} * {w} + {w // 2} ELSE NULL END AS {col_name}")
             else:
-                bin_cols.append(f"{bin_col} * {w} + {w // 2} AS {col_name}")
+                if _has_bin:
+                    bin_cols.append(f"{bin_col} * {w} + {w // 2} AS {col_name}")
+                else:
+                    bin_cols.append(f"{_lo} + (CAST(collected_ts AS INTEGER) - {_lo}) / {w} * {w} + {w // 2} AS {col_name}")
         bin_cols_sql = ", ".join(bin_cols)
         union_branches = []
         for rng in compute_ranges:
