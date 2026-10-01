@@ -260,94 +260,121 @@ def get_algs_from_sqlite():
     finally: conn.close()
 
 def aggregate_all_sqlite(algs, now):
+    """SQL GROUP BY + AVG approach. 100x faster than Python binning."""
     conn = _sqlite_conn()
-    if conn is None: return [], {}, [], {}
+    if conn is None:
+        return [], {}, [], {}
     try:
-        MAX_BUCKETS = 60; MIN_BUCKET_ROWS = 5
-        # 0.4.131.3: SQL GROUP BY for counting (C-level, ~5ms vs Python ~10s)
+        MAX_BUCKETS = 60
+        MIN_BUCKET_ROWS = 5
+        _cached_labels = _load_labels()
+
+        def _lbl(addr):
+            if not addr: return "unknown"
+            a = _canon_bucket(addr)
+            return _cached_labels.get(a, a)
+
+        # Pass 1: SQL GROUP BY for counting
         counts = {}
         for row in conn.execute("SELECT addr, COUNT(*) FROM buckets GROUP BY addr"):
-            a = _label_for(row[0] or "unknown")
+            a = _lbl(row[0])
             if a.count(".") == 3 and not a.endswith(".0.0"): continue
             counts[a] = counts.get(a, 0) + row[1]
-        top = [a for a in sorted(counts, key=lambda x: -counts[x]) if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
+
+        ranked = sorted(counts, key=lambda a: -counts[a])
+        top = [a for a in ranked if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
         topset = set(top)
+
+        # Get column info
         cursor = conn.execute("SELECT * FROM buckets LIMIT 1")
         header = [d[0] for d in cursor.description]
         cols = {c: i for i, c in enumerate(header)}
         wanted = [(c, cols[c]) for c in EXTRA_COLS if c in cols]
         for a in algs:
-            for pre in ("re_","ss_","bs_","ns_","mv_"):
+            for pre in ("re_", "ss_", "bs_", "ns_", "mv_"):
                 c = pre + a
                 if c in cols: wanted.append((c, cols[c]))
-        # Stream + bin (same logic as aggregate_all)
-        rkeys = list(RANGES.keys()); rspecs = [RANGES[k] for k in rkeys]
-        ai = cols.get("addr"); ti = cols.get("collected_ts")
-        sums = [[[] for _ in wanted] for _ in rspecs]
-        cnts = [[[] for _ in wanted] for _ in rspecs]
-        ts_lists = [None]*len(rspecs); meta_stats = {}
-        # 0.4.131.5: cache labels once (not per-row)
-        _cached_labels = _load_labels()
-        _cursor = conn.execute("SELECT * FROM buckets")
-        while True:
-            _batch = _cursor.fetchmany(10000)
-            if not _batch: break
-            for row in _batch:
-                # 0.4.131.5: cache labels lookup (was calling _load_labels()
-                # per row = 180K stat() calls = ~2s overhead)
-                a = row[ai] or "unknown"
-                a = _canon_bucket(a)
-                a = _cached_labels.get(a, a)
+        wanted_names = [c for c, _ in wanted]
+        agg_cols_sql = ", ".join(f"AVG({c}) AS {c}" for c, _ in wanted)
+
+        rkeys = list(RANGES.keys())
+        rspecs = [RANGES[k] for k in rkeys]
+
+        # For each range: ONE SQL query with GROUP BY + AVG
+        range_data = [None] * len(rkeys)
+        for ri, (rng, (span, width)) in enumerate(zip(rkeys, rspecs)):
+            lo = int(now - span) if span is not None else 0
+            where = f"WHERE collected_ts > {int(now-span)}" if span else ""
+            bin_expr = f"({lo} + ((collected_ts - {lo}) / {int(width)}) * {int(width)} + {int(width//2)})"
+            sql = f"SELECT addr, {bin_expr} AS bin_ts, {agg_cols_sql}, COUNT(*) AS _n FROM buckets {where} GROUP BY addr, bin_ts ORDER BY addr, bin_ts"
+            label_bins = {}
+            for row in conn.execute(sql):
+                a = _lbl(row[0])
                 if a not in topset: continue
-                try: t = float(row[ti])
-                except: continue
-                st = meta_stats.setdefault(a, {"inst_sum":0,"inst_n":0,"last_ts":0,"co_have":set(),"co_seen":set(),"pts24":0})
-                try: inst = float(row[cols["instances"]]) if "instances" in cols and row[cols["instances"]] else 0
-                except: inst = 0
-                st["inst_sum"] += inst; st["inst_n"] += 1; st["last_ts"] = max(st["last_ts"], int(t))
-                b = int((t-(now-86400))//300) if t >= now-86400 else -1
-                if b >= 0: st["co_have"].add(b); (st["co_seen"].add(b) if inst > 0 else None)
-                st["pts24"] += 1
-                for ri,(span,width) in enumerate(rspecs):
-                    if span is not None and t < now-span: continue
-                    lo = now-span if span else 0
-                    b2 = int((t-lo)//width)
-                    if ts_lists[ri] is None: ts_lists[ri] = []
-                    bin_ts = int(lo+b2*width+width/2)
-                    if not ts_lists[ri] or ts_lists[ri][-1] != bin_ts:
-                        ts_lists[ri].append(bin_ts)
-                        for ci in range(len(wanted)):
-                            sums[ri][ci].append(0.0)
-                            cnts[ri][ci].append(0)
-                    idx = len(ts_lists[ri])-1
-                    for ci,(cname,cidx) in enumerate(wanted):
-                        try:
-                            v = row[cidx]
-                            v = float(v) if v not in (None,"","None") else None
-                        except: v = None
-                        if v is None: continue
-                        sums[ri][ci][idx] += v; cnts[ri][ci][idx] += 1
-        conn.close()
+                bin_ts = row[1]
+                n = row[-1]
+                lb = label_bins.setdefault(a, {})
+                if bin_ts in lb:
+                    old = lb[bin_ts]; old_n = old["_n"]; total_n = old_n + n
+                    for ci, cname in enumerate(wanted_names):
+                        ov = old.get(cname); nv = row[2+ci]
+                        if ov is not None and nv is not None:
+                            old[cname] = (ov*old_n + nv*n) / total_n
+                        elif nv is not None: old[cname] = nv
+                    old["_n"] = total_n
+                else:
+                    lb[bin_ts] = {cname: row[2+ci] for ci, cname in enumerate(wanted_names)}
+                    lb[bin_ts]["_n"] = n
+            range_data[ri] = label_bins
+
+        # Build docs
         docs = []
         for bid in top:
             doc = {"id": bid, "series": {}}
-            for ri,(rng,(span,width)) in enumerate(zip(rkeys,rspecs)):
-                ts = ts_lists[ri] or []
+            for ri, rng in enumerate(rkeys):
+                lb = range_data[ri] or {}
+                bins = lb.get(bid, {})
+                ts = sorted(bins.keys())
                 series = {"ts": ts}
-                for ci,(cname,cidx) in enumerate(wanted):
-                    s = sums[ri][ci]; k = cnts[ri][ci]
-                    series[cname] = [(s[i]/k[i]) if k[i] else None for i in range(len(s))]
+                for cname in wanted_names:
+                    series[cname] = [bins[t].get(cname) for t in ts] if bins else []
                 doc["series"][rng] = series
-            st = meta_stats.get(bid, {})
-            doc["last"] = {"collected_ts": st.get("last_ts",0), "best_alg": "", "best_i": None,
-                           "instances": st.get("inst_sum",0)/st["inst_n"] if st.get("inst_n") else 0,
-                           "ref_rate": None, "min_rtt": None, "rate_best_i": None,
-                           "rate_best_v": None, "tcp_rmem_max": None, "re": {a: None for a in algs}}
             docs.append(doc)
+
+        # Meta stats via SQL
+        meta_stats = {}
+        for row in conn.execute("SELECT addr, SUM(instances), COUNT(*), MAX(collected_ts) FROM buckets GROUP BY addr"):
+            a = _lbl(row[0])
+            if a not in topset: continue
+            st = meta_stats.setdefault(a, {"inst_sum":0.0,"inst_n":0,"last_ts":0,"co_have":set(),"co_seen":set(),"pts24":0})
+            st["inst_sum"] = row[1] or 0; st["inst_n"] = row[2]; st["last_ts"] = row[3] or 0; st["pts24"] = row[2]
+
+        # 24h coverage via SQL
+        lo24 = int(now - 86400)
+        for row in conn.execute(f"SELECT addr, ((collected_ts - {lo24}) / 300) AS bin, MAX(instances) FROM buckets WHERE collected_ts > {lo24} GROUP BY addr, bin"):
+            a = _lbl(row[0])
+            if a not in topset: continue
+            st = meta_stats.get(a)
+            if st:
+                st["co_have"].add(row[1])
+                if row[2] and row[2] > 0: st["co_seen"].add(row[1])
+
+        for bid in top:
+            st = meta_stats.get(bid, {})
+            doc = next((d for d in docs if d["id"] == bid), None)
+            if doc:
+                doc["last"] = {"collected_ts": st.get("last_ts",0), "best_alg": "", "best_i": None,
+                               "instances": st.get("inst_sum",0)/st["inst_n"] if st.get("inst_n") else 0,
+                               "ref_rate": None, "min_rtt": None, "rate_best_i": None,
+                               "rate_best_v": None, "tcp_rmem_max": None, "re": {a: None for a in algs}}
+
+        conn.close()
         return header, cols, docs, meta_stats
     except Exception as e:
-        import sys; print(f"renderer: SQLite error: {e}", file=sys.stderr)
+        import sys; print(f"renderer: SQLite aggregate error: {e}", file=sys.stderr)
         conn.close(); return [], {}, [], {}
+
+
 
 def aggregate_all(bfile, algs, now):
     """Single streaming pass over buckets.v2.csv.
