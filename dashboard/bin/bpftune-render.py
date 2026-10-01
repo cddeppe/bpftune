@@ -286,12 +286,18 @@ def aggregate_all_sqlite(algs, now):
         sums = [[[] for _ in wanted] for _ in rspecs]
         cnts = [[[] for _ in wanted] for _ in rspecs]
         ts_lists = [None]*len(rspecs); meta_stats = {}
+        # 0.4.131.5: cache labels once (not per-row)
+        _cached_labels = _load_labels()
         _cursor = conn.execute("SELECT * FROM buckets")
         while True:
             _batch = _cursor.fetchmany(10000)
             if not _batch: break
             for row in _batch:
-                a = _label_for(row[ai] or "unknown")
+                # 0.4.131.5: cache labels lookup (was calling _load_labels()
+                # per row = 180K stat() calls = ~2s overhead)
+                a = row[ai] or "unknown"
+                a = _canon_bucket(a)
+                a = _cached_labels.get(a, a)
                 if a not in topset: continue
                 try: t = float(row[ti])
                 except: continue
