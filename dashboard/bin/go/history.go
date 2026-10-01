@@ -704,7 +704,7 @@ func (c *Collector) renderToDisk() {
 	hist.renderFleetToDisk(bucketMaps)
 
 	// Write bucket_<id>.json for each bucket
-	hist.renderBucketsToDisk(bucketMaps)
+	hist.renderBucketsToDisk(bucketMaps, swapOutcomes)
 }
 
 func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
@@ -825,7 +825,7 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 	writeJSONToDisk("fleet.json", map[string]interface{}{"buckets": labels, "coverage_24h": cov})
 }
 
-func (h *historyStore) renderBucketsToDisk(buckets []map[string]interface{}) {
+func (h *historyStore) renderBucketsToDisk(buckets []map[string]interface{}, swapOutcomes interface{}) {
 	for _, b := range buckets {
 		id, _ := b["dest"].(string)
 		if id == "" {
@@ -834,11 +834,11 @@ func (h *historyStore) renderBucketsToDisk(buckets []map[string]interface{}) {
 		safe := sanitizeBucketID(id)
 		// Build the bucket JSON using the existing handler logic
 		// but write to disk instead of serving via HTTP
-		h.renderBucketToDisk(id, safe)
+		h.renderBucketToDisk(id, safe, swapOutcomes)
 	}
 }
 
-func (h *historyStore) renderBucketToDisk(bucketID, safe string) {
+func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes interface{}) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -872,6 +872,8 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string) {
 		}
 
 		series := buildSeriesFromSnaps(snaps, width)
+		// v0.5.15: add swap count per bin (for swaps-per-bin chart)
+		series["swaps"] = countSwapsPerBin(swapOutcomes, bucketID, width, span)
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
@@ -955,4 +957,52 @@ func writeJSONToDisk(name string, doc interface{}) {
 	tmp := path + ".tmp"
 	os.WriteFile(tmp, data, 0644)
 	os.Rename(tmp, path)
+}
+
+// v0.5.15: countSwapsPerBin counts swap events per time bin for a specific bucket
+func countSwapsPerBin(swapOutcomes interface{}, bucketID string, width int, span int) []interface{} {
+	so, ok := swapOutcomes.(map[string]interface{})
+	if !ok {
+		return []interface{}{}
+	}
+	sl, ok := so["swaps_list"].([]interface{})
+	if !ok {
+		return []interface{}{}
+	}
+	now := time.Now().Unix()
+	var cutoff int64
+	if span > 0 {
+		cutoff = now - int64(span)
+	}
+	binCounts := map[int64]int{}
+	for _, s := range sl {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		dest, _ := sm["dest"].(string)
+		if dest != bucketID {
+			continue
+		}
+		ts, ok := sm["ts"].(float64)
+		if !ok {
+			continue
+		}
+		tsInt := int64(ts)
+		if span > 0 && tsInt < cutoff {
+			continue
+		}
+		binIdx := tsInt / int64(width)
+		binCounts[binIdx]++
+	}
+	var binIdxs []int64
+	for bi := range binCounts {
+		binIdxs = append(binIdxs, bi)
+	}
+	sort.Slice(binIdxs, func(i, j int) bool { return binIdxs[i] < binIdxs[j] })
+	result := make([]interface{}, len(binIdxs))
+	for i, bi := range binIdxs {
+		result[i] = binCounts[bi]
+	}
+	return result
 }
