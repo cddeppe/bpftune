@@ -970,6 +970,9 @@ func countSwapsPerBin(swapOutcomes interface{}, bucketID string, width int, span
 		return []interface{}{}
 	}
 	now := time.Now().Unix()
+	// v0.5.16: convert uptime ts to epoch (swaps_list ts is uptime, not epoch)
+	uptime := readProcUptime()
+	nowEpoch := float64(now)
 	var cutoff int64
 	if span > 0 {
 		cutoff = now - int64(span)
@@ -988,7 +991,9 @@ func countSwapsPerBin(swapOutcomes interface{}, bucketID string, width int, span
 		if !ok {
 			continue
 		}
-		tsInt := int64(ts)
+		// Convert uptime to epoch
+		epochTs := nowEpoch - uptime + ts
+		tsInt := int64(epochTs)
 		if span > 0 && tsInt < cutoff {
 			continue
 		}
