@@ -716,6 +716,7 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 		id, label string
 		instMean  float64
 		lastTs    int64
+		nAlg      int
 	}
 	var entries []entry
 	for _, b := range buckets {
@@ -745,13 +746,15 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 		} else {
 			im = float64(inst)
 		}
-		entries = append(entries, entry{id, id, im, lastTs})
+		nAlg, _ := b["n_alg"].(int)
+		entries = append(entries, entry{id, id, im, lastTs, nAlg})
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].instMean != entries[j].instMean {
-			return entries[i].instMean > entries[j].instMean
+		// v0.5.11: sort by n_alg desc (coverage) first, then inst_mean desc
+		if entries[i].nAlg != entries[j].nAlg {
+			return entries[i].nAlg > entries[j].nAlg
 		}
-		return entries[i].lastTs > entries[j].lastTs
+		return entries[i].instMean > entries[j].instMean
 	})
 
 	bucketEntries := make([]interface{}, 0, len(entries))
