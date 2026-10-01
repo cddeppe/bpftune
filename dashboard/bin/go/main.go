@@ -53,8 +53,7 @@ func NewCollector() *Collector {
 	return &Collector{
 		current:    make(map[string]interface{}),
 		keyHashes:  make(map[string]string),
-		sseClients:   make(map[chan []byte]bool),
-		logOffsets:   make(map[string]int64),
+		sseClients: make(map[chan []byte]bool),
 		logOffsets:   make(map[string]int64),
 	}
 }
@@ -178,9 +177,9 @@ for addr, raw := range hosts {
 					if mi, ok := m.(map[string]interface{}); ok && toInt(mi["metric_count"]) > 0 { nAlg++ }
 				}
 			}
-	lbl := labelFor(addr, labels)
-	buckets = append(buckets, bucket{Dest: lbl, Inst: inst,
-		RttUs: toFloat(v["min_rtt"]),
+
+
+
 		RefMbps: toFloat(v["max_rate_delivered"]) / 125000.0,
 		BestAlg: bestAlg, NAlg: nAlg})
 	if metrics, ok := v["metrics"].([]interface{}); ok {
@@ -247,7 +246,14 @@ for addr, raw := range hosts {
 		"metric_by_bucket": metricByBucket,
 		"bucket_live":    bucketLive,
 		"live_leaders":   liveLeaders,
-				"bucket_ips":    map[string]interface{}{},
+		"recent_swaps":   []interface{}{},
+		"recent_proofs":  []interface{}{},
+		"swap_outcomes": map[string]interface{}{
+			"composite": map[string]interface{}{
+				"measurable": 0, "win": 0, "loss": 0, "null": 0,
+			},
+		},
+		"bucket_ips":    map[string]interface{}{},
 		"log_window":    map[string]interface{}{},
 		"hostname":      readProc("/proc/sys/kernel/hostname"),
 		"now_mono":      now,
@@ -259,13 +265,8 @@ for addr, raw := range hosts {
 	c.keyHashes = computeKeyHashes(doc)
 	c.mu.Unlock()
 
-	// 0.3: parse log files for recent_swaps, recent_proofs, swap_outcomes
-	topSwaps, topProofs, swapOutcomes := c.parseLogs()
-	doc["recent_swaps"] = topSwaps
-	doc["recent_proofs"] = topProofs
-	doc["swap_outcomes"] = swapOutcomes
-
 	// Write current.json to disk
+	// 0.3: parse log files
 	topSwaps, topProofs, swapOutcomes := c.parseLogs()
 	doc["recent_swaps"] = topSwaps
 	doc["recent_proofs"] = topProofs
