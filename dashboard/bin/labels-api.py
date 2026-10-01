@@ -416,6 +416,40 @@ def _rewrite_aliases_lines(original_text, desired_by_from, managed_ips, managed_
     return new_lines, seen_froms, removed_folds, new_rules_to_add
 
 
+
+
+def _remove_ip_from_aliases(ip):
+    """Remove a specific IP from /etc/bpftune/aliases file."""
+    try:
+        with open(ALIASES_FILE) as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    new_lines = []
+    removed = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        if "=" in stripped:
+            lhs = stripped.split("=")[0].strip()
+            if lhs == ip:
+                removed = True
+                continue
+        new_lines.append(line)
+    if removed:
+        try:
+            d = os.path.dirname(ALIASES_FILE) or "."
+            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            with os.fdopen(fd, "w") as f:
+                f.writelines(new_lines)
+            os.replace(tmp, ALIASES_FILE)
+        except OSError as e:
+            import sys
+            print("[labels-api] _remove_ip_from_aliases write error: %s" % e, file=sys.stderr)
+    return removed
+
 def auto_fold():
     """Reconcile aliases file with labels: fold multi-IP labels to one canonical.
 
@@ -516,13 +550,18 @@ class LabelsHandler(BaseHTTPRequestHandler):
             label = req.get("label", "").strip()
             ips = [ip.strip() for ip in req["ips"] if ip.strip()]
             if not label:
+                errors = []
                 for ip in ips:
-                    labels.pop(ip, None)
-                    _remove_ip_from_aliases(ip)
-                    bpf_aliases_delete(ip)
+                    try:
+                        labels.pop(ip, None)
+                        _remove_ip_from_aliases(ip)
+                        bpf_aliases_delete(ip)
+                    except Exception as e:
+                        errors.append(str(e))
                 save_labels(labels)
                 self._send_json(200, {"ok": True, "labels": labels,
-                                      "groups": build_groups_from_aliases()})
+                                      "groups": build_groups_from_aliases(),
+                                      "errors": errors})
             else:
                 for ip in ips:
                     labels[ip] = label
@@ -538,12 +577,17 @@ class LabelsHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "ip is required"})
             return
         if not label:
-            labels.pop(ip, None)
-            _remove_ip_from_aliases(ip)
-            bpf_aliases_delete(ip)
+            errors = []
+            try:
+                labels.pop(ip, None)
+                _remove_ip_from_aliases(ip)
+                bpf_aliases_delete(ip)
+            except Exception as e:
+                errors.append(str(e))
             save_labels(labels)
             self._send_json(200, {"ok": True, "ip": ip, "label": label,
-                                  "labels": labels, "groups": build_groups_from_aliases()})
+                                  "labels": labels, "groups": build_groups_from_aliases(),
+                                  "errors": errors})
         else:
             labels[ip] = label
             save_labels(labels)

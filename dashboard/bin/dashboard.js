@@ -1954,7 +1954,7 @@ function _populateBucketSelect(desiredBucket) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ip: ip, label: ''})})
       .then(function(r) { return r.json(); })
-      .then(function(d) { _le_render(d.labels || {}, d.groups || {}); if (window.__liveFetch) window.__liveFetch(); });
+      .then(function(d) { _le_render(d.labels || {}, d.groups || {}); if (window.__liveFetch) window.__liveFetch(); }).catch(function(e) { console.error('delete failed:', e); alert('Delete failed: ' + e.message); });
   }
 
   function _le_del_group(label) {
