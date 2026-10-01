@@ -38,7 +38,7 @@ STATE_VERSION 2: pending_swaps / rport / met-list added.  On version
 mismatch the state is reset; only caches and in-flight pendings are
 lost (at most 300 seconds of unresolved swaps).
 """
-import csv, json, os, re, socket, struct, subprocess, sys, tempfile, time
+import csv, io, json, os, re, socket, struct, subprocess, sys, tempfile, time
 import importlib.util
 import threading, hashlib
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -962,9 +962,27 @@ class SSEHandler(BaseHTTPRequestHandler):
     """HTTP handler for SSE push + in-memory current.json."""
     protocol_version = "HTTP/1.1"  # required for SSE streaming
     def do_GET(self):
-        # Phase 2: serve /api/labels directly (no separate labels-api process)
+        # Phase 2 piece 1: serve /api/labels directly
         if self.path.startswith("/api/labels"):
             return self._handle_labels_get()
+        # Phase 2 piece 2: serve static files (drop nginx)
+        if self.path in ("/", "/index.html"):
+            return self._serve_static_file(
+                "/var/lib/bpftune/history/index.html",
+                content_type="text/html; charset=utf-8")
+        if self.path in ("/dashboard.js", "/dashboard.css"):
+            return self._serve_static_file(
+                "/opt/bpftune-dashboard/bin" + self.path)
+        if self.path.startswith("/data/"):
+            sub = self.path[len("/data/"):]
+            if not sub or sub.endswith(".csv") or "/" in sub or ".." in sub \
+               or sub.startswith("."):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers(); return
+            return self._serve_static_file(
+                "/var/lib/bpftune/history/data/" + sub)
         if self.path == "/sse":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1000,15 +1018,29 @@ class SSEHandler(BaseHTTPRequestHandler):
                     except (BrokenPipeError, ConnectionResetError):
                         return
         elif self.path == "/current.json":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
+            # Phase 2 piece 2: gzip the ~330KB current.json -> ~70KB
             with _result_lock:
                 data = _last_result
             body = json.dumps(data or {}, separators=(",", ":")).encode()
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            if self._client_accepts_gzip():
+                compressed = self._gzip_body(body)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(compressed)))
+                self.send_header("Vary", "Accept-Encoding")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                try: self.wfile.write(compressed)
+                except (BrokenPipeError, ConnectionResetError): pass
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try: self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError): pass
         else:
             self.send_response(404)
             self.end_headers()
@@ -1142,14 +1174,92 @@ class SSEHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._send_json(200, {"ok": True})
 
+    # ---- Phase 2 piece 2: static file serving (drop nginx) ----
+    _MIME_MAP = {
+        ".html": "text/html; charset=utf-8",
+        ".js":   "application/javascript; charset=utf-8",
+        ".css":  "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".png":  "image/png",
+        ".svg":  "image/svg+xml",
+        ".ico":  "image/x-icon",
+    }
+
+    def _guess_mime(self, path):
+        for ext, ct in self._MIME_MAP.items():
+            if path.endswith(ext):
+                return ct
+        return "application/octet-stream"
+
+    def _client_accepts_gzip(self):
+        ae = self.headers.get("Accept-Encoding", "") or ""
+        return "gzip" in ae.lower()
+
+    def _gzip_body(self, body):
+        import gzip as _gzip
+        buf = io.BytesIO()
+        with _gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=5) as gz:
+            gz.write(body)
+        return buf.getvalue()
+
+    def _serve_static_file(self, path, content_type=None):
+        try:
+            real = os.path.realpath(path)
+            allowed_bases = (
+                "/var/lib/bpftune/history",
+                "/opt/bpftune-dashboard/bin",
+            )
+            if not any(real.startswith(b) for b in allowed_bases):
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers(); return
+            if not os.path.isfile(real):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers(); return
+            with open(real, "rb") as f:
+                body = f.read()
+        except (OSError, IOError):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers(); return
+        ct = content_type or self._guess_mime(real)
+        if self._client_accepts_gzip() and any(real.endswith(ext) for ext in
+                                               (".json", ".js", ".css", ".html")):
+            compressed = self._gzip_body(body)
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(compressed)))
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try: self.wfile.write(compressed)
+            except (BrokenPipeError, ConnectionResetError): pass
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try: self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError): pass
+
     def log_message(self, fmt, *args):
-        pass  # quiet
+        pass
 
 
-def _start_sse_server(port=8082):
-    """Start the SSE HTTP server in a background thread."""
+def _start_sse_server(port=None, bind=None):
+    """Start the SSE HTTP server in a background thread.
+    Phase 2 piece 2: port + bind default to _SSE_PORT/_SSE_BIND."""
+    if port is None: port = _SSE_PORT
+    if bind is None: bind = _SSE_BIND
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), SSEHandler)
+        server = ThreadingHTTPServer((bind, port), SSEHandler)
+        print("collector: HTTP server on %s:%d (serves /, /sse, /current.json, /api/labels, /data/*)" % (bind, port), file=sys.stderr)
         server.serve_forever()
     except Exception as e:
         print("collector: SSE server failed: %s" % e, file=sys.stderr)
@@ -1191,6 +1301,26 @@ def _lightweight_loop(_running):
                 break
             time.sleep(1)
     print("collector: lightweight loop stopped", file=sys.stderr)
+
+
+def _parse_args(argv):
+    port = 8082
+    bind = "127.0.0.1"
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--port" and i + 1 < len(argv):
+            port = int(argv[i + 1]); i += 2
+        elif a == "--bind" and i + 1 < len(argv):
+            bind = argv[i + 1]; i += 2
+        else:
+            i += 1
+    return port, bind
+
+
+# Phase 2 piece 2: port + bind set from CLI args. Defaults:
+# 127.0.0.1:8082 (behind nginx). Standalone: --port 8080 --bind 0.0.0.0.
+_SSE_PORT, _SSE_BIND = _parse_args(sys.argv[1:])
 
 
 def _daemon_loop():
