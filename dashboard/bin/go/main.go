@@ -795,6 +795,11 @@ func (c *Collector) handleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 		ip, _ := req["ip"].(string)
 		label, _ := req["label"].(string)
+		// v0.5.5: canonicalize IP to current prefix width before storing
+		// so a /128 v6 like "2603:c020:8028:8800::" becomes "2603:c020::"
+		// (matching the BPF map's /32 form).  Without this, the label
+		// key doesn't match the bucket ID and the "move" appears to fail.
+		ip = canonBucketWithPrefix(ip, prefix4Value(), prefix6Value())
 
 		labels := loadLabels()
 		if label == "" {
