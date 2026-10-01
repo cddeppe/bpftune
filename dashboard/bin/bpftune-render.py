@@ -286,37 +286,41 @@ def aggregate_all_sqlite(algs, now):
         sums = [[[] for _ in wanted] for _ in rspecs]
         cnts = [[[] for _ in wanted] for _ in rspecs]
         ts_lists = [None]*len(rspecs); meta_stats = {}
-        for row in conn.execute("SELECT * FROM buckets ORDER BY collected_ts"):
-            a = _label_for(row[ai] or "unknown")
-            if a not in topset: continue
-            try: t = float(row[ti])
-            except: continue
-            st = meta_stats.setdefault(a, {"inst_sum":0,"inst_n":0,"last_ts":0,"co_have":set(),"co_seen":set(),"pts24":0})
-            try: inst = float(row[cols["instances"]]) if "instances" in cols and row[cols["instances"]] else 0
-            except: inst = 0
-            st["inst_sum"] += inst; st["inst_n"] += 1; st["last_ts"] = max(st["last_ts"], int(t))
-            b = int((t-(now-86400))//300) if t >= now-86400 else -1
-            if b >= 0: st["co_have"].add(b); (st["co_seen"].add(b) if inst > 0 else None)
-            st["pts24"] += 1
-            for ri,(span,width) in enumerate(rspecs):
-                if span is not None and t < now-span: continue
-                lo = now-span if span else 0
-                b2 = int((t-lo)//width)
-                if ts_lists[ri] is None: ts_lists[ri] = []
-                bin_ts = int(lo+b2*width+width/2)
-                if not ts_lists[ri] or ts_lists[ri][-1] != bin_ts:
-                    ts_lists[ri].append(bin_ts)
-                    for ci in range(len(wanted)):
-                        sums[ri][ci].append(0.0)
-                        cnts[ri][ci].append(0)
-                idx = len(ts_lists[ri])-1
-                for ci,(cname,cidx) in enumerate(wanted):
-                    try:
-                        v = row[cidx]
-                        v = float(v) if v not in (None,"","None") else None
-                    except: v = None
-                    if v is None: continue
-                    sums[ri][ci][idx] += v; cnts[ri][ci][idx] += 1
+        _cursor = conn.execute("SELECT * FROM buckets")
+        while True:
+            _batch = _cursor.fetchmany(10000)
+            if not _batch: break
+            for row in _batch:
+                a = _label_for(row[ai] or "unknown")
+                if a not in topset: continue
+                try: t = float(row[ti])
+                except: continue
+                st = meta_stats.setdefault(a, {"inst_sum":0,"inst_n":0,"last_ts":0,"co_have":set(),"co_seen":set(),"pts24":0})
+                try: inst = float(row[cols["instances"]]) if "instances" in cols and row[cols["instances"]] else 0
+                except: inst = 0
+                st["inst_sum"] += inst; st["inst_n"] += 1; st["last_ts"] = max(st["last_ts"], int(t))
+                b = int((t-(now-86400))//300) if t >= now-86400 else -1
+                if b >= 0: st["co_have"].add(b); (st["co_seen"].add(b) if inst > 0 else None)
+                st["pts24"] += 1
+                for ri,(span,width) in enumerate(rspecs):
+                    if span is not None and t < now-span: continue
+                    lo = now-span if span else 0
+                    b2 = int((t-lo)//width)
+                    if ts_lists[ri] is None: ts_lists[ri] = []
+                    bin_ts = int(lo+b2*width+width/2)
+                    if not ts_lists[ri] or ts_lists[ri][-1] != bin_ts:
+                        ts_lists[ri].append(bin_ts)
+                        for ci in range(len(wanted)):
+                            sums[ri][ci].append(0.0)
+                            cnts[ri][ci].append(0)
+                    idx = len(ts_lists[ri])-1
+                    for ci,(cname,cidx) in enumerate(wanted):
+                        try:
+                            v = row[cidx]
+                            v = float(v) if v not in (None,"","None") else None
+                        except: v = None
+                        if v is None: continue
+                        sums[ri][ci][idx] += v; cnts[ri][ci][idx] += 1
         conn.close()
         docs = []
         for bid in top:
