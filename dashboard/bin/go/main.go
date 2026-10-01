@@ -177,9 +177,6 @@ for addr, raw := range hosts {
 					if mi, ok := m.(map[string]interface{}); ok && toInt(mi["metric_count"]) > 0 { nAlg++ }
 				}
 			}
-
-
-
 		RefMbps: toFloat(v["max_rate_delivered"]) / 125000.0,
 		BestAlg: bestAlg, NAlg: nAlg})
 	if metrics, ok := v["metrics"].([]interface{}); ok {
