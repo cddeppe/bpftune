@@ -975,6 +975,16 @@ func main() {
 		}
 	}()
 
+	// v0.5.8: render static files every 5 min (like Python renderer cron)
+	go func() {
+		collector.renderToDisk()
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			collector.renderToDisk()
+		}
+	}()
+
 	// Start HTTP server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", collector.handleIndex)

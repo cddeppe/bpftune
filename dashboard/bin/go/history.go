@@ -673,3 +673,275 @@ func bucketsAsMaps(buckets interface{}) []map[string]interface{} {
 
 // suppress unused import warnings (fmt used in error paths)
 var _ = fmt.Sprintf
+
+// ============================================================================
+// renderToDisk — pre-builds bucket_*.json, meta.json, swaps.json, fleet.json
+// as static files on disk.  Runs every 5 min (like the Python renderer cron).
+// The HTTP handler serves these as fast static files instead of building
+// dynamically on every request.
+// ============================================================================
+
+func (c *Collector) renderToDisk() {
+	c.mu.RLock()
+	buckets := c.current["buckets"]
+	swapOutcomes := c.current["swap_outcomes"]
+	c.mu.RUnlock()
+
+	bucketMaps := bucketsAsMaps(buckets)
+	if len(bucketMaps) == 0 {
+		return
+	}
+
+	// Write meta.json
+	hist.renderMetaToDisk(bucketMaps)
+
+	// Write swaps.json
+	if so, ok := swapOutcomes.(map[string]interface{}); ok {
+		hist.renderSwapsToDisk(so)
+	}
+
+	// Write fleet.json
+	hist.renderFleetToDisk(bucketMaps)
+
+	// Write bucket_<id>.json for each bucket
+	hist.renderBucketsToDisk(bucketMaps)
+}
+
+func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
+	// Reuse handleMetaJSON logic but write to disk
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	type entry struct {
+		id, label string
+		instMean  float64
+		lastTs    int64
+	}
+	var entries []entry
+	for _, b := range buckets {
+		id, _ := b["id"].(string)
+		if id == "" {
+			id, _ = b["dest"].(string)
+		}
+		if id == "" {
+			continue
+		}
+		inst, _ := b["inst"].(int)
+		var instSum int
+		var instCount int
+		var lastTs int64
+		if raw, ok := h.raw[id]; ok {
+			for _, s := range raw {
+				instSum += s.Instances
+				instCount++
+				if s.Ts > lastTs {
+					lastTs = s.Ts
+				}
+			}
+		}
+		var im float64
+		if instCount > 0 {
+			im = float64(instSum) / float64(instCount)
+		} else {
+			im = float64(inst)
+		}
+		entries = append(entries, entry{id, id, im, lastTs})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].instMean != entries[j].instMean {
+			return entries[i].instMean > entries[j].instMean
+		}
+		return entries[i].lastTs > entries[j].lastTs
+	})
+
+	bucketEntries := make([]interface{}, 0, len(entries))
+	for _, e := range entries {
+		bucketEntries = append(bucketEntries, map[string]interface{}{
+			"id": e.id, "label": e.id,
+			"points":         len(h.raw[e.id]),
+			"instances_mean": e.instMean, "last_ts": e.lastTs,
+		})
+	}
+	doc := map[string]interface{}{
+		"generated_ts": time.Now().Unix(),
+		"ranges":       []string{"1h", "24h", "7d", "all"},
+		"algs":         sortedAlgs(),
+		"buckets":      bucketEntries,
+		"default_bucket": func() string {
+			if len(entries) > 0 {
+				return entries[0].id
+			}
+			return "all"
+		}(),
+		"has_tcp_rmem": false,
+	}
+	writeJSONToDisk("meta.json", doc)
+}
+
+func (h *historyStore) renderSwapsToDisk(so map[string]interface{}) {
+	writeJSONToDisk("swaps.json", so)
+}
+
+func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
+	type pair struct {
+		bid string
+		cov float64
+	}
+	var pairs []pair
+	for _, b := range buckets {
+		id, _ := b["dest"].(string)
+		if id == "" {
+			continue
+		}
+		snaps := readBucketCSVFast(id, 86400)
+		if len(snaps) == 0 {
+			continue
+		}
+		var have, seen int
+		for _, s := range snaps {
+			seen++
+			if s.RefRate > 0 {
+				have++
+			}
+		}
+		if seen == 0 {
+			continue
+		}
+		pairs = append(pairs, pair{id, round1(float64(have) * 100.0 / float64(seen))})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].cov > pairs[j].cov })
+	if len(pairs) > 25 {
+		pairs = pairs[:25]
+	}
+	labels := make([]string, len(pairs))
+	cov := make([]float64, len(pairs))
+	for i, p := range pairs {
+		labels[i] = p.bid
+		cov[i] = p.cov
+	}
+	writeJSONToDisk("fleet.json", map[string]interface{}{"buckets": labels, "coverage_24h": cov})
+}
+
+func (h *historyStore) renderBucketsToDisk(buckets []map[string]interface{}) {
+	for _, b := range buckets {
+		id, _ := b["dest"].(string)
+		if id == "" {
+			continue
+		}
+		safe := sanitizeBucketID(id)
+		// Build the bucket JSON using the existing handler logic
+		// but write to disk instead of serving via HTTP
+		h.renderBucketToDisk(id, safe)
+	}
+}
+
+func (h *historyStore) renderBucketToDisk(bucketID, safe string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	doc := map[string]interface{}{"id": bucketID, "series": map[string]interface{}{}}
+
+	for rngName, rngCfg := range ranges {
+		span, _ := rngCfg[0].(int)
+		width, _ := rngCfg[1].(int)
+		if width == 0 {
+			width = 60
+		}
+
+		var snaps []bucketSnapshot
+		switch rngName {
+		case "1h", "24h":
+			snaps = h.raw[bucketID]
+			if span > 0 {
+				cutoff := time.Now().Unix() - int64(span)
+				var filtered []bucketSnapshot
+				for _, s := range snaps {
+					if s.Ts >= cutoff {
+						filtered = append(filtered, s)
+					}
+				}
+				snaps = filtered
+			}
+		case "7d":
+			snaps = readBucketCSVFast(bucketID, int64(span))
+		case "all":
+			snaps = readBucketCSVFast(bucketID, 0)
+		}
+
+		series := buildSeriesFromSnaps(snaps, width)
+		doc["series"].(map[string]interface{})[rngName] = series
+	}
+
+	if raw := h.raw[bucketID]; len(raw) > 0 {
+		last := raw[len(raw)-1]
+		reMap := map[string]interface{}{}
+		for alg, v := range last.Re {
+			reMap[alg] = v
+		}
+		doc["last"] = map[string]interface{}{
+			"collected_ts": last.Ts, "best_alg": last.BestAlg,
+			"best_i": last.BestI, "instances": last.Instances,
+			"ref_rate": last.RefRate, "min_rtt": last.MinRtt,
+			"re": reMap,
+		}
+	}
+
+	writeJSONToDisk("bucket_"+safe+".json", doc)
+}
+
+func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interface{} {
+	type bin struct {
+		ts    int64
+		snaps []bucketSnapshot
+	}
+	binMap := map[int64]*bin{}
+	for _, s := range snaps {
+		bi := s.Ts / int64(width)
+		if b, ok := binMap[bi]; ok {
+			b.snaps = append(b.snaps, s)
+		} else {
+			binMap[bi] = &bin{ts: bi*int64(width) + int64(width)/2, snaps: []bucketSnapshot{s}}
+		}
+	}
+	var binIdxs []int64
+	for bi := range binMap {
+		binIdxs = append(binIdxs, bi)
+	}
+	sort.Slice(binIdxs, func(i, j int) bool { return binIdxs[i] < binIdxs[j] })
+
+	series := map[string]interface{}{"ts": []int64{}}
+	for _, alg := range CONGS {
+		series["re_"+alg] = []interface{}{}
+		series["ss_"+alg] = []interface{}{}
+		series["bs_"+alg] = []interface{}{}
+		series["ns_"+alg] = []interface{}{}
+		series["mv_"+alg] = []interface{}{}
+	}
+	tsArr := make([]int64, 0, len(binIdxs))
+	reArrs := map[string][]interface{}{}
+	for _, alg := range CONGS {
+		reArrs["re_"+alg] = []interface{}{}
+	}
+	for _, bi := range binIdxs {
+		b := binMap[bi]
+		tsArr = append(tsArr, b.ts)
+		avg := aggregateSnapshots(b.snaps)
+		for _, alg := range CONGS {
+			reArrs["re_"+alg] = append(reArrs["re_"+alg], avg.Re[alg])
+		}
+	}
+	series["ts"] = tsArr
+	for k, v := range reArrs {
+		series[k] = v
+	}
+	return series
+}
+
+func writeJSONToDisk(name string, doc interface{}) {
+	data, _ := json.Marshal(doc)
+	path := filepath.Join(histDir, "data", name)
+	os.MkdirAll(filepath.Join(histDir, "data"), 0755)
+	tmp := path + ".tmp"
+	os.WriteFile(tmp, data, 0644)
+	os.Rename(tmp, path)
+}
