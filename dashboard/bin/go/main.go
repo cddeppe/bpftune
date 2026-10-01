@@ -963,7 +963,8 @@ func main() {
 	collector := NewCollector()
 
 	// Initial collection
-	collector.collect()
+	// v0.5.7: async initial collect — HTTP server starts immediately
+	go collector.collect()
 
 	// Start collection loop (every 30s)
 	go func() {

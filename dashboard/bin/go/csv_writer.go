@@ -428,7 +428,92 @@ func loadCSVTailIntoRingBuffer() {
 var (
 	csvReadCache   = map[string]cachedCSVRead{}
 	csvReadCacheMu sync.Mutex
+	// v0.5.7: global CSV cache — read entire file ONCE, serve all bucket lookups
+	csvFullCache   map[string][]bucketSnapshot
+	csvFullCacheAt time.Time
+	csvFullCacheMu sync.Mutex
 )
+
+func readCSVAll() map[string][]bucketSnapshot {
+	csvFullCacheMu.Lock()
+	defer csvFullCacheMu.Unlock()
+	if csvFullCache != nil && time.Since(csvFullCacheAt) < 5*time.Minute {
+		return csvFullCache
+	}
+	data, err := os.ReadFile(bucketsCSVPath)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) < 2 {
+		return nil
+	}
+	header := strings.Split(lines[0], ",")
+	colIdx := map[string]int{}
+	for i, col := range header {
+		colIdx[col] = i
+	}
+	result := map[string][]bucketSnapshot{}
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		cols := strings.Split(line, ",")
+		if len(cols) < 9 {
+			continue
+		}
+		addr := labelFor(cols[1])
+		ts, err := strconv.ParseInt(cols[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		snap := bucketSnapshot{
+			Ts: ts, Re: map[string]float64{}, Ss: map[string]int{},
+			Bs: map[string]int{}, Ns: map[string]int{}, Mv: map[string]float64{},
+		}
+		snap.Instances, _ = strconv.Atoi(cols[2])
+		snap.MinRtt, _ = strconv.ParseFloat(cols[3], 64)
+		snap.RefRate, _ = strconv.ParseFloat(cols[4], 64)
+		snap.BestI, _ = strconv.Atoi(cols[5])
+		if snap.BestI >= 0 && snap.BestI < len(CONGS) {
+			snap.BestAlg = CONGS[snap.BestI]
+		}
+		for _, alg := range CONGS {
+			if idx, ok := colIdx["re_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
+				snap.Re[alg], _ = strconv.ParseFloat(cols[idx], 64)
+			}
+			if idx, ok := colIdx["ss_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
+				v, _ := strconv.Atoi(cols[idx])
+				snap.Ss[alg] = v
+			}
+		}
+		result[addr] = append(result[addr], snap)
+	}
+	csvFullCache = result
+	csvFullCacheAt = time.Now()
+	return result
+}
+
+// readBucketCSV now reads from the global cache (instant after first load)
+func readBucketCSVFast(bucketID string, span int64) []bucketSnapshot {
+	all := readCSVAll()
+	if all == nil {
+		return nil
+	}
+	snaps := all[bucketID]
+	if span > 0 {
+		cutoff := time.Now().Unix() - span
+		var filtered []bucketSnapshot
+		for _, s := range snaps {
+			if s.Ts >= cutoff {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered
+	}
+	return snaps
+}
 
 type cachedCSVRead struct {
 	data   []bucketSnapshot
