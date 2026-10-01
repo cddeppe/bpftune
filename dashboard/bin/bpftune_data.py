@@ -15,36 +15,76 @@ import bpftune_log  # for vars() re-export below
 globals().update({k: v for k, v in vars(bpftune_log).items() if not k.startswith("__")})
 
 def data_build(logpath) -> BuildInfo:
-    v = sh("dpkg-query -W -f='${Version}' bpftune").strip() or "?"
-    a = sh("systemctl is-active bpftune").strip() or "?"
-    dash_v = sh("cd /root/bpftune && git rev-parse --short HEAD 2>/dev/null").strip() or "?"
-    ts = sh("systemctl show bpftune -p ActiveEnterTimestamp --value").strip()
-    uptime_min = None
-    started = ""
-    m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", ts)
-    if m:
-        started = m.group(1)[11:19]
-        try:
-            t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
-            uptime_min = int((datetime.now() - t).total_seconds() // 60)
-        except Exception:
-            pass
-    return {
-        "version":      v,
-        "dash_version": dash_v,
-        "service":      a,
-        "uptime_min":  uptime_min,
-        "started_utc": started,
-        "log_path":    str(logpath) if logpath else None,
-    }
+    # 0.4.125: cache the full BuildInfo for 5 min.  Cache key includes
+    # mtimes of /var/lib/dpkg/status, .git/HEAD, and the systemd unit
+    # so any of those changing invalidates the cache immediately.
+    import os as _os
 
+    def _cache_key():
+        try: dpkg_mtime = int(_os.path.getmtime("/var/lib/dpkg/status"))
+        except OSError: dpkg_mtime = 0
+        git_head_mtime = 0
+        for cand in ("/root/bpftune/.git/HEAD", "/opt/bpftune/.git/HEAD",
+                     "/usr/src/bpftune/.git/HEAD"):
+            try:
+                git_head_mtime = int(_os.path.getmtime(cand))
+                break
+            except OSError:
+                continue
+        try: svc_mtime = int(_os.path.getmtime("/etc/systemd/system/bpftune.service"))
+        except OSError:
+            try: svc_mtime = int(_os.path.getmtime("/lib/systemd/system/bpftune.service"))
+            except OSError: svc_mtime = 0
+        return "build:%d:%d:%d" % (dpkg_mtime, git_head_mtime, svc_mtime)
 
+    def _compute():
+        v = sh("dpkg-query -W -f=${Version} bpftune").strip() or "?"
+        a = sh("systemctl is-active bpftune").strip() or "?"
+        dash_v = "?"
+        for repo in ("/root/bpftune", "/opt/bpftune", "/usr/src/bpftune"):
+            try:
+                dv = sh("cd %s && git rev-parse --short HEAD 2>/dev/null" % repo).strip()
+                if dv:
+                    dash_v = dv
+                    break
+            except Exception:
+                continue
+        ts = sh("systemctl show bpftune -p ActiveEnterTimestamp --value").strip()
+        uptime_min = None
+        started = ""
+        m = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", ts)
+        if m:
+            started = m.group(1)[11:19]
+            try:
+                t = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+                uptime_min = int((datetime.now() - t).total_seconds() // 60)
+            except Exception:
+                pass
+        return {
+            "version":      v,
+            "dash_version": dash_v,
+            "service":      a,
+            "uptime_min":   uptime_min,
+            "started_utc":  started,
+            "log_path":     str(logpath) if logpath else None,
+        }
 
+    return cached(_cache_key(), 300, _compute)
 def data_system() -> SystemInfo:
+    # 0.4.125: read /proc/sys/* directly instead of spawning uname/sysctl.
+    def _read_proc_sys(name):
+        path = "/proc/sys/" + name.replace(".", "/")
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except (OSError, IOError):
+            return ""
+
+    kernel = cached("system_kernel", 300, lambda: _read_proc_sys("kernel.osrelease"))
+    default_cc = _read_proc_sys("net.ipv4.tcp_congestion_control")
     out = {
-        "kernel":     sh_noshell(["uname", "-r"]).strip(),
-        "default_cc": sh_noshell(["sysctl", "-n",
-                                  "net.ipv4.tcp_congestion_control"]).strip(),
+        "kernel":     kernel,
+        "default_cc": default_cc,
     }
     try:
         out["cpu_count"] = os.cpu_count()
@@ -95,27 +135,42 @@ def data_system() -> SystemInfo:
     except Exception:
         pass
     return out
-
-
-
-
-
 def data_tunables() -> List[TunableGroup]:
-    j = sh_noshell(["journalctl", "-u", "bpftune",
-                                        "--no-pager", "-q",
-                                        "--grep", "sysctl 'net\\."])
-    names = sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
-    # Add known tunables that might not be in the journal
-    for kt in KNOWN_TUNABLES:
-        if kt not in names:
-            names.append(kt)
-    names = sorted(names)
+    """Phase 1 (0.4.125): cached + no-subprocess version."""
+    INTERESTING = [
+        "net.core.netdev_budget",
+        "net.core.netdev_budget_usecs",
+        "net.core.rmem_default",
+        "net.core.rmem_max",
+        "net.core.wmem_default",
+        "net.core.wmem_max",
+        "net.ipv4.tcp_rmem",
+        "net.ipv4.tcp_wmem",
+        "net.ipv4.tcp_congestion_control",
+        "net.ipv4.tcp_mtu_probing",
+        "net.ipv4.tcp_slow_start_after_idle",
+        "net.ipv4.tcp_no_metrics_save",
+        "net.ipv4.tcp_window_scaling",
+        "net.ipv4.tcp_timestamps",
+        "net.ipv4.tcp_sack",
+    ]
+    extra_names = cached("tunables_journal_scan", 3600,
+                         lambda: _scan_journal_for_tunables())
+    all_names = sorted(set(INTERESTING) | set(extra_names) | set(KNOWN_TUNABLES))
+
+    def _read_proc_sys(name):
+        path = "/proc/sys/" + name.replace(".", "/")
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except (OSError, IOError):
+            return None
+
     items = []
-    for n in names:
-        # Suppress tcp_allowed_congestion_control (always shows "15 algorithms")
+    for n in all_names:
         if "allowed_congestion_control" in n:
             continue
-        v = sh_noshell(["sysctl", "-n", n]).strip()
+        v = _read_proc_sys(n)
         if not v:
             continue
         short = n[4:]
@@ -138,7 +193,14 @@ def data_tunables() -> List[TunableGroup]:
     return [{"group": g, "items": groups[g]} for g in order]
 
 
-
+def _scan_journal_for_tunables():
+    """Phase 1: slow journal scan, but only runs once an hour (cached)."""
+    try:
+        j = sh_noshell(["journalctl", "-u", "bpftune", "--no-pager",
+                        "-q", "--grep", r"sysctl 'net\."])
+        return sorted(set(re.findall(r"sysctl '(net\.[A-Za-z0-9_.]+)'", j)))
+    except Exception:
+        return []
 def data_buckets(hosts, n=8) -> List[BucketRow]:
     if not hosts:
         return []

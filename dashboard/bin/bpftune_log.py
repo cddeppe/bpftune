@@ -521,6 +521,28 @@ def sh_noshell(args, timeout=12):
         return ""
 
 
+# ---- TTL cache for daemon-mode use (Phase 1 efficiency patch) ----
+_CACHE = {}
+def cached(key, ttl, fn):
+    """Return fn() result, cached for `ttl` seconds under `key`."""
+    now = time.time()
+    entry = _CACHE.get(key)
+    if entry and (now - entry[0]) < ttl:
+        return entry[1]
+    val = fn()
+    _CACHE[key] = (now, val)
+    return val
+
+def cache_invalidate(prefix=None):
+    """Drop cache entries whose key starts with `prefix` (or all if None)."""
+    if prefix is None:
+        _CACHE.clear()
+    else:
+        for k in list(_CACHE.keys()):
+            if k.startswith(prefix):
+                del _CACHE[k]
+
+
 
 def median(xs):
     if not xs:
