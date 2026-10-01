@@ -971,8 +971,8 @@ func main() {
 	collector := NewCollector()
 
 	// Initial collection
-	// v0.5.7: async initial collect — HTTP server starts immediately
-	go collector.collect()
+	// v0.5.9: synchronous first collect — current.json populated before HTTP starts
+	collector.collect()
 
 	// Start collection loop (every 30s)
 	go func() {
