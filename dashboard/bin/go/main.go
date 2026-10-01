@@ -578,6 +578,14 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		// v0.5.8: serve static files first (pre-built by renderToDisk every 5 min)
+		// This makes the dashboard FAST — no dynamic building on every request
+		staticPath := filepath.Join(histDir, "data", sub)
+		if fi, err := os.Stat(staticPath); err == nil && time.Since(fi.ModTime()) < 10*time.Minute {
+			c.serveStatic(w, r, staticPath, "")
+			return
+		}
+		// Fall back to dynamic (only if static file is stale or missing)
 		// Dynamic files (served from ring buffer)
 		if strings.HasPrefix(sub, "bucket_") && strings.HasSuffix(sub, ".json") {
 			bucketID := strings.TrimSuffix(strings.TrimPrefix(sub, "bucket_"), ".json")
