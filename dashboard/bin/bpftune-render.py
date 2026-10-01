@@ -305,7 +305,7 @@ def aggregate_all_sqlite(algs, now):
         for ri, (rng, (span, width)) in enumerate(zip(rkeys, rspecs)):
             lo = int(now - span) if span is not None else 0
             where = f"WHERE collected_ts > {int(now-span)}" if span else ""
-            bin_expr = f"({lo} + ((collected_ts - {lo}) / {int(width)}) * {int(width)} + {int(width//2)})"
+            bin_expr = f"({lo} + ((CAST(collected_ts AS INTEGER) - {lo}) / {int(width)}) * {int(width)} + {int(width//2)})"
             sql = f"SELECT addr, {bin_expr} AS bin_ts, {agg_cols_sql}, COUNT(*) AS _n FROM buckets {where} GROUP BY addr, bin_ts ORDER BY addr, bin_ts"
             label_bins = {}
             for row in conn.execute(sql):
