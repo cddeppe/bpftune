@@ -518,13 +518,19 @@ class LabelsHandler(BaseHTTPRequestHandler):
             if not label:
                 for ip in ips:
                     labels.pop(ip, None)
+                    _remove_ip_from_aliases(ip)
+                    bpf_aliases_delete(ip)
+                save_labels(labels)
+                self._send_json(200, {"ok": True, "labels": labels,
+                                      "groups": build_groups_from_aliases()})
             else:
                 for ip in ips:
                     labels[ip] = label
-            save_labels(labels)
-            fold_results = auto_fold()
-            self._send_json(200, {"ok": True, "labels": labels,
-                                  "fold_results": fold_results})
+                save_labels(labels)
+                fold_results = auto_fold()
+                self._send_json(200, {"ok": True, "labels": labels,
+                                      "groups": build_groups_from_aliases(),
+                                      "fold_results": fold_results})
             return
         ip = req.get("ip", "").strip()
         label = req.get("label", "").strip()
@@ -535,13 +541,16 @@ class LabelsHandler(BaseHTTPRequestHandler):
             labels.pop(ip, None)
             _remove_ip_from_aliases(ip)
             bpf_aliases_delete(ip)
+            save_labels(labels)
+            self._send_json(200, {"ok": True, "ip": ip, "label": label,
+                                  "labels": labels, "groups": build_groups_from_aliases()})
         else:
             labels[ip] = label
-        save_labels(labels)
-        fold_results = auto_fold()
-        self._send_json(200, {"ok": True, "ip": ip, "label": label,
-                              "labels": labels, "groups": build_groups_from_aliases(),
-                              "fold_results": fold_results})
+            save_labels(labels)
+            fold_results = auto_fold()
+            self._send_json(200, {"ok": True, "ip": ip, "label": label,
+                                  "labels": labels, "groups": build_groups_from_aliases(),
+                                  "fold_results": fold_results})
 
     def do_DELETE(self):
         parsed = urlparse(self.path)

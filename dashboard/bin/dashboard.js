@@ -1970,9 +1970,19 @@ function _populateBucketSelect(desiredBucket) {
   }
 
   function _le_save_all() {
+    var btn = document.getElementById('le-save-btn');
+    if (btn) { btn.textContent = 'Saving...'; btn.style.opacity = '0.6'; }
+    var count = 0;
     document.querySelectorAll('.label-edit-input').forEach(function(input) {
-      input.blur();
+      if (input.value.trim() !== input.getAttribute('data-old-label')) {
+        input.blur(); count++;
+      }
     });
+    if (btn) setTimeout(function() {
+      btn.textContent = count > 0 ? 'Saved ' + count : 'No changes';
+      btn.style.opacity = '1';
+      setTimeout(function() { btn.textContent = 'Save'; }, 1500);
+    }, 500);
   }
   function saveLabel(ip, label) {
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
