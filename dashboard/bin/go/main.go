@@ -412,15 +412,20 @@ func (c *Collector) collect() {
 	doc := map[string]interface{}{
 		"generated_ts": now,
 		"build": map[string]interface{}{
-			"version":      "go-collector",
-			"dash_version": "go-0.4",
-			"service":      "active",
-			"uptime_min":   int(time.Since(c.startedAt).Minutes()),
-			"started_utc":  c.startedAt.UTC().Format(time.RFC3339),
+			// v0.4.3: mirror Python data_build exactly.
+			//   version      = bpftune package version (from dpkg-query)
+			//   dash_version = git HEAD short SHA (dashboard commit)
+			//   service      = systemctl is-active bpftune
+			//   uptime_min   = minutes since bpftune service started
+			//   started_utc  = "HH:MM:SS" UTC of bpftune service start
+			"version":      bpftuneVersion(),
+			"dash_version": dashVersion(),
+			"service":      bpftuneServiceActive(),
+			"uptime_min":   uptimeMin(),
+			"started_utc":  startedUTC(),
 			"log_path":     "/var/log/bpftune-met-live.log",
 			// v0.4.2: surface prefix4/prefix6/explore_pct so the
-			// dashboard can display "Prefix4: 16, Prefix6: 32,
-			// Exploration: 100%" in the build/service panel.
+			// dashboard can display them in the build/service panel.
 			"prefix4":     prefix4Value(),
 			"prefix6":     prefix6Value(),
 			"explore_pct": explorePctValue(),
