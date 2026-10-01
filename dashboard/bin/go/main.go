@@ -458,10 +458,12 @@ func (c *Collector) collect() {
 
 	// v0.5: add missing data panels (churn, rate, divergence, tunables)
 	// These were previously only in the Python collector.
+	// v0.5.12: parse log ONCE, pass results to all functions (was 4x parses)
 	logText := readLogTail(logTailBytes)
-	doc["churn"] = buildChurn(logText)
+	allSwaps, allMet, allSrate := parseSwapsMetsSrates(logText)
+	doc["churn"] = buildChurnFromParsed(allSwaps)
 	doc["rate"] = buildRate(logText)
-	doc["divergence"] = buildDivergence(logText)
+	doc["divergence"] = buildDivergenceFromParsed(allSwaps, allMet, allSrate)
 	doc["tunables"] = buildTunables()
 
 	// v0.5: capture snapshots for the in-memory ring buffer
@@ -473,8 +475,8 @@ func (c *Collector) collect() {
 	// swaps.csv: one row per NEW swap event (deduplicated)
 	// srate.csv: one row per NEW srate event (deduplicated)
 	writeBucketsCSV(hosts, now)
-	rawSwaps, _, _ := parseSwapsMetsSrates(logText)
-	writeSwapsCSV(rawSwaps, now)
+	// v0.5.12: reuse already-parsed swaps (no re-parse)
+	writeSwapsCSV(allSwaps, now)
 	writeSrateCSV(logText, now)
 
 	// Update current state + compute key hashes

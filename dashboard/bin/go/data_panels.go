@@ -392,3 +392,116 @@ func parseInt64Safe(s string) (int64, error) {
 	}
 	return n, nil
 }
+
+// v0.5.12: buildChurnFromParsed accepts pre-parsed swaps (no re-parse)
+func buildChurnFromParsed(swaps []swapRow) map[string]interface{} {
+	counts := map[int64]int{}
+	for _, sw := range swaps {
+		counts[sw.Cookie]++
+	}
+	if len(counts) == 0 {
+		return map[string]interface{}{"cookies": 0, "one": 0, "mid": 0, "many": 0, "max": 0}
+	}
+	one, mid, many := 0, 0, 0
+	maxCount := 0
+	for _, v := range counts {
+		switch {
+		case v >= 5:
+			many++
+		case v >= 2:
+			mid++
+		default:
+			one++
+		}
+		if v > maxCount {
+			maxCount = v
+		}
+	}
+	return map[string]interface{}{"cookies": len(counts), "one": one, "mid": mid, "many": many, "max": maxCount}
+}
+
+// v0.5.12: buildDivergenceFromParsed accepts pre-parsed results (no re-parse)
+func buildDivergenceFromParsed(swaps []swapRow, met map[int64][]metEntry, srate map[int64][]srateEntry) []interface{} {
+	type group struct {
+		total              int
+		win, null, loss    int
+		winS, nullS, lossS int
+		winU, nullU, lossU int
+	}
+	keys := []string{"rate==metric", "rate!=metric", "pre-0.4.45"}
+	groups := map[string]*group{}
+	for _, k := range keys {
+		groups[k] = &group{}
+	}
+	for _, sw := range swaps {
+		var key string
+		if sw.Mt == "" || sw.Rb == "" {
+			key = "pre-0.4.45"
+		} else if sw.Mt == sw.Rb {
+			key = "rate==metric"
+		} else {
+			key = "rate!=metric"
+		}
+		g := groups[key]
+		g.total++
+		switch outcomeComposite(met, sw.Cookie, sw.Ts) {
+		case "win":
+			g.win++
+		case "null":
+			g.null++
+		case "loss":
+			g.loss++
+		}
+		switch outcomeSrate(srate, sw.Cookie, sw.Ts) {
+		case "win":
+			g.winS++
+		case "null":
+			g.nullS++
+		case "loss":
+			g.lossS++
+		}
+		switch outcomeSustained(srate, sw.Cookie, sw.Ts) {
+		case "win":
+			g.winU++
+		case "null":
+			g.nullU++
+		case "loss":
+			g.lossU++
+		}
+	}
+	rows := make([]interface{}, 0, len(keys))
+	for _, k := range keys {
+		g := groups[k]
+		cmeas := g.win + g.null + g.loss
+		smeas := g.winS + g.nullS + g.lossS
+		umeas := g.winU + g.nullU + g.lossU
+		cp := func(x int) float64 {
+			if cmeas == 0 {
+				return 0
+			}
+			return round1(float64(x) * 100.0 / float64(cmeas))
+		}
+		sp := func(x int) float64 {
+			if smeas == 0 {
+				return 0
+			}
+			return round1(float64(x) * 100.0 / float64(smeas))
+		}
+		up := func(x int) float64 {
+			if umeas == 0 {
+				return 0
+			}
+			return round1(float64(x) * 100.0 / float64(umeas))
+		}
+		rows = append(rows, map[string]interface{}{
+			"category": k, "measured": cmeas,
+			"win_pct": cp(g.win), "null_pct": cp(g.null), "loss_pct": cp(g.loss),
+			"win": g.win, "null": g.null, "loss": g.loss, "skipped": g.total - cmeas,
+			"measured_srate": smeas, "win_pct_srate": sp(g.winS), "null_pct_srate": sp(g.nullS), "loss_pct_srate": sp(g.lossS),
+			"win_srate": g.winS, "null_srate": g.nullS, "loss_srate": g.lossS, "skipped_srate": g.total - smeas,
+			"measured_sustained": umeas, "win_pct_sustained": up(g.winU), "null_pct_sustained": up(g.nullU), "loss_pct_sustained": up(g.lossU),
+			"win_sustained": g.winU, "null_sustained": g.nullU, "loss_sustained": g.lossU, "skipped_sustained": g.total - umeas,
+		})
+	}
+	return rows
+}
