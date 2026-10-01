@@ -469,6 +469,45 @@ func (c *Collector) collect() {
 	// v0.5: capture snapshots for the in-memory ring buffer
 	// (replaces Python renderer cron + SQLite + CSV)
 	captureSnapshotsFromBPF(hosts, now)
+	// v0.5.14: rebuild bucket_live from ring buffer (full 1h time series, not 1 point)
+	// This fixes the "charts go empty every 30s" issue — SSE pushes real time-series data
+	hist.mu.RLock()
+	for _, h := range sortedHosts {
+		addr := h.Addr
+		rawSnaps := hist.raw[addr]
+		cutoff := now - 3600 // last 1h
+		var tsArr []interface{}
+		colsLive := map[string]interface{}{}
+		for _, alg := range CONGS {
+			colsLive["re_"+alg] = []interface{}{}
+			colsLive["ss_"+alg] = []interface{}{}
+			colsLive["bs_"+alg] = []interface{}{}
+			colsLive["ns_"+alg] = []interface{}{}
+		}
+		for _, s := range rawSnaps {
+			if s.Ts < cutoff {
+				continue
+			}
+			tsArr = append(tsArr, s.Ts)
+			for _, alg := range CONGS {
+				reArr, _ := colsLive["re_"+alg].([]interface{})
+				colsLive["re_"+alg] = append(reArr, s.Re[alg])
+				ssArr, _ := colsLive["ss_"+alg].([]interface{})
+				colsLive["ss_"+alg] = append(ssArr, s.Ss[alg])
+				bsArr, _ := colsLive["bs_"+alg].([]interface{})
+				colsLive["bs_"+alg] = append(bsArr, s.Bs[alg])
+				nsArr, _ := colsLive["ns_"+alg].([]interface{})
+				colsLive["ns_"+alg] = append(nsArr, s.Ns[alg])
+			}
+		}
+		if len(tsArr) > 0 {
+			bucketLive[addr] = map[string]interface{}{
+				"ts":   tsArr,
+				"cols": colsLive,
+			}
+		}
+	}
+	hist.mu.RUnlock()
 
 	// v0.5.1: write to CSV files (same format as Python collector)
 	// buckets.v2.csv: one row per bucket per cycle
