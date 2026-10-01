@@ -184,7 +184,15 @@ func (c *Collector) collect() {
 	// since metric_by_bucket is a JSON object (unordered), we just
 	// use one sort: inst desc.  This gives the buckets list and
 	// live_leaders the same order Python produces.
+	// v0.4.5: sort by n_alg desc (coverage) first, then inst desc (busiest).
+	// A bucket with n_alg=0 (no metrics) should NOT be the top bucket.
+	// The user wants the top bucket to have BOTH high coverage AND high instances.
 	sort.Slice(sortedHosts, func(i, j int) bool {
+		ni := nAlgForHost(sortedHosts[i])
+		nj := nAlgForHost(sortedHosts[j])
+		if ni != nj {
+			return ni > nj
+		}
 		return sortedHosts[i].Inst > sortedHosts[j].Inst
 	})
 
@@ -466,6 +474,20 @@ func (c *Collector) collect() {
 
 	// v0.4.4: removed per-cycle "collected N buckets, M swaps" log line
 	// (was too spammy — printed every 30s.  Startup banner + errors still log.)
+}
+
+// nAlgForHost counts metrics with metric_count > 0 (coverage).
+// Used by the v0.4.5 sort: n_alg desc first, then inst desc.
+func nAlgForHost(h hostEntry) int {
+	metrics, _ := h.V["metrics"].([]interface{})
+	n := 0
+	for _, m := range metrics {
+		if mi, ok := m.(map[string]interface{}); ok &&
+			toInt(mi["metric_count"]) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // voteSum sums metric_count across all algs for one bucket.  Used to
