@@ -7,12 +7,13 @@ current.json (every 30s).
 
 load_csv is bounded-memory: keeps the last N rows only.
 """
-import bisect, csv, io, json, math, os, time
+import bisect, csv, io, json, math, os, sqlite3, time
 from pathlib import Path
 from collections import defaultdict, deque
 
 HIST = "/var/lib/bpftune/history"
 DATA = os.path.join(HIST, "data")
+SQLITE_DB = os.path.join(HIST, "bpftune.db")
 
 _LABELS_CACHE = None
 _LABELS_MTIME = None
@@ -226,6 +227,114 @@ def write_json(name, obj):
     os.replace(tmp, path)
 
 
+
+
+def _sqlite_conn():
+    if not os.path.exists(SQLITE_DB): return None
+    try:
+        conn = sqlite3.connect(SQLITE_DB, timeout=5)
+        if conn.execute("SELECT COUNT(*) FROM buckets").fetchone()[0] == 0:
+            conn.close(); return None
+        return conn
+    except: return None
+
+def load_sqlite_table(table, max_rows=None):
+    conn = _sqlite_conn()
+    if conn is None: return [], []
+    try:
+        sql = f"SELECT * FROM {table}" + (f" ORDER BY collected_ts DESC LIMIT {max_rows}" if max_rows else "")
+        cursor = conn.execute(sql)
+        header = [d[0] for d in cursor.description]
+        rows = [dict(zip(header, row)) for row in cursor]
+        return header, rows
+    except: return [], []
+    finally: conn.close()
+
+def get_algs_from_sqlite():
+    conn = _sqlite_conn()
+    if conn is None: return []
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(buckets)").fetchall()]
+        return sorted({c[3:] for c in cols if c.startswith("re_")})
+    except: return []
+    finally: conn.close()
+
+def aggregate_all_sqlite(algs, now):
+    conn = _sqlite_conn()
+    if conn is None: return [], {}, [], {}
+    try:
+        MAX_BUCKETS = 60; MIN_BUCKET_ROWS = 5
+        counts = {}
+        for row in conn.execute("SELECT addr FROM buckets"):
+            a = _label_for(row[0] or "unknown")
+            if a.count(".") == 3 and not a.endswith(".0.0"): continue
+            counts[a] = counts.get(a, 0) + 1
+        top = [a for a in sorted(counts, key=lambda x: -counts[x]) if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
+        topset = set(top)
+        cursor = conn.execute("SELECT * FROM buckets LIMIT 1")
+        header = [d[0] for d in cursor.description]
+        cols = {c: i for i, c in enumerate(header)}
+        wanted = [(c, cols[c]) for c in EXTRA_COLS if c in cols]
+        for a in algs:
+            for pre in ("re_","ss_","bs_","ns_","mv_"):
+                c = pre + a
+                if c in cols: wanted.append((c, cols[c]))
+        # Stream + bin (same logic as aggregate_all)
+        rkeys = list(RANGES.keys()); rspecs = [RANGES[k] for k in rkeys]
+        ai = cols.get("addr"); ti = cols.get("collected_ts")
+        sums = [[None]*len(wanted) for _ in rspecs]
+        cnts = [[0]*len(wanted) for _ in rspecs]
+        ts_lists = [None]*len(rspecs); meta_stats = {}
+        for row in conn.execute("SELECT * FROM buckets ORDER BY collected_ts"):
+            a = _label_for(row[ai] or "unknown")
+            if a not in topset: continue
+            try: t = float(row[ti])
+            except: continue
+            st = meta_stats.setdefault(a, {"inst_sum":0,"inst_n":0,"last_ts":0,"co_have":set(),"co_seen":set(),"pts24":0})
+            try: inst = float(row[cols["instances"]]) if "instances" in cols and row[cols["instances"]] else 0
+            except: inst = 0
+            st["inst_sum"] += inst; st["inst_n"] += 1; st["last_ts"] = max(st["last_ts"], int(t))
+            b = int((t-(now-86400))//300) if t >= now-86400 else -1
+            if b >= 0: st["co_have"].add(b); (st["co_seen"].add(b) if inst > 0 else None)
+            st["pts24"] += 1
+            for ri,(span,width) in enumerate(rspecs):
+                if span is not None and t < now-span: continue
+                lo = now-span if span else 0
+                b2 = int((t-lo)//width)
+                if ts_lists[ri] is None: ts_lists[ri] = []
+                if not ts_lists[ri] or ts_lists[ri][-1] != int(lo+b2*width+width/2):
+                    ts_lists[ri].append(int(lo+b2*width+width/2))
+                    for ci in range(len(wanted)): sums[ri][ci] = None; cnts[ri][ci] = 0
+                idx = len(ts_lists[ri])-1
+                for ci,(cname,cidx) in enumerate(wanted):
+                    try:
+                        v = row[cidx]
+                        v = float(v) if v not in (None,"","None") else None
+                    except: v = None
+                    if v is None: continue
+                    if sums[ri][ci] is None: sums[ri][ci] = 0.0
+                    sums[ri][ci] += v; cnts[ri][ci] += 1
+        conn.close()
+        docs = []
+        for bid in top:
+            doc = {"id": bid, "series": {}}
+            for ri,(rng,(span,width)) in enumerate(zip(rkeys,rspecs)):
+                ts = ts_lists[ri] or []
+                series = {"ts": ts}
+                for ci,(cname,cidx) in enumerate(wanted):
+                    s = sums[ri][ci]; k = cnts[ri][ci]
+                    series[cname] = [(s[i]/k[i]) if k and k[i] else None for i in range(len(s) if s else 0)]
+                doc["series"][rng] = series
+            st = meta_stats.get(bid, {})
+            doc["last"] = {"collected_ts": st.get("last_ts",0), "best_alg": "", "best_i": None,
+                           "instances": st.get("inst_sum",0)/st["inst_n"] if st.get("inst_n") else 0,
+                           "ref_rate": None, "min_rtt": None, "rate_best_i": None,
+                           "rate_best_v": None, "tcp_rmem_max": None, "re": {a: None for a in algs}}
+            docs.append(doc)
+        return header, cols, docs, meta_stats
+    except Exception as e:
+        import sys; print(f"renderer: SQLite error: {e}", file=sys.stderr)
+        conn.close(); return [], {}, [], {}
 
 def aggregate_all(bfile, algs, now):
     """Single streaming pass over buckets.v2.csv.
