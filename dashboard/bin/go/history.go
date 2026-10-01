@@ -417,10 +417,21 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 	}
 	// Sort by (instances_mean, last_ts) descending
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].instancesMean != entries[j].instancesMean {
-			return entries[i].instancesMean > entries[j].instancesMean
+		// v0.5.18: sort by n_alg desc (coverage) first, matching renderMetaToDisk
+		ni := 0
+		nj := 0
+		for _, b := range buckets {
+			if b["id"] == entries[i].id || b["dest"] == entries[i].id {
+				ni, _ = b["n_alg"].(int)
+			}
+			if b["id"] == entries[j].id || b["dest"] == entries[j].id {
+				nj, _ = b["n_alg"].(int)
+			}
 		}
-		return entries[i].lastTs > entries[j].lastTs
+		if ni != nj {
+			return ni > nj
+		}
+		return entries[i].instancesMean > entries[j].instancesMean
 	})
 
 	bucketEntries := make([]interface{}, 0, len(entries))
