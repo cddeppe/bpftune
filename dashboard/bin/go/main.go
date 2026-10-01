@@ -15,8 +15,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
