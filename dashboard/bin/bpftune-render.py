@@ -264,11 +264,12 @@ def aggregate_all_sqlite(algs, now):
     if conn is None: return [], {}, [], {}
     try:
         MAX_BUCKETS = 60; MIN_BUCKET_ROWS = 5
+        # 0.4.131.3: SQL GROUP BY for counting (C-level, ~5ms vs Python ~10s)
         counts = {}
-        for row in conn.execute("SELECT addr FROM buckets"):
+        for row in conn.execute("SELECT addr, COUNT(*) FROM buckets GROUP BY addr"):
             a = _label_for(row[0] or "unknown")
             if a.count(".") == 3 and not a.endswith(".0.0"): continue
-            counts[a] = counts.get(a, 0) + 1
+            counts[a] = counts.get(a, 0) + row[1]
         top = [a for a in sorted(counts, key=lambda x: -counts[x]) if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
         topset = set(top)
         cursor = conn.execute("SELECT * FROM buckets LIMIT 1")
