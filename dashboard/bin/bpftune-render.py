@@ -989,11 +989,14 @@ def main():
 
     for doc in docs:
         bid = doc["id"]
-        if changed_addrs is not None:
-            label_addrs = label_to_addrs.get(bid, [])
-            if not any(a in changed_addrs for a in label_addrs):
-                continue
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
+        _ep = Path(DATA) / ("bucket_%s.json" % safe)
+        if _ep.exists():
+            try:
+                _ex_last = json.load(open(_ep)).get("last", {}).get("collected_ts", 0)
+                _doc_last = doc.get("last", {}).get("collected_ts", 0)
+                if _doc_last and _ex_last >= _doc_last: continue
+            except: pass
         if requested_ranges:
             existing_path = Path(DATA) / ("bucket_%s.json" % safe)
             if existing_path.exists():
