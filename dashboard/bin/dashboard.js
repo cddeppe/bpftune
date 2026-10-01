@@ -1872,6 +1872,8 @@ function _populateBucketSelect(desiredBucket) {
     }).catch(function(err) { alert('Error: ' + err); });
   }
   function closeLabelEditor() { document.getElementById('label-modal').style.display = 'none'; }
+
+  var _le_label_ips = {};
   function _le_render(labels, groups) {
     var allLabels = {};
     Object.keys(labels || {}).forEach(function(ip) {
@@ -1893,9 +1895,10 @@ function _populateBucketSelect(desiredBucket) {
     var html = '';
     Object.keys(allLabels).sort().forEach(function(label) {
       var g = allLabels[label];
+      _le_label_ips[label] = g.ips;
       var count = g.ips.length;
       var ipText = count > 1 ? (count + ' IPs') : g.ips[0];
-      html += '<tr><td><input type="text" value="' + _le_esc(label) + '" data-old-label="' + _le_esc(label) + '" class="label-edit-input" data-ips=' + JSON.stringify(g.ips).replace(/"/g,'&quot;') + ' style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
+      html += '<tr><td><input type="text" value="' + _le_esc(label) + '" data-old-label="' + _le_esc(label) + '" class="label-edit-input" data-ips=' + encodeURIComponent(JSON.stringify(g.ips)) + ' style="font-size:11px;border:1px solid var(--muted);padding:2px 6px;border-radius:3px;width:100%;box-sizing:border-box"></td>' +
         '<td><span style="color:var(--muted)">' + _le_esc(ipText) + '</span>' +
         (count > 1 ? ' <button id="le-btn-' + _le_esc(label) + '" onclick="_le_toggle(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:0 4px;cursor:pointer">show</button>' : '') +
         '</td><td><button onclick="_le_del_group(\'' + _le_esc(label) + '\')" style="font-size:10px;padding:2px 6px;border:1px solid var(--bad);border-radius:3px;cursor:pointer;color:var(--bad)">Delete</button></td></tr>';
@@ -1956,9 +1959,13 @@ function _populateBucketSelect(desiredBucket) {
 
   function _le_del_group(label) {
     if (!confirm('Delete entire group "' + label + '" and all its IPs?')) return;
-    var input = document.querySelector('input[data-old-label="' + label + '"]');
-    if (!input) return;
-    var ips = JSON.parse(input.getAttribute('data-ips') || '[]');
+    var ips = _le_label_ips[label] || [];
+    if (!ips.length) {
+      var input = document.querySelector('input[data-old-label="' + label + '"]');
+      if (input) {
+        try { ips = JSON.parse(decodeURIComponent(input.getAttribute('data-ips') || '[]')); } catch(e) { ips = []; }
+      }
+    }
     if (!ips.length) return;
     fetch('/api/labels', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ips: ips, label: ''})})
