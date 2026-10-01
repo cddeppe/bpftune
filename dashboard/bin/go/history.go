@@ -918,20 +918,28 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 		series["mv_"+alg] = []interface{}{}
 	}
 	tsArr := make([]int64, 0, len(binIdxs))
-	reArrs := map[string][]interface{}{}
+	arrs := map[string][]interface{}{}
 	for _, alg := range CONGS {
-		reArrs["re_"+alg] = []interface{}{}
+		arrs["re_"+alg] = []interface{}{}
+		arrs["ss_"+alg] = []interface{}{}
+		arrs["bs_"+alg] = []interface{}{}
+		arrs["ns_"+alg] = []interface{}{}
+		arrs["mv_"+alg] = []interface{}{}
 	}
 	for _, bi := range binIdxs {
 		b := binMap[bi]
 		tsArr = append(tsArr, b.ts)
 		avg := aggregateSnapshots(b.snaps)
 		for _, alg := range CONGS {
-			reArrs["re_"+alg] = append(reArrs["re_"+alg], avg.Re[alg])
+			arrs["re_"+alg] = append(arrs["re_"+alg], avg.Re[alg])
+			arrs["ss_"+alg] = append(arrs["ss_"+alg], avg.Ss[alg])
+			arrs["bs_"+alg] = append(arrs["bs_"+alg], avg.Bs[alg])
+			arrs["ns_"+alg] = append(arrs["ns_"+alg], avg.Ns[alg])
+			arrs["mv_"+alg] = append(arrs["mv_"+alg], avg.Mv[alg])
 		}
 	}
 	series["ts"] = tsArr
-	for k, v := range reArrs {
+	for k, v := range arrs {
 		series[k] = v
 	}
 	return series
