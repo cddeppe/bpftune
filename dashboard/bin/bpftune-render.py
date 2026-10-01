@@ -259,7 +259,7 @@ def get_algs_from_sqlite():
     except: return []
     finally: conn.close()
 
-def aggregate_all_sqlite(algs, now):
+def aggregate_all_sqlite(algs, now, requested_ranges=None):
     """SQL GROUP BY + AVG approach. 100x faster than Python binning."""
     conn = _sqlite_conn()
     if conn is None:
@@ -308,44 +308,39 @@ def aggregate_all_sqlite(algs, now):
         lo_24h = now_int - 86400
         lo_7d = now_int - 604800
         w_1h, w_24h, w_7d, w_all = 60, 300, 3600, 21600
-
-        # Build the AVG column list once
         agg_cols = ", ".join(f"AVG({c}) AS {c}" for c in wanted_names)
         col_list = ", ".join(wanted_names)
-
-        # Single CTE: scan table once, compute all 4 bins per row
+        range_configs = {
+            "1h":  ("bin_1h",  lo_1h,  w_1h,  f"collected_ts > {lo_1h}"),
+            "24h": ("bin_24h", lo_24h, w_24h, f"collected_ts > {lo_24h}"),
+            "7d":  ("bin_7d",  lo_7d,  w_7d,  f"collected_ts > {lo_7d}"),
+            "all": ("bin_all", lo_7d,  w_all, None),
+        }
+        compute_ranges = requested_ranges if requested_ranges else list(range_configs.keys())
+        bin_cols = []
+        for rng in compute_ranges:
+            col_name, lo, width, where = range_configs[rng]
+            if where:
+                bin_cols.append(f"CASE WHEN {where} THEN {lo} + (CAST(collected_ts AS INTEGER) - {lo}) / {int(width)} * {int(width)} + {int(width // 2)} ELSE NULL END AS {col_name}")
+            else:
+                bin_cols.append(f"{lo} + (CAST(collected_ts AS INTEGER) - {lo}) / {int(width)} * {int(width)} + {int(width // 2)} AS {col_name}")
+        bin_cols_sql = ", ".join(bin_cols)
+        union_branches = []
+        for rng in compute_ranges:
+            col_name, lo, width, where = range_configs[rng]
+            if where:
+                union_branches.append(f"SELECT addr, '{rng}' AS rng, {col_name} AS bin_ts, {agg_cols}, COUNT(*) AS _n FROM binned WHERE {col_name} IS NOT NULL GROUP BY addr, {col_name}")
+            else:
+                union_branches.append(f"SELECT addr, '{rng}' AS rng, {col_name} AS bin_ts, {agg_cols}, COUNT(*) AS _n FROM binned GROUP BY addr, {col_name}")
+        union_sql = " UNION ALL ".join(union_branches)
         cte_sql = f"""
         WITH binned AS (
-            SELECT
-                addr,
-                CASE WHEN collected_ts > {lo_1h}
-                     THEN {lo_1h} + (CAST(collected_ts AS INTEGER) - {lo_1h}) / {w_1h} * {w_1h} + {w_1h // 2}
-                     ELSE NULL END AS bin_1h,
-                CASE WHEN collected_ts > {lo_24h}
-                     THEN {lo_24h} + (CAST(collected_ts AS INTEGER) - {lo_24h}) / {w_24h} * {w_24h} + {w_24h // 2}
-                     ELSE NULL END AS bin_24h,
-                CASE WHEN collected_ts > {lo_7d}
-                     THEN {lo_7d} + (CAST(collected_ts AS INTEGER) - {lo_7d}) / {w_7d} * {w_7d} + {w_7d // 2}
-                     ELSE NULL END AS bin_7d,
-                {lo_7d} + (CAST(collected_ts AS INTEGER) - {lo_7d}) / {w_all} * {w_all} + {w_all // 2} AS bin_all,
-                {col_list}
+            SELECT addr, {bin_cols_sql}, {col_list}
             FROM buckets
         )
-        SELECT addr, '1h' AS rng, bin_1h AS bin_ts, {agg_cols}, COUNT(*) AS _n
-            FROM binned WHERE bin_1h IS NOT NULL GROUP BY addr, bin_1h
-        UNION ALL
-        SELECT addr, '24h' AS rng, bin_24h AS bin_ts, {agg_cols}, COUNT(*) AS _n
-            FROM binned WHERE bin_24h IS NOT NULL GROUP BY addr, bin_24h
-        UNION ALL
-        SELECT addr, '7d' AS rng, bin_7d AS bin_ts, {agg_cols}, COUNT(*) AS _n
-            FROM binned WHERE bin_7d IS NOT NULL GROUP BY addr, bin_7d
-        UNION ALL
-        SELECT addr, 'all' AS rng, bin_all AS bin_ts, {agg_cols}, COUNT(*) AS _n
-            FROM binned GROUP BY addr, bin_all
+        {union_sql}
         ORDER BY rng, addr, bin_ts
         """
-
-        range_data = [None] * len(rkeys)
         rng_map = {rkeys[i]: i for i in range(len(rkeys))}
         for row in conn.execute(cte_sql):
             addr = row[0]
@@ -881,6 +876,12 @@ with open(_SOURCE_INDEX) as _f:
 
 
 def main():
+    requested_ranges = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--ranges" and i + 1 < len(sys.argv):
+            requested_ranges = sys.argv[i + 1].split(",")
+    if requested_ranges:
+        print(f"renderer: computing ranges {requested_ranges}")
     try:
         os.nice(19)
     except (OSError, AttributeError):
@@ -900,7 +901,7 @@ def main():
     if use_sqlite:
         _, swaps = load_sqlite_table("swaps", MAX_ROWS_SWAPS)
         _, srate = load_sqlite_table("srate", MAX_ROWS_SRATE)
-        header, cols, docs, meta_stats = aggregate_all_sqlite(algs, now)
+        header, cols, docs, meta_stats = aggregate_all_sqlite(algs, now, requested_ranges)
     else:
         bfile = buckets_source()
         if not bfile:
@@ -938,6 +939,19 @@ def main():
     for doc in docs:
         bid = doc["id"]
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
+        if requested_ranges:
+            existing_path = Path(DATA) / ("bucket_%s.json" % safe)
+            if existing_path.exists():
+                try:
+                    existing = json.load(open(existing_path))
+                    for rng in requested_ranges:
+                        if rng in doc.get("series", {}):
+                            existing.setdefault("series", {})[rng] = doc["series"][rng]
+                    if "last" in doc:
+                        existing["last"] = doc["last"]
+                    doc = existing
+                except (json.JSONDecodeError, OSError):
+                    pass
         write_json("bucket_%s.json" % safe, doc)
 
     def _safe(b):
