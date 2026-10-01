@@ -234,10 +234,17 @@ def install_logrotate():
 
 
 def install_cron():
+    # 0.4.128: collector cron DISABLED — the bpftune-collector.service
+    # daemon handles all collection (full every 5min via main() loop +
+    # lightweight every 30s via _lightweight_loop). The per-minute
+    # one-shot cron was redundant and fought with the daemon over
+    # current.json writes. Keep the renderer cron — the daemon doesn't
+    # render data/*.json.
     body = (
         "# managed by bpftune-dashboard/install.py\n"
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
         "SHELL=/bin/sh\n"
+        "# DISABLED 0.4.128: daemon handles this now — "
         "* * * * * root %s >> %s 2>&1\n"
         "2-59/5 * * * * root %s >> %s 2>&1\n"
         % (COLLECTOR, COLLECTOR_LOG, RENDERER, COLLECTOR_LOG)
