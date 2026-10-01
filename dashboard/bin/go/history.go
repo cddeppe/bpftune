@@ -650,32 +650,18 @@ func captureSnapshotsFromBPF(hosts []hostEntry, now int64) {
 // bucketsAsMaps converts the buckets list (from collect()) to []map[string]interface{}
 // for the HTTP handlers that need it.
 func bucketsAsMaps(buckets interface{}) []map[string]interface{} {
-	arr, ok := buckets.([]interface{})
-	if !ok {
-		// Try the typed slice
-		if bs, ok := buckets.([]struct {
-			Dest    string  `json:"dest"`
-			Inst    int     `json:"inst"`
-			RttUs   float64 `json:"rtt_us"`
-			RefMbps float64 `json:"ref_mbps"`
-			BestAlg string  `json:"best_alg"`
-			NAlg    int     `json:"n_alg"`
-		}); ok {
-			out := make([]map[string]interface{}, len(bs))
-			for i, b := range bs {
-				out[i] = map[string]interface{}{
-					"dest": b.Dest, "inst": b.Inst, "n_alg": b.NAlg,
-				}
-			}
-			return out
-		}
+	if buckets == nil {
 		return nil
 	}
-	out := make([]map[string]interface{}, len(arr))
-	for i, v := range arr {
-		if m, ok := v.(map[string]interface{}); ok {
-			out[i] = m
-		}
+	// Use JSON round-trip — works regardless of the input type
+	// (handles both typed struct slices and []interface{})
+	data, err := json.Marshal(buckets)
+	if err != nil {
+		return nil
+	}
+	var out []map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
 	}
 	return out
 }
