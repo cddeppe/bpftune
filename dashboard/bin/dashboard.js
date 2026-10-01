@@ -757,9 +757,24 @@
     var fc = f.coverage_24h || [];
     var cov = {};
     for (var ci = 0; ci < fb.length; ci++) cov[fb[ci]] = fc[ci];
+    var bs = $('bucket');
+    var inDropdown = {};
+    if (bs && bs.options) {
+      for (var di = 0; di < bs.options.length; di++) {
+        inDropdown[bs.options[di].value] = true;
+      }
+    }
     for (var bi = 0; bi < state.meta.buckets.length; bi++) {
       var b = state.meta.buckets[bi];
-      if (cov[b.id] != null && cov[b.id] > 0) return {bid: b.id, label: b.label || b.id};
+      if (cov[b.id] != null && cov[b.id] > 0 && inDropdown[b.id]) {
+        return {bid: b.id, label: b.label || b.id};
+      }
+    }
+    for (var bi2 = 0; bi2 < state.meta.buckets.length; bi2++) {
+      var b2 = state.meta.buckets[bi2];
+      if (inDropdown[b2.id]) {
+        return {bid: b2.id, label: b2.label || b2.id};
+      }
     }
     var top = state.meta.buckets[0];
     return {bid: top.id, label: top.label || top.id};
