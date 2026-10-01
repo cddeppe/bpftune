@@ -546,6 +546,11 @@ dpkg-query -W -f='${Version}' bpftune                        # 0.4.83
 ```
 
 ---
+## Support
+
+If this fork saves you time and you want to support its maintenance, feel free to buy me a coffee:
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/cdeppe)
 
 ## License
 
