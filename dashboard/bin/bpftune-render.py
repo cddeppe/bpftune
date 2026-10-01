@@ -285,6 +285,12 @@ def aggregate_all_sqlite(algs, now, requested_ranges=None):
         top = [a for a in ranked if counts[a] >= MIN_BUCKET_ROWS][:MAX_BUCKETS]
         topset = set(top)
 
+        label_to_addrs = {}
+        for row in conn.execute("SELECT DISTINCT addr FROM buckets"):
+            a = _lbl(row[0])
+            if a in topset:
+                label_to_addrs.setdefault(a, []).append(row[0])
+
         # Get column info
         cursor = conn.execute("SELECT * FROM buckets LIMIT 1")
         header = [d[0] for d in cursor.description]
@@ -310,20 +316,50 @@ def aggregate_all_sqlite(algs, now, requested_ranges=None):
         w_1h, w_24h, w_7d, w_all = 60, 300, 3600, 21600
         agg_cols = ", ".join(f"AVG({c}) AS {c}" for c in wanted_names)
         col_list = ", ".join(wanted_names)
+
+        # 0.4.134: cache — only render buckets with new data
+        addr_max_ts = {}
+        for row in conn.execute("SELECT addr, MAX(collected_ts) FROM buckets GROUP BY addr"):
+            addr_max_ts[row[0]] = row[1]
+        changed_addrs = set()
+        for addr, max_ts in addr_max_ts.items():
+            a = _lbl(addr)
+            if a not in topset: continue
+            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in a)
+            ep = Path(DATA) / ("bucket_%s.json" % safe)
+            if ep.exists():
+                try:
+                    ex = json.load(open(ep))
+                    lt = ex.get("last", {}).get("collected_ts", 0)
+                    if max_ts and max_ts > lt: changed_addrs.add(addr)
+                except: changed_addrs.add(addr)
+            else: changed_addrs.add(addr)
+        skip_filter = len(changed_addrs) > len(addr_max_ts) * 0.8 or not changed_addrs
+        if skip_filter:
+            changed_addrs = None
+            print(f"renderer: full scan ({len(addr_max_ts)} addrs)")
+        else:
+            print(f"renderer: incremental ({len(changed_addrs)}/{len(addr_max_ts)} changed)")
+        if changed_addrs is not None:
+            addr_list = ",".join(f"'{a}'" for a in changed_addrs)
+            addr_filter = f" AND addr IN ({addr_list})"
+        else:
+            addr_filter = ""
         range_configs = {
-            "1h":  ("bin_1h",  lo_1h,  w_1h,  f"collected_ts > {lo_1h}"),
-            "24h": ("bin_24h", lo_24h, w_24h, f"collected_ts > {lo_24h}"),
-            "7d":  ("bin_7d",  lo_7d,  w_7d,  f"collected_ts > {lo_7d}"),
-            "all": ("bin_all", lo_7d,  w_all, None),
+            "1h":  ("bin_1h",  "bin_60",    w_1h,  f"collected_ts > {lo_1h}"),
+            "24h": ("bin_24h", "bin_300",   w_24h, f"collected_ts > {lo_24h}"),
+            "7d":  ("bin_7d",  "bin_3600",  w_7d,  f"collected_ts > {lo_7d}"),
+            "all": ("bin_all", "bin_21600", w_all, None),
         }
         compute_ranges = requested_ranges if requested_ranges else list(range_configs.keys())
         bin_cols = []
         for rng in compute_ranges:
-            col_name, lo, width, where = range_configs[rng]
+            col_name, bin_col, width, where = range_configs[rng]
+            w = int(width)
             if where:
-                bin_cols.append(f"CASE WHEN {where} THEN {lo} + (CAST(collected_ts AS INTEGER) - {lo}) / {int(width)} * {int(width)} + {int(width // 2)} ELSE NULL END AS {col_name}")
+                bin_cols.append(f"CASE WHEN {where}{addr_filter} THEN {bin_col} * {w} + {w // 2} ELSE NULL END AS {col_name}")
             else:
-                bin_cols.append(f"{lo} + (CAST(collected_ts AS INTEGER) - {lo}) / {int(width)} * {int(width)} + {int(width // 2)} AS {col_name}")
+                bin_cols.append(f"{bin_col} * {w} + {w // 2} AS {col_name}")
         bin_cols_sql = ", ".join(bin_cols)
         union_branches = []
         for rng in compute_ranges:
@@ -944,6 +980,10 @@ def main():
 
     for doc in docs:
         bid = doc["id"]
+        if changed_addrs is not None:
+            label_addrs = label_to_addrs.get(bid, [])
+            if not any(a in changed_addrs for a in label_addrs):
+                continue
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in bid)
         if requested_ranges:
             existing_path = Path(DATA) / ("bucket_%s.json" % safe)

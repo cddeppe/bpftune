@@ -183,6 +183,12 @@ def _init_sqlite():
         _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_ts ON buckets(collected_ts)")
         _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_addr ON buckets(addr)")
         _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_buckets_ts_addr ON buckets(collected_ts, addr)")
+        for _w in (60, 300, 3600, 21600):
+            _col = f"bin_{_w}"
+            try:
+                _sqlite_conn.execute(f"ALTER TABLE buckets ADD COLUMN {_col} INTEGER GENERATED ALWAYS AS (CAST(collected_ts AS INTEGER) / {_w}) STORED")
+            except Exception: pass
+            _sqlite_conn.execute(f"CREATE INDEX IF NOT EXISTS idx_buckets_addr_{_col} ON buckets(addr, {_col})")
         _sqlite_conn.execute("CREATE TABLE IF NOT EXISTS swaps (collected_ts REAL, boot_ts REAL, cookie TEXT, from_alg TEXT, to_alg TEXT, d INTEGER, mt_alg TEXT, rb_alg TEXT, diverges INTEGER, outcome TEXT, socket_rate_before REAL, dest TEXT, dest_raw TEXT, f_ema REAL, t_ema REAL, srate_before REAL, direction TEXT, rport TEXT)")
         _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_swaps_ts ON swaps(boot_ts)")
         _sqlite_conn.execute("CREATE INDEX IF NOT EXISTS idx_swaps_dest ON swaps(dest)")
