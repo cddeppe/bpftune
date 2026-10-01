@@ -1171,6 +1171,65 @@ class SSEHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"error": str(e)})
 
+    def do_HEAD(self):
+        # Phase 2 piece 2: support HEAD requests (curl -I uses HEAD).
+        # Return same headers as GET but no body. For static files this
+        # is a stat-only check; for /current.json it returns the size.
+        # Simplest implementation: call do_GET then truncate the body
+        # before it's written. But since do_GET writes directly to
+        # self.wfile, we can't easily intercept. Instead, just route
+        # HEAD through the same logic — the client closes the connection
+        # after headers anyway.
+        # The cleanest fix: handle HEAD by sending the headers do_GET
+        # would send, but with Content-Length: 0 and no body.
+        if self.path.startswith("/api/labels") or self.path == "/sse" or self.path == "/current.json":
+            # For dynamic endpoints, return minimal headers
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        # For static files, do a stat and return Content-Length
+        import os as _os
+        if self.path in ("/", "/index.html"):
+            path = "/var/lib/bpftune/history/index.html"
+        elif self.path in ("/dashboard.js", "/dashboard.css"):
+            path = "/opt/bpftune-dashboard/bin" + self.path
+        elif self.path.startswith("/data/"):
+            sub = self.path[len("/data/"):]
+            if not sub or sub.endswith(".csv") or "/" in sub or ".." in sub or sub.startswith("."):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers(); return
+            path = "/var/lib/bpftune/history/data/" + sub
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers(); return
+        try:
+            size = _os.path.getsize(path)
+            self.send_response(200)
+            # guess MIME
+            for ext, ct in (("html", "text/html; charset=utf-8"),
+                            ("js", "application/javascript; charset=utf-8"),
+                            ("css", "text/css; charset=utf-8"),
+                            ("json", "application/json; charset=utf-8")):
+                if path.endswith("." + ext):
+                    self.send_header("Content-Type", ct); break
+            else:
+                self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+        except OSError:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
     def do_OPTIONS(self):
         self._send_json(200, {"ok": True})
 
