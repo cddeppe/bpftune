@@ -375,19 +375,37 @@ def flush_csv_buffers():
 
 
 def _sqlite_write_buffered(csv_key, rows):
+    """Write buffered rows to SQLite. Filters CSV columns to only those
+    that exist in the SQLite table (prevents 'no such column' errors)."""
     if csv_key == str(BUCKETS_CSV):
-        cols = _CSV_HEADER_CACHE.get(csv_key, [])
-        if not cols: return
-        placeholders = ",".join(["?"] * len(cols))
-        _sqlite_conn.executemany(f"INSERT INTO buckets ({','.join(cols)}) VALUES ({placeholders})", rows)
+        table = "buckets"
+        csv_cols = _CSV_HEADER_CACHE.get(csv_key, [])
     elif csv_key == str(SWAPS_CSV):
-        cols = SWAP_FIELDS
-        placeholders = ",".join(["?"] * len(cols))
-        _sqlite_conn.executemany(f"INSERT INTO swaps ({','.join(cols)}) VALUES ({placeholders})", rows)
+        table = "swaps"
+        csv_cols = SWAP_FIELDS
     elif csv_key == str(SRATE_CSV):
-        cols = SRATE_FIELDS
-        placeholders = ",".join(["?"] * len(cols))
-        _sqlite_conn.executemany(f"INSERT INTO srate ({','.join(cols)}) VALUES ({placeholders})", rows)
+        table = "srate"
+        csv_cols = SRATE_FIELDS
+    else:
+        return
+    if not csv_cols or not rows:
+        return
+    try:
+        table_cols = [r[1] for r in _sqlite_conn.execute(
+            f"PRAGMA table_info({table})").fetchall()]
+    except Exception:
+        return
+    col_map = [(i, c) for i, c in enumerate(csv_cols) if c in table_cols]
+    if not col_map:
+        return
+    sqlite_cols = [c for _, c in col_map]
+    csv_indices = [i for i, _ in col_map]
+    placeholders = ",".join(["?"] * len(sqlite_cols))
+    filtered_rows = [[row[i] for i in csv_indices] for row in rows]
+    _sqlite_conn.executemany(
+        f"INSERT INTO {table} ({','.join(sqlite_cols)}) VALUES ({placeholders})",
+        filtered_rows
+    )
     _sqlite_conn.commit()
 
 
