@@ -338,7 +338,7 @@ func loadCSVTailIntoRingBuffer() {
 
 	// Read the last ~2880*10 = 28800 lines (24h at 30s, ~10 buckets per cycle)
 	// But cap at 50000 to avoid excessive memory
-	start := len(lines) - 20000
+	start := len(lines) - 30000
 	if start < 1 {
 		start = 1
 	}
