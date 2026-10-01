@@ -998,8 +998,22 @@
       _sseSource = new EventSource("/sse");
       _sseSource.onmessage = function (e) {
         try {
-          var doc = JSON.parse(e.data);
-          renderLiveState(doc);
+          var msg = JSON.parse(e.data);
+          // Phase 3: handle full vs delta messages
+          if (msg.__t === "f") {
+            window.__current_doc = msg.v;
+          } else if (msg.__t === "d") {
+            if (!window.__current_doc) window.__current_doc = {};
+            for (var k in msg.c) {
+              if (msg.c.hasOwnProperty(k)) window.__current_doc[k] = msg.c[k];
+            }
+            for (var i = 0; i < (msg.r || []).length; i++) {
+              delete window.__current_doc[msg.r[i]];
+            }
+          } else {
+            window.__current_doc = msg;
+          }
+          renderLiveState(window.__current_doc);
           refreshNowCardAndChart();
         } catch (err) {
           console.error("SSE parse error:", err);

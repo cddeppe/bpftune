@@ -61,6 +61,7 @@ from pathlib import Path
 # The collection loop writes to it (under _result_lock) after each cycle.
 # The SSE server reads it to push updates to connected browsers.
 _last_result = None
+_last_result_hashes = {}
 _last_full_result = None  # last 5-min full collect_all() result (for merging)
 _result_lock = threading.Lock()
 
@@ -951,11 +952,26 @@ def main():
     doc = run_cli_snapshot(map_raw)
     if doc:
         with _result_lock:
-            global _last_result, _last_full_result
+            global _last_result, _last_full_result, _last_result_hashes
             _last_result = doc
-            _last_full_result = doc  # save for lightweight merge
+            _last_full_result = doc
+            _last_result_hashes = _compute_key_hashes(doc)
     print("collector: buckets=%d swaps=%d cli=%s ts=%d"
           % (nb, ns, "ok" if doc else "fail", ts_epoch))
+
+
+def _compute_key_hashes(doc):
+    """Phase 3: compute md5 of each top-level key JSON for SSE delta."""
+    if not doc:
+        return {}
+    hashes = {}
+    for k, v in doc.items():
+        try:
+            h = hashlib.md5(json.dumps(v, separators=(",", ":")).encode()).hexdigest()
+        except Exception:
+            h = ""
+        hashes[k] = h
+    return hashes
 
 
 class SSEHandler(BaseHTTPRequestHandler):
@@ -989,34 +1005,43 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            # Send current data immediately
+            # Phase 3: send full payload on connect, then deltas
             with _result_lock:
                 data = _last_result
-            last_hash = ""
+                key_hashes = dict(_last_result_hashes)
+            last_pushed_hashes = {}
             if data:
-                payload = json.dumps(data, separators=(",", ":"))
-                last_hash = hashlib.md5(payload.encode()).hexdigest()
+                msg = json.dumps({"__t": "f", "v": data}, separators=(",", ":"))
+                last_pushed_hashes = dict(key_hashes)
                 try:
-                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.write(f"data: {msg}\n\n".encode())
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     return
-            # Poll for changes every 1s, push when _last_result changes
             while True:
                 time.sleep(1)
                 with _result_lock:
                     data = _last_result
+                    key_hashes = dict(_last_result_hashes)
                 if not data:
                     continue
-                payload = json.dumps(data, separators=(",", ":"))
-                h = hashlib.md5(payload.encode()).hexdigest()
-                if h != last_hash:
-                    last_hash = h
-                    try:
-                        self.wfile.write(f"data: {payload}\n\n".encode())
-                        self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
+                changed = {}
+                removed = []
+                for k, h in key_hashes.items():
+                    if h != last_pushed_hashes.get(k):
+                        changed[k] = data.get(k)
+                for k in last_pushed_hashes:
+                    if k not in key_hashes:
+                        removed.append(k)
+                if not changed and not removed:
+                    continue
+                last_pushed_hashes = dict(key_hashes)
+                msg = json.dumps({"__t": "d", "c": changed, "r": removed}, separators=(",", ":"))
+                try:
+                    self.wfile.write(f"data: {msg}\n\n".encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
         elif self.path == "/current.json":
             # Phase 2 piece 2: gzip the ~330KB current.json -> ~70KB
             with _result_lock:
@@ -1351,7 +1376,9 @@ def _lightweight_loop(_running):
                 doc = _cli_mod.collect_lightweight(
                     _lw_offsets, map_raw, base_result=base)
                 with _result_lock:
+                    global _last_result_hashes
                     _last_result = doc
+                    _last_result_hashes = _compute_key_hashes(doc)
         except Exception as e:
             print("collector: lightweight error: %s" % e, file=sys.stderr)
         # Sleep 30s in 1s increments for responsive shutdown
