@@ -320,7 +320,9 @@
         '<td class="mono ' + colorPenalty(r.penalty) + '">' + pen + '</td>' +
         '<td class="mono cell-good">' +
           (r.score == null ? "-" : r.score.toFixed(1)) + '</td>' +
-        '<td class="mono dim">' + r.metric.toFixed(1) + '</td>' +
+        '<td class="mono dim">' +
+          (r.metric == null ? "-" : r.metric.toFixed(1)) +
+        '</td>' +
         '<td class="mono ' + colorStreak(r.bad_streak) + '">' +
           (r.bad_streak == null ? "-" : r.bad_streak) + '</td>' +
         '<td class="mono ' + colorStreak(r.null_streak) + '">' +
@@ -723,7 +725,11 @@
     _safeRender('swap_outcomes', function() { renderSwapOutcomes(soDoc.swap_outcomes || null, soDoc.churn || {}); });
     _safeRender('recent_proofs', function() { renderRecentProofs(fdoc.recent_proofs || []); });
     window.__filtered_doc = fdoc;
-    renderSwaps();
+    // 0.4.122: wrap renderSwaps in _safeRender — if Chart.js hasn't
+    // finished loading yet (liveRefresh fires before boot's _loadCharts
+    // resolves), mk() throws "Chart is not defined" and propagates out
+    // of _reFilterPanels, aborting _populateBucketSelect mid-flight.
+    _safeRender('swaps', function() { renderSwaps(); });
   }
 
   function _safeRender(label, fn) {
@@ -928,9 +934,11 @@
     // Ensure swaps-per-bin also refreshes on every SSE push, regardless of
     // whether _renderFilteredPanels happened to call it.  Harmless no-op if
     // already called (Chart.js mk() destroys + re-creates the chart).
-    renderSwaps();
+    // 0.4.122: wrap in _safeRender — Chart may not be loaded yet on the
+    // very first liveRefresh call (fires before boot's _loadCharts resolves).
+    _safeRender('swaps', function() { renderSwaps(); });
     state.lastLiveSwaps = doc.recent_swaps || [];
-    renderRecentSwapsForBucket();
+    _safeRender('recent_swaps_for_bucket', function() { renderRecentSwapsForBucket(); });
     _fetchAndApplyLabels();
   }
 
@@ -954,6 +962,13 @@
   var _pollFallback = null;
 
   function startLiveUpdates() {
+    // 0.4.122: expose liveRefresh as window.__liveFetch so the label
+    // editor / IP-move flows can trigger a live refresh after edits.
+    // Before this, every `if (window.__liveFetch) window.__liveFetch()`
+    // call silently no-op'd because __liveFetch was never assigned —
+    // meaning renamed/moved/deleted IPs didn't refresh the live panels
+    // until the next 30s polling tick.
+    window.__liveFetch = liveRefresh;
     if (typeof EventSource !== "undefined") {
       _sseSource = new EventSource("/sse");
       _sseSource.onmessage = function (e) {
@@ -1086,6 +1101,11 @@
     setT("nowupdated",
          L.collected_ts ? "updated " + relTime(L.collected_ts) : "");
 
+    // 0.4.122: guard state.meta — renderNow can fire from SSE / polling
+    // before boot() finishes loading data/meta.json. The downstream
+    // _heaviestBucketWithCoverage() already handles a null meta, so
+    // just bail early here too.
+    if (!state.meta) return;
     var algs = state.meta.algs;
     var rates = [];
     for (var i = 0; i < algs.length; i++) {
@@ -1113,6 +1133,11 @@
   function mk(id, cfg) {
     var cv = $(id);
     if (!cv) return;
+    // 0.4.122: guard against Chart not being loaded yet — the very
+    // first liveRefresh fires before boot's _loadCharts() resolves,
+    // so mk() would throw "Chart is not defined". _safeRender catches
+    // it but the noise fills the console. Bail out silently instead.
+    if (typeof Chart === "undefined") return;
     if (charts[id]) { try { charts[id].destroy(); } catch(e) {} }
     var existing = Chart.getChart(cv);
     if (existing) { try { existing.destroy(); } catch(e) {} }
@@ -1344,7 +1369,13 @@
   }
 
   function renderBucket() {
-    var doc = state.bucketDoc, algs = state.meta.algs;
+    // 0.4.122: guard state.meta — renderLiveState can fire (via SSE /
+    // polling) before boot() has finished loading data/meta.json.
+    // Without this guard, state.meta.algs throws "Cannot read
+    // properties of null (reading 'algs')".
+    var doc = state.bucketDoc;
+    if (!state.meta) return;
+    var algs = state.meta.algs;
     if (!algs) return;   // 0.4.87: meta not loaded yet — boot() still running
     var rng = $("range").value;
     var bid = $("bucket") ? $("bucket").value : null;
@@ -1775,20 +1806,39 @@ function _populateBucketSelect(desiredBucket) {
     setInterval(refreshAll, 300000);
 
     status("loading charts\u2026");
-    loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
-      .then(function () {
-        return loadScript("https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js");
-      })
-      .then(function () {
-        applyChartDefaults();
-        status("loading data\u2026");
-        return Promise.all([
-          j("data/meta.json"),
-          j("data/swaps.json"),
-          j("data/fleet.json"),
-        ]);
-      })
-      .then(function (results) {
+    // 0.4.122: separate the Chart.js load from the data load. The
+    // previous chain did loadScript(chart.js).then(load data) — if
+    // the CDN was unreachable (air-gapped, ad-blocker, network outage),
+    // the entire boot aborted at chart.js and state.meta was never
+    // set, so the bucket dropdown stayed empty and every render that
+    // needed state.meta bailed. Now the chart.js failure is logged
+    // but the data load still runs; the live panels (NOW, recent
+    // swaps, tunables, system, build) all work without charts.
+    function _loadCharts() {
+      return loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js")
+        .then(function () {
+          return loadScript("https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js");
+        })
+        .then(function () {
+          try { applyChartDefaults(); }
+          catch (e) { err("chart defaults: " + (e && e.message), e); }
+        })
+        .catch(function (e) {
+          err("chart.js load failed — running without charts: " +
+              (e && e.message ? e.message : e), e);
+        });
+    }
+
+    function _loadData() {
+      status("loading data\u2026");
+      return Promise.all([
+        j("data/meta.json"),
+        j("data/swaps.json"),
+        j("data/fleet.json"),
+      ]);
+    }
+
+    _loadCharts().then(_loadData).then(function (results) {
         state.meta  = results[0];
         state.swaps = results[1];
         state.fleet = results[2];
@@ -1849,7 +1899,14 @@ function _populateBucketSelect(desiredBucket) {
          * the chart showed one bucket's data under another's name
          * until the user re-selected. */
         if (bs.value === 'all') {
-          return Promise.resolve();
+          // 0.4.122: even when "All Buckets" is selected, still kick
+          // off loadBucket so _heaviestBucketWithCoverage resolves
+          // the top bucket, fetches bucket_<id>.json, and calls
+          // renderNow(). The previous `return Promise.resolve()`
+          // path skipped loadBucket entirely, leaving the NOW card
+          // at "-" (initial) until the next 30s polling tick fired
+          // refreshNowCardAndChart.
+          return loadBucket('all');
         }
         return loadBucket(bs.value);
       })
