@@ -809,8 +809,6 @@ type proofSample struct {
 	sampMax int64
 }
 
-
-
 func buildProofsRawEvents(text string) []interface{} {
 	var out []interface{}
 	cdest := cookieDestMap(text)
@@ -850,6 +848,7 @@ func buildProofsRawEvents(text string) []interface{} {
 	return out
 }
 
+
 func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
 	events := map[int]proofEvent{}
 	samples := map[int]proofSample{}
@@ -859,7 +858,7 @@ func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
 	}{}
 
 	for _, line := range strings.Split(text, "\n") {
-		if !strings.Contains(line, "proof cookie=") {
+		if strings.Contains(line, "proof cookie=") {
 			m := rxProof.FindStringSubmatch(line)
 			if m == nil {
 				continue
