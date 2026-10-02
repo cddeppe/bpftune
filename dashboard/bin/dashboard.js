@@ -745,7 +745,7 @@
     var soDoc = fdoc;
     if (bid === 'all') {
       var hb1 = _heaviestBucketWithCoverage();
-      if (hb1) soDoc = _filterByBucket(doc, hb1.label, hb1.bid);
+      // show aggregate not heaviest
     }
     _safeRender('proof',       function() { renderProof(fdoc.proof || []); });
     _safeRender('rate',        function() { renderRate(fdoc.rate || []); });
@@ -947,7 +947,7 @@
     var _soDoc = _fdoc;
     if (bk.bid === 'all') {
       var hb2 = _heaviestBucketWithCoverage();
-      if (hb2) _soDoc = _filterByBucket(doc, hb2.label, hb2.bid);
+      // show aggregate not heaviest
     }
     _safeRender('proof', function() { renderProof(_fdoc.proof || []); });
     _safeRender('rate', function() { renderRate(_fdoc.rate || []); });
@@ -1696,6 +1696,13 @@
   function renderSwaps() {
     var rng = $("range").value;
     var d = null;
+    if (state.bucketDoc && state.bucketDoc.series && state.bucketDoc.series[rng] && state.bucketDoc.series[rng].swaps) {
+      var s2 = state.bucketDoc.series[rng];
+      d = {ts: s2.ts, swaps: s2.swaps};
+      window.__chart_axis_min = s2.ts[0] * 1000;
+      window.__chart_axis_max = s2.ts[s2.ts.length - 1] * 1000;
+    }
+    if (!d) {
     var sse = window.__filtered_doc || window.__current_doc;
     // 0.4.92: use __current_doc.generated_ts (fresh on every SSE push)
     // for the timeline, not sse.generated_ts (which is from __filtered_doc,
@@ -1758,6 +1765,7 @@
         if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
       }
     }
+    }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
     var ts = d.ts;
@@ -1765,10 +1773,9 @@
     mk("swaps", {
       type: "bar",
       data: {
-        labels: ts.map(function (t) { return new Date(t * 1000); }),
         datasets: [{
           label: "swaps",
-          data: d.swaps,
+          data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
           backgroundColor: "#4e79a7",
           borderColor: "#4e79a7",
           borderRadius: 2,
@@ -1777,7 +1784,7 @@
       },
       options: timeOpts({
         scales: {
-          x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
+          x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"}, grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },
@@ -1868,7 +1875,7 @@ function _populateBucketSelect(desiredBucket) {
     if (disp === b.id && b.label && b.label !== b.id) disp = b.label;
     if (disp && disp !== b.id) usedLabels[disp] = true;
     metaHtml += '<option value="' + b.id + '">' + disp +
-            ' (' + b.points + ')</option>';
+            '</option>';
     if (b.id === desiredBucket) stillThere = true;
   }
   var customHtml = "";
@@ -1884,7 +1891,7 @@ function _populateBucketSelect(desiredBucket) {
           if (metaIds[s16]) return;
         }
         customLabels[lbl] = true;
-        customHtml += '<option value="' + lbl + '">' + lbl + ' (custom)</option>';
+        customHtml += '<option value="' + lbl + '">' + lbl + '</option>';
         if (lbl === desiredBucket) stillThere = true;
       }
     });
