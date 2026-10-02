@@ -52,7 +52,7 @@ func (h *historyStore) handleBucketJSON(w http.ResponseWriter, r *http.Request, 
 				}
 				snaps = filtered
 			}
-		case "24h", "7d", "all":
+		case "24h", "7d", "30d", "all":
 			// v0.7.3: 24h/7d/all from CSV (dynamic fallback when static file stale)
 			snaps = readBucketCSV(bucketID, int64(span))
 		}

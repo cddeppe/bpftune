@@ -413,7 +413,7 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 				}
 				snaps = filtered
 			}
-		case "24h", "7d", "all":
+		case "24h", "7d", "30d", "all":
 			if h.csvAll != nil {
 				snaps = readBucketCSVFromMap(h.csvAll, bucketID, int64(span))
 			} else {
