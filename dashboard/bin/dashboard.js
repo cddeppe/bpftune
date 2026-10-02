@@ -1737,6 +1737,7 @@
   }
 
   function renderScoreNow() {
+    if (!state.bucketDoc || !state.bucketDoc.series) return;
     console.log("renderScoreNow", state.bucketDoc ? "has doc, ranges: " + Object.keys(state.bucketDoc.series || {}).length : "no doc");
     var rng = $("range").value;
     var bid = $("bucket").value;
@@ -1845,15 +1846,9 @@
     mk("swaps", {
       type: "bar",
       data: {
-        labels: ts.map(function (t) {
-          var dt = new Date(t * 1000);
-          var hh = String(dt.getHours()).padStart(2, "0");
-          var mm = String(dt.getMinutes()).padStart(2, "0");
-          return hh + ":" + mm;
-        }),
         datasets: [{
           label: "swaps",
-          data: d.swaps,
+          data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
           backgroundColor: "#4e79a7",
           borderColor: "#4e79a7",
           borderRadius: 2,
@@ -1862,10 +1857,7 @@
       },
       options: timeOpts({
         scales: {
-          x: {type: "category", grid: {display: false},
-              min: undefined, max: undefined,
-              ticks: {maxRotation: 0, autoSkip: true, autoSkipPadding: 24,
-                      padding: 4, maxTicksLimit: 8}},
+          x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },
@@ -2013,8 +2005,7 @@ function _populateBucketSelect(desiredBucket) {
   }
 
   function boot() {
-    startLiveUpdates();
-
+    // v0.7.5h: startLiveUpdates() moved below
     setInterval(refreshAll, 300000);
 
     status("loading charts\u2026");
@@ -2050,7 +2041,7 @@ function _populateBucketSelect(desiredBucket) {
       ]);
     }
 
-    _loadCharts().then(_loadData).then(function (results) {
+    _loadCharts().then(function() { startLiveUpdates(); return _loadData(); }).then(function (results) {
         state.meta  = results[0];
         state.swaps = results[1];
         state.fleet = results[2];
