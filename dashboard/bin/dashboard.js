@@ -235,7 +235,7 @@
     var bk = _currentBucketLabel();
     var swaps = state.lastLiveSwaps || [];
     if (bk.bid !== 'all') {
-      swaps = swaps.filter(function(s) { return s.dest === bk.label; });
+      swaps = swaps.filter(function(s) { return _destMatches(s.dest, bk.bid, bk.label); });
     }
     renderRecentSwaps(swaps.slice(0, 18));
   }
@@ -620,13 +620,29 @@
     });
   }
 
-  function _filterByBucket(doc, bucketLabel) {
+  // FE-001/FE-009 fix: try all three forms (label, raw addr, /16 form)
+  function _destMatches(dest, bid, label) {
+    if (!dest) return false;
+    if (dest === label) return true;
+    if (dest === bid) return true;
+    if (bid && bid.indexOf('.') > 0) {
+      var parts = bid.split('.');
+      if (parts.length === 4) {
+        var slash16 = parts[0] + '.' + parts[1] + '.0.0';
+        if (dest === slash16) return true;
+      }
+    }
+    return false;
+  }
+
+  function _filterByBucket(doc, bucketLabel, bucketBid) {
+    if (!bucketBid) bucketBid = bucketLabel;
     if (bucketLabel === 'all' || !bucketLabel) return doc;
     var f = JSON.parse(JSON.stringify(doc));
     // Filter swap outcomes from swaps_list
     if (f.swap_outcomes && f.swap_outcomes.swaps_list) {
       var swaps = f.swap_outcomes.swaps_list.filter(function(s) {
-        return s.dest === bucketLabel;
+        return _destMatches(s.dest, bucketBid, bucketLabel);
       });
       var c = {win: 0, null: 0, loss: 0, skip: 0};
       swaps.forEach(function(s) {
@@ -672,12 +688,12 @@
     // Filter recent proofs
     if (f.recent_proofs) {
       f.recent_proofs = f.recent_proofs.filter(function(p) {
-        return p.dest === bucketLabel;
+        return _destMatches(p.dest, bucketBid, bucketLabel);
       });
     }
     // Re-aggregate proof leaderboard from proofs_raw
     if (f.proofs_raw) {
-      var fp = f.proofs_raw.filter(function(p) { return p.dest === bucketLabel; });
+      var fp = f.proofs_raw.filter(function(p) { return _destMatches(p.dest, bucketBid, bucketLabel); });
       var byAlg = {};
       fp.forEach(function(p) {
         if (!byAlg[p.alg]) byAlg[p.alg] = {good:0, proved:0, pmax:0, sum:0, n:0, smax:0};
@@ -699,7 +715,7 @@
     }
     // Re-aggregate rate progression from rate_raw
     if (f.rate_raw) {
-      var fr = f.rate_raw.filter(function(r) { return r.dest === bucketLabel; });
+      var fr = f.rate_raw.filter(function(r) { return _destMatches(r.dest, bucketBid, bucketLabel); });
       var byThr = {};
       fr.forEach(function(r) {
         if (!byThr[r.thr]) byThr[r.thr] = [];
@@ -722,18 +738,14 @@
     var doc = window.__current_doc;
     if (!doc) return;
     _updateBucketTags();   // 0.4.87: keep panel headers in sync on dropdown change
-    var bid = $('bucket') ? $('bucket').value : 'all';
-    var blabel = 'all';
-    if (bid !== 'all') {
-      var bs = $('bucket');
-      blabel = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
-        (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
-    }
-    var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
+    var bk = _currentBucketLabel();
+    var bid = bk.bid;
+    var blabel = bk.label;
+    var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel, bid);
     var soDoc = fdoc;
     if (bid === 'all') {
       var hb1 = _heaviestBucketWithCoverage();
-      if (hb1) soDoc = _filterByBucket(doc, hb1.label);
+      if (hb1) soDoc = _filterByBucket(doc, hb1.label, hb1.bid);
     }
     _safeRender('proof',       function() { renderProof(fdoc.proof || []); });
     _safeRender('rate',        function() { renderRate(fdoc.rate || []); });
@@ -804,9 +816,15 @@
   function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
     if (_bid === 'all') return {bid: 'all', label: 'all'};
-    var _bs2 = $('bucket');
-    var _blabel = (window.__labels && window.__labels[_bid] !== _bid && window.__labels[_bid]) ||
-      (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
+    // FE-001 fix: server data is keyed by _label_for(addr) which returns
+    // the LABEL if labeled, or the RAW ADDR if unlabeled. Never use shortAddr's
+    // /16 form as the label — it won't match any server-side key.
+    var _blabel;
+    if (window.__labels && window.__labels[_bid] && window.__labels[_bid] !== _bid) {
+      _blabel = window.__labels[_bid];
+    } else {
+      _blabel = _bid;  // raw addr — matches server-side _label_for(unlabeled)
+    }
     return {bid: _bid, label: _blabel};
   }
 
@@ -880,11 +898,11 @@
 
   function _renderFilteredPanels(doc) {
     var bk = _currentBucketLabel();
-    var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label);
+    var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label, bk.bid);
     var _soDoc = _fdoc;
     if (bk.bid === 'all') {
       var hb2 = _heaviestBucketWithCoverage();
-      if (hb2) _soDoc = _filterByBucket(doc, hb2.label);
+      if (hb2) _soDoc = _filterByBucket(doc, hb2.label, hb2.bid);
     }
     _safeRender('proof', function() { renderProof(_fdoc.proof || []); });
     _safeRender('rate', function() { renderRate(_fdoc.rate || []); });
