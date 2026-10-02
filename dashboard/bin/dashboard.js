@@ -1771,15 +1771,16 @@
     var ts = d.ts;
 
     mk("swaps", {
-      type: "bar",
+      type: "line",
       data: {
         datasets: [{
           label: "swaps",
           data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
-          backgroundColor: "#4e79a7",
+          backgroundColor: "rgba(78, 121, 167, 0.4)",
           borderColor: "#4e79a7",
-          borderRadius: 2,
-          parsing: false,
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 1,
         }],
       },
       options: timeOpts({
