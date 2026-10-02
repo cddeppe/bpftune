@@ -235,7 +235,7 @@
     var bk = _currentBucketLabel();
     var swaps = state.lastLiveSwaps || [];
     if (bk.bid !== 'all') {
-      swaps = swaps.filter(function(s) { return _destMatches(s.dest, bk.bid, bk.label); });
+      swaps = swaps.filter(function(s) { return s.dest === bk.label; });
     }
     renderRecentSwaps(swaps.slice(0, 18));
   }
@@ -620,29 +620,13 @@
     });
   }
 
-  // FE-001/FE-009 fix: try all three forms (label, raw addr, /16 form)
-  function _destMatches(dest, bid, label) {
-    if (!dest) return false;
-    if (dest === label) return true;
-    if (dest === bid) return true;
-    if (bid && bid.indexOf('.') > 0) {
-      var parts = bid.split('.');
-      if (parts.length === 4) {
-        var slash16 = parts[0] + '.' + parts[1] + '.0.0';
-        if (dest === slash16) return true;
-      }
-    }
-    return false;
-  }
-
-  function _filterByBucket(doc, bucketLabel, bucketBid) {
-    if (!bucketBid) bucketBid = bucketLabel;
+  function _filterByBucket(doc, bucketLabel) {
     if (bucketLabel === 'all' || !bucketLabel) return doc;
     var f = JSON.parse(JSON.stringify(doc));
     // Filter swap outcomes from swaps_list
     if (f.swap_outcomes && f.swap_outcomes.swaps_list) {
       var swaps = f.swap_outcomes.swaps_list.filter(function(s) {
-        return _destMatches(s.dest, bucketBid, bucketLabel);
+        return s.dest === bucketLabel;
       });
       var c = {win: 0, null: 0, loss: 0, skip: 0};
       swaps.forEach(function(s) {
@@ -688,12 +672,12 @@
     // Filter recent proofs
     if (f.recent_proofs) {
       f.recent_proofs = f.recent_proofs.filter(function(p) {
-        return _destMatches(p.dest, bucketBid, bucketLabel);
+        return p.dest === bucketLabel;
       });
     }
     // Re-aggregate proof leaderboard from proofs_raw
     if (f.proofs_raw) {
-      var fp = f.proofs_raw.filter(function(p) { return _destMatches(p.dest, bucketBid, bucketLabel); });
+      var fp = f.proofs_raw.filter(function(p) { return p.dest === bucketLabel; });
       var byAlg = {};
       fp.forEach(function(p) {
         if (!byAlg[p.alg]) byAlg[p.alg] = {good:0, proved:0, pmax:0, sum:0, n:0, smax:0};
@@ -715,7 +699,7 @@
     }
     // Re-aggregate rate progression from rate_raw
     if (f.rate_raw) {
-      var fr = f.rate_raw.filter(function(r) { return _destMatches(r.dest, bucketBid, bucketLabel); });
+      var fr = f.rate_raw.filter(function(r) { return r.dest === bucketLabel; });
       var byThr = {};
       fr.forEach(function(r) {
         if (!byThr[r.thr]) byThr[r.thr] = [];
@@ -738,14 +722,18 @@
     var doc = window.__current_doc;
     if (!doc) return;
     _updateBucketTags();   // 0.4.87: keep panel headers in sync on dropdown change
-    var bk = _currentBucketLabel();
-    var bid = bk.bid;
-    var blabel = bk.label;
-    var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel, bid);
+    var bid = $('bucket') ? $('bucket').value : 'all';
+    var blabel = 'all';
+    if (bid !== 'all') {
+      var bs = $('bucket');
+      blabel = (window.__labels && window.__labels[bid] !== bid && window.__labels[bid]) ||
+        (bs && bs.selectedIndex >= 0 ? bs.options[bs.selectedIndex].text.replace(/ \(\d+\)$/, '') : bid);
+    }
+    var fdoc = bid === 'all' ? doc : _filterByBucket(doc, blabel);
     var soDoc = fdoc;
     if (bid === 'all') {
       var hb1 = _heaviestBucketWithCoverage();
-      // show aggregate not heaviest
+      if (hb1) soDoc = _filterByBucket(doc, hb1.label);
     }
     _safeRender('proof',       function() { renderProof(fdoc.proof || []); });
     _safeRender('rate',        function() { renderRate(fdoc.rate || []); });
@@ -767,103 +755,15 @@
     }
   }
 
-  // v0.7.5e: rebuild the bucket dropdown options from live data.
-  // Previously the dropdown only refreshed every 5 min from meta.json
-  // (refreshAll) while the table refreshed every 30s from current.json
-  // (SSE) — so they showed different buckets in different orders. Now
-  // both views read from current.json's buckets[] (server-side sorted
-  // to match meta.json's order, server-side labeled). Custom labels
-  // from window.__labels that aren't currently active are appended at
-  // the end so the user can still pick them.
-  function _rebuildDropdownFromLive(liveBuckets) {
-    var bs = $('bucket');
-    if (!bs) return;
-    var prev = bs.value;
-    var seen = {};
-    var html = '';
-    for (var k = 0; k < liveBuckets.length; k++) {
-      var id = liveBuckets[k].dest;
-      if (!id || seen[id]) continue;
-      seen[id] = true;
-      html += '<option value="' + id + '">' + id + '</option>';
-    }
-    if (window.__labels) {
-      Object.keys(window.__labels).forEach(function(ip) {
-        var lbl = window.__labels[ip];
-        if (lbl && lbl !== ip && !seen[ip] && !seen[lbl]) {
-          seen[lbl] = true;
-          html += '<option value="' + lbl + '">' + lbl + '</option>';
-        }
-      });
-    }
-    bs.innerHTML = html;
-    bs.add(new Option('All Buckets', 'all'), 0);
-    // Restore selection if still present; else "All Buckets".
-    var stillThere = false;
-    for (var i = 0; i < bs.options.length; i++) {
-      if (bs.options[i].value === prev) { stillThere = true; break; }
-    }
-    bs.value = stillThere ? prev : 'all';
-  }
-
   function _syncBucketDropdown(doc) {
     var _bs = $('bucket');
     var _prevVal = _bs ? _bs.value : null;
     _safeRender('buckets', function() { renderBuckets(doc.buckets || []); });
-    // v0.7.5e: also rebuild the dropdown options from live buckets —
-    // previously the dropdown stayed stale for 5 min until refreshAll
-    // ran, diverging from the table on every 30s SSE push.
-    _safeRender('dropdown', function() { _rebuildDropdownFromLive(doc.buckets || []); });
     _bs = $('bucket');
     if (_bs && _bs.options.length > 0 && _bs.options[0].value !== 'all') {
       _bs.add(new Option('All Buckets', 'all'), 0);
     }
-    // API-009 fix: merge in any buckets present in doc.buckets that
-    // renderBuckets() didn't add (e.g. buckets whose addr didn't make
-    // the meta.json top-N but are alive right now).  These show up as
-    // "<shortAddr> (live)" so the user can still pick them.
-    if (_bs && doc.buckets && doc.buckets.length) {
-      var existingIds = {};
-      var existingTexts = {};
-      for (var ei = 0; ei < _bs.options.length; ei++) {
-        existingIds[_bs.options[ei].value] = true;
-        existingTexts[_bs.options[ei].text] = true;
-      }
-      // Find the insertion point: after the static 'All Buckets' (and
-      // any other meta-derived entries) but BEFORE the first custom-
-      // labeled "(live)" entry from a prior cycle, so live entries
-      // cluster at the bottom of the dropdown.
-      var insertAt = _bs.options.length;
-      for (var ii = 0; ii < _bs.options.length; ii++) {
-        if (/\(live\)$/.test(_bs.options[ii].text)) {
-          insertAt = ii;
-          break;
-        }
-      }
-      for (var bi = 0; bi < doc.buckets.length; bi++) {
-        var b = doc.buckets[bi];
-        if (!b || !b.dest) continue;
-        if (existingIds[b.dest]) continue;
-        var liveText = shortAddr(b.dest) + ' (live)';
-        if (existingTexts[liveText]) continue;
-        try {
-          _bs.add(new Option(liveText, b.dest), insertAt);
-          existingIds[b.dest] = true;
-          existingTexts[liveText] = true;
-          insertAt++;
-        } catch (e) { /* IE quirk: ignore */ }
-      }
-    }
-    // API-009 fix: only restore _prevVal if it still exists in the
-    // dropdown — otherwise the select silently ends up with no value
-    // selected and the bucket panels render empty.  Fall back to 'all'.
-    if (_bs && _prevVal) {
-      var _stillThere = false;
-      for (var si = 0; si < _bs.options.length; si++) {
-        if (_bs.options[si].value === _prevVal) { _stillThere = true; break; }
-      }
-      _bs.value = _stillThere ? _prevVal : 'all';
-    }
+    if (_bs && _prevVal) { _bs.value = _prevVal; }
     else if (_bs) { _bs.value = 'all'; }
     if (_bs && !_bs._refilterHooked) {
       _bs.addEventListener('change', _reFilterPanels);
@@ -904,15 +804,9 @@
   function _currentBucketLabel() {
     var _bid = $('bucket') ? $('bucket').value : 'all';
     if (_bid === 'all') return {bid: 'all', label: 'all'};
-    // FE-001 fix: server data is keyed by _label_for(addr) which returns
-    // the LABEL if labeled, or the RAW ADDR if unlabeled. Never use shortAddr's
-    // /16 form as the label — it won't match any server-side key.
-    var _blabel;
-    if (window.__labels && window.__labels[_bid] && window.__labels[_bid] !== _bid) {
-      _blabel = window.__labels[_bid];
-    } else {
-      _blabel = _bid;  // raw addr — matches server-side _label_for(unlabeled)
-    }
+    var _bs2 = $('bucket');
+    var _blabel = (window.__labels && window.__labels[_bid] !== _bid && window.__labels[_bid]) ||
+      (_bs2 && _bs2.selectedIndex >= 0 ? _bs2.options[_bs2.selectedIndex].text.replace(/ \(\d+\)$/, '') : _bid);
     return {bid: _bid, label: _blabel};
   }
 
@@ -986,11 +880,11 @@
 
   function _renderFilteredPanels(doc) {
     var bk = _currentBucketLabel();
-    var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label, bk.bid);
+    var _fdoc = bk.bid === 'all' ? doc : _filterByBucket(doc, bk.label);
     var _soDoc = _fdoc;
     if (bk.bid === 'all') {
       var hb2 = _heaviestBucketWithCoverage();
-      // show aggregate not heaviest
+      if (hb2) _soDoc = _filterByBucket(doc, hb2.label);
     }
     _safeRender('proof', function() { renderProof(_fdoc.proof || []); });
     _safeRender('rate', function() { renderRate(_fdoc.rate || []); });
@@ -1736,45 +1630,9 @@
     return false;
   }
 
-  function renderScoreNow() {
-    console.log("renderScoreNow", state.bucketDoc ? "has doc, ranges: " + Object.keys(state.bucketDoc.series || {}).length : "no doc");
-    var rng = $("range").value;
-    var bid = $("bucket").value;
-    if (bid === "all") { var hb = _heaviestBucketWithCoverage(); if (hb) bid = hb.bid; }
-    var doc = state.bucketDoc;
-    if (!doc || !doc.series || !doc.series[rng]) return;
-    var s = doc.series[rng];
-    var ts = s.ts;
-    if (!ts || !ts.length) return;
-    var scoreCols = Object.keys(s).filter(function(k) { return k.indexOf("score_") === 0; });
-    mk("score-now", {
-      type: "line",
-      data: {datasets: lineData(scoreCols, s, ts, PALETTE, null, 0)},
-      options: timeOpts({
-        plugins: {
-          legend: {
-            display: true, position: "bottom", align: "start",
-            labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}},
-          },
-        },
-        scales: {
-          y: {beginAtZero: true, grid: {drawTicks: false},
-              ticks: {maxTicksLimit: 5, padding: 6}},
-        },
-      }),
-    });
-  }
-
   function renderSwaps() {
     var rng = $("range").value;
     var d = null;
-    if (state.bucketDoc && state.bucketDoc.series && state.bucketDoc.series[rng] && state.bucketDoc.series[rng].swaps) {
-      var s2 = state.bucketDoc.series[rng];
-      d = {ts: s2.ts, swaps: s2.swaps};
-      window.__chart_axis_min = s2.ts[0] * 1000;
-      window.__chart_axis_max = s2.ts[s2.ts.length - 1] * 1000;
-    }
-    if (!d) {
     var sse = window.__filtered_doc || window.__current_doc;
     // 0.4.92: use __current_doc.generated_ts (fresh on every SSE push)
     // for the timeline, not sse.generated_ts (which is from __filtered_doc,
@@ -1837,7 +1695,6 @@
         if (sk.length) d = {ts: sk, swaps: sk.map(function(t){return bins[t];})};
       }
     }
-    }
     if (!d) { var doc = state.swaps; d = doc ? doc[rng] : null; }
     if (!d) return;
     var ts = d.ts;
@@ -1845,17 +1702,19 @@
     mk("swaps", {
       type: "bar",
       data: {
+        labels: ts.map(function (t) { return new Date(t * 1000); }),
         datasets: [{
           label: "swaps",
-          data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
-          backgroundColor: "rgba(78, 121, 167, 0.4)",
+          data: d.swaps,
+          backgroundColor: "#4e79a7",
           borderColor: "#4e79a7",
           borderRadius: 2,
-          borderWidth: 1,
+          maxBarThickness: 14,
         }],
       },
       options: timeOpts({
         scales: {
+          x: {type: "time", grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },
@@ -1899,7 +1758,6 @@
       } else {
         state.bucketDoc = null;
         renderNow();
-_safeRender("score-now", function() { renderScoreNow(); });
         renderRecentSwapsForBucket();
         renderMetricForBucket();
         return Promise.resolve();
@@ -1947,7 +1805,7 @@ function _populateBucketSelect(desiredBucket) {
     if (disp === b.id && b.label && b.label !== b.id) disp = b.label;
     if (disp && disp !== b.id) usedLabels[disp] = true;
     metaHtml += '<option value="' + b.id + '">' + disp +
-            '</option>';
+            ' (' + b.points + ')</option>';
     if (b.id === desiredBucket) stillThere = true;
   }
   var customHtml = "";
@@ -1963,7 +1821,7 @@ function _populateBucketSelect(desiredBucket) {
           if (metaIds[s16]) return;
         }
         customLabels[lbl] = true;
-        customHtml += '<option value="' + lbl + '">' + lbl + '</option>';
+        customHtml += '<option value="' + lbl + '">' + lbl + ' (custom)</option>';
         if (lbl === desiredBucket) stillThere = true;
       }
     });

@@ -83,7 +83,7 @@ func (c *Collector) collect() {
 	doc["swap_outcomes"] = swapOutcomes
 	doc["bucket_ips"] = bucketIPs
 	doc["log_window"] = logWindow
-	doc["proofs_raw"] = buildProofsRawEvents(logText)
+	doc["proofs_raw"] = proofsRaw
 	doc["proof"] = proofsRaw
 
 	// ----- Other data panels (reuse parsed log results) ----------------
@@ -115,16 +115,9 @@ func (c *Collector) collect() {
 	c.notifySSE()
 }
 
-// buildLiveBuckets constructs the buckets list (top 8),
+// buildLiveBuckets constructs the buckets list (top 8 by inst),
 // metric_by_bucket, bucket_live (single-point placeholder), and
 // live_leaders. All in a single pass over sorted hosts.
-//
-// v0.7.5e: STABLE SORT to match meta.json's order (n_alg desc,
-// inst desc, id asc). Previously this was just Inst desc, which meant
-// current.json's buckets[] array had a DIFFERENT order than meta.json's
-// buckets[] array — the dropdown (from meta, every 5 min) and the table
-// (from current, every 30s) disagreed. Now both use the same order so
-// they stop "fighting" each other.
 func buildLiveBuckets(hosts []hostEntry, now int64) (
 	buckets []bucketRow, metricByBucket map[string]interface{},
 	bucketLive map[string]interface{}, liveLeaders []interface{},
@@ -140,40 +133,14 @@ func buildLiveBuckets(hosts []hostEntry, now int64) (
 	metricByBucket = map[string]interface{}{}
 	bucketLive = map[string]interface{}{}
 
-	// v0.7.5e: pre-compute n_alg per host so the sort can use it
-	// without re-parsing metrics twice per comparison.
-	type hostWithAlg struct {
-		hostEntry
-		nAlg int
-	}
-	sortedHosts := make([]hostWithAlg, len(hosts))
-	for i, h := range hosts {
-		n := 0
-		if mi, _ := h.V["metrics"].([]interface{}); mi != nil {
-			for _, m := range mi {
-				if mm, ok := m.(map[string]interface{}); ok &&
-					toInt(mm["metric_count"]) > 0 {
-					n++
-				}
-			}
-		}
-		sortedHosts[i] = hostWithAlg{hostEntry: h, nAlg: n}
-	}
-	// Stable sort: n_alg desc, inst desc, id asc — matches meta.json's
-	// (n_alg desc, inst_mean desc, id asc) order closely enough that
-	// the live buckets list and the 5-min meta list no longer disagree.
-	sort.SliceStable(sortedHosts, func(i, j int) bool {
-		if sortedHosts[i].nAlg != sortedHosts[j].nAlg {
-			return sortedHosts[i].nAlg > sortedHosts[j].nAlg
-		}
-		if sortedHosts[i].Inst != sortedHosts[j].Inst {
-			return sortedHosts[i].Inst > sortedHosts[j].Inst
-		}
-		return sortedHosts[i].Addr < sortedHosts[j].Addr
+	// Sort by inst desc (matches Python read_map line 809).
+	sortedHosts := make([]hostEntry, len(hosts))
+	copy(sortedHosts, hosts)
+	sort.Slice(sortedHosts, func(i, j int) bool {
+		return sortedHosts[i].Inst > sortedHosts[j].Inst
 	})
 
-	for _, sh := range sortedHosts {
-		h := sh.hostEntry
+	for _, h := range sortedHosts {
 		v := h.V
 		addr := h.Addr
 		if addr == "0.0.0.1" || addr == "?" {
@@ -225,8 +192,13 @@ func buildLiveBuckets(hosts []hostEntry, now int64) (
 		if bestI >= len(CONGS) {
 			bestAlg = fmt.Sprintf("alg%d", bestI)
 		}
-		// v0.7.5e: reuse pre-computed n_alg (was re-parsing here).
-		nAlg := sh.nAlg
+		nAlg := 0
+		for _, m := range metrics {
+			if mi, ok := m.(map[string]interface{}); ok &&
+				toInt(mi["metric_count"]) > 0 {
+				nAlg++
+			}
+		}
 		refMbps := toFloat(v["max_rate_delivered"]) / bpsToMbps
 		if len(buckets) < 8 {
 			buckets = append(buckets, bucketRow{
