@@ -1784,7 +1784,6 @@
       },
       options: timeOpts({
         scales: {
-          x: {type: "time", time: {tooltipFormat: "MMM d, HH:mm"}, grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24, padding: 4}},
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },
