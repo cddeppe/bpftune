@@ -218,14 +218,7 @@ func (h *historyStore) handleFleetJSON(w http.ResponseWriter, r *http.Request, b
 		var have, seen int
 		for _, s := range snaps {
 			seen++
-			hasRate := false
-				for i := 0; i < 16; i++ {
-					if s.Re[i] > 0 {
-						hasRate = true
-						break
-					}
-				}
-				if hasRate {
+			if s.RefRate > 0 {
 					have++
 				}
 		}
