@@ -1800,15 +1800,14 @@
     var ts = d.ts;
 
     mk("swaps", {
-      type: "line",
+      type: "bar",
       data: {
         datasets: [{
           label: "swaps",
           data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
           backgroundColor: "rgba(78, 121, 167, 0.4)",
           borderColor: "#4e79a7",
-          fill: true,
-          pointRadius: 0,
+          borderRadius: 2,
           borderWidth: 1,
         }],
       },
@@ -1857,7 +1856,7 @@
       } else {
         state.bucketDoc = null;
         renderNow();
-    renderScoreNow();
+_safeRender("score-now", function() { renderScoreNow(); });
         renderRecentSwapsForBucket();
         renderMetricForBucket();
         return Promise.resolve();
