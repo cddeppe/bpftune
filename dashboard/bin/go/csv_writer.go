@@ -63,11 +63,46 @@ var (
 	dedupMu       sync.Mutex
 )
 
+// COL-001 fix: writeCSVHeaderIfEmpty checks if CSV file is empty
+// and writes the header row if so. Prevents first data row from
+// being treated as header by csv.DictReader (loses all per-alg cols).
+func writeCSVHeaderIfEmpty(path, header string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) { return }
+		os.WriteFile(path, []byte(header+"\n"), 0644)
+		return
+	}
+	if info.Size() == 0 {
+		os.WriteFile(path, []byte(header+"\n"), 0644)
+	}
+}
+
+func bucketsCSVHeader() string {
+	parts := []string{"collected_ts","addr","instances","min_rtt","ref_rate","best_i","best_alg","rate_best_i","rate_best_v"}
+	for _, alg := range CONGS { parts = append(parts, "mv_"+alg, "re_"+alg) }
+	parts = append(parts, "tcp_rmem_min","tcp_rmem_def","tcp_rmem_max")
+	for _, alg := range CONGS { parts = append(parts, "ss_"+alg) }
+	for _, alg := range CONGS { parts = append(parts, "bs_"+alg) }
+	for _, alg := range CONGS { parts = append(parts, "ns_"+alg) }
+	return strings.Join(parts, ",")
+}
+
+func swapsCSVHeader() string {
+	return strings.Join([]string{"collected_ts","boot_ts","cookie","from_alg","to_alg","d","mt_alg","rb_alg","diverges","outcome","socket_rate_before","dest","dest_raw","f_ema","t_ema","srate_before","direction","rport"}, ",")
+}
+
+func srateCSVHeader() string {
+	return strings.Join([]string{"collected_ts","boot_ts","cookie","alg","srate"}, ",")
+}
+
 // ============================================================================
 // writeBucketsCSV — one row per bucket per 30s cycle
 // ============================================================================
 
 func writeBucketsCSV(hosts []hostEntry, now int64) {
+	// COL-001 fix: ensure header exists
+	writeCSVHeaderIfEmpty(bucketsCSVPath, bucketsCSVHeader())
 	f, err := os.OpenFile(bucketsCSVPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return
@@ -173,6 +208,8 @@ func writeSwapsCSV(swaps []swapRow, now int64) {
 	dedupMu.Lock()
 	defer dedupMu.Unlock()
 
+	// COL-001 fix: ensure header exists
+	writeCSVHeaderIfEmpty(swapsCSVPath, swapsCSVHeader())
 	f, err := os.OpenFile(swapsCSVPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return
@@ -262,6 +299,8 @@ func writeSrateCSVFromParsed(srateByCookie map[int64][]srateEntry, now int64) {
 		return
 	}
 
+	// COL-001 fix: ensure header exists
+	writeCSVHeaderIfEmpty(srateCSVPath, srateCSVHeader())
 	f, err := os.OpenFile(srateCSVPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return

@@ -559,10 +559,15 @@ func main() {
 		binDir = *binPath
 	}
 
+		// COL-002 fix: write sentinel so Python renderer skips data/*.json writes
+	_ = os.WriteFile("/var/run/bpftune-collector-go.active", []byte("1\n"), 0644)
+
 	collector := NewCollector()
 
 	// Synchronous first collect — current.json populated before HTTP starts.
 	collector.collect()
+	// COL-002: refresh sentinel after first collect
+	_ = os.WriteFile("/var/run/bpftune-collector-go.active", []byte("1\n"), 0644)
 
 	// v0.7.3: synchronous first renderToDisk — static files ready before
 	// HTTP starts.  This adds ~5-15s to startup but ensures all chart
@@ -578,6 +583,8 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			collector.collect()
+			// COL-002: refresh sentinel so Python renderer knows we're alive
+			_ = os.WriteFile("/var/run/bpftune-collector-go.active", []byte("1\n"), 0644)
 		}
 	}()
 
