@@ -1702,8 +1702,7 @@
     var s = doc.series[rng];
     var ts = s.ts;
     if (!ts || !ts.length) return;
-    var algs = (window.__algs || []).slice();
-    var scoreCols = algs.map(function(a) { return "score_" + a; }).filter(function(c) { return c in s; });
+    var scoreCols = Object.keys(s).filter(function(k) { return k.indexOf("score_") === 0; });
     mk("score-now", {
       type: "line",
       data: {datasets: lineData(scoreCols, s, ts, PALETTE, null, 0)},
