@@ -506,6 +506,7 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 		series["bs_"+alg] = []interface{}{}
 		series["ns_"+alg] = []interface{}{}
 		series["mv_"+alg] = []interface{}{}
+		series["score_"+alg] = []interface{}{}
 	}
 	tsArr := make([]int64, 0, len(binIdxs))
 	arrs := map[string][]interface{}{}
@@ -515,6 +516,7 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 		arrs["bs_"+alg] = []interface{}{}
 		arrs["ns_"+alg] = []interface{}{}
 		arrs["mv_"+alg] = []interface{}{}
+		arrs["score_"+alg] = []interface{}{}
 	}
 	for _, bi := range binIdxs {
 		b := binMap[bi]
@@ -529,7 +531,7 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 			arrs["ss_"+alg] = append(arrs["ss_"+alg], avg.Ss[i])
 			arrs["bs_"+alg] = append(arrs["bs_"+alg], avg.Bs[i])
 			arrs["ns_"+alg] = append(arrs["ns_"+alg], avg.Ns[i])
-			arrs["mv_"+alg] = append(arrs["mv_"+alg], avg.Mv[i])
+			arrs["mv_"+alg] = append(arrs["mv_"+alg], avg.Mv[i]); _p := 16.0 / (16.0 + float64(avg.Bs[i])*4.0 + float64(avg.Ns[i])*2.0); _sc := float64(avg.Re[i]) * (float64(avg.Ss[i]) / 256.0) * _p; arrs["score_"+alg] = append(arrs["score_"+alg], round2(_sc))
 		}
 	}
 	series["ts"] = tsArr

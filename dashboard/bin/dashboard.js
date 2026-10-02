@@ -1693,6 +1693,35 @@
     return false;
   }
 
+  function renderScoreNow() {
+    var rng = $("range").value;
+    var bid = $("bucket").value;
+    if (bid === "all") { var hb = _heaviestBucketWithCoverage(); if (hb) bid = hb.bid; }
+    var doc = state.bucketDoc;
+    if (!doc || !doc.series || !doc.series[rng]) return;
+    var s = doc.series[rng];
+    var ts = s.ts;
+    if (!ts || !ts.length) return;
+    var algs = (window.__algs || []).slice();
+    var scoreCols = algs.map(function(a) { return "score_" + a; }).filter(function(c) { return c in s; });
+    mk("score-now", {
+      type: "line",
+      data: {datasets: lineData(scoreCols, s, ts, PALETTE, null, 0)},
+      options: timeOpts({
+        plugins: {
+          legend: {
+            display: true, position: "bottom", align: "start",
+            labels: {boxWidth: 8, boxHeight: 8, padding: 8, font: {size: 10.5}},
+          },
+        },
+        scales: {
+          y: {beginAtZero: true, grid: {drawTicks: false},
+              ticks: {maxTicksLimit: 5, padding: 6}},
+        },
+      }),
+    });
+  }
+
   function renderSwaps() {
     var rng = $("range").value;
     var d = null;
@@ -1828,6 +1857,7 @@
       } else {
         state.bucketDoc = null;
         renderNow();
+    renderScoreNow();
         renderRecentSwapsForBucket();
         renderMetricForBucket();
         return Promise.resolve();
