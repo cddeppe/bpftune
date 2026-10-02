@@ -1,22 +1,28 @@
 package main
 
-// Label resolution + v6 fold rules + prefix-aware bucketing.
+// bucketing.go — single source of truth for label resolution + bucketing.
 //
-// v0.4.2 redesign (per user spec):
-//   - Labels.json supports ANY prefix width (longest-prefix match wins).
-//     Keys can be in any form: "82.43.0.0" (/16), "82.43.215.0" (/24),
-//     "82.43.215.97" (/32), "2606:1a40::" (/32 v6).  The prefix length
-//     is INFERRED from trailing zero bytes — no CIDR notation needed.
-//   - Custom labels are sticky: a /32 label matches only that exact IP,
-//     even if a /16 label also matches.  Longest-prefix wins.
-//   - When no label matches, the bucket key uses the CURRENT prefix4
-//     or prefix6 setting (read from /var/lib/bpftune/prefix4 and
-//     /var/lib/bpftune/prefix6, mtime-cached).  Default 16/32.
-//   - explore_pct is also read from /var/lib/bpftune/explore_pct
-//     (default 100) and surfaced in current.json's build section.
+// v0.7.0 refactor (per user spec):
+//   - All label resolution goes through ONE function: ResolveBucket().
+//   - No code path may re-apply labelFor to an already-labeled ID.
+//   - CSV writer writes the LABELED form (resolved at write time).
+//   - CSV reader does NOT re-apply labelFor — it uses the stored label as-is.
+//     (This was the root cause of "custom bucket disappears": a row written
+//     as "controld" when label existed, then labelFor("controld") at read
+//     time returned "controld" (since not parseable as IP) — but if the
+//     label was REMOVED, the row stayed "controld" forever, splitting the
+//     bucket away from new BPF reads which produced "2606:1a40::".)
+//   - When labels.json mtime changes, all static files in /data/ are
+//     invalidated (deleted) so the next renderToDisk cycle regenerates
+//     them with the new labels.
 //
-// All file reads are mtime-cached so we don't re-read the same file
-// every collect() cycle.
+// Resolution chain (per user spec v0.4.2):
+//   1. Apply v6 fold rules (v6:hex → v4 if /etc/bpftune/aliases declares it)
+//   2. Convert v6:hex to standard IPv6 form (for label matching)
+//   3. Try longest-prefix label match in labels.json + aliases labels
+//      (a /32 label wins over a /16 label for the same IP)
+//   4. Fall back to canonBucketWithPrefix (with current prefix4/prefix6
+//      from /var/lib/bpftune/prefix4 and prefix6)
 
 import (
 	"encoding/json"
@@ -32,8 +38,8 @@ import (
 // mtime-cached file readers
 // ============================================================================
 
-// mtimeCache is a generic mtime-based file cache.  Returns the loader's
-// output cached until the file's mtime changes.  Returns nil (caller
+// mtimeCache is a generic mtime-based file cache. Returns the loader's
+// output cached until the file's mtime changes. Returns nil (caller
 // treats as empty map) if file is missing or loader errors.
 type mtimeCache struct {
 	mu    sync.Mutex
@@ -65,6 +71,8 @@ func (c *mtimeCache) get(path string, loader func([]byte) map[string]string) map
 	}
 	c.val = loaded
 	c.mtime = fi.ModTime()
+	// Mark labelsMtimeChanged so renderToDisk invalidates static files.
+	markLabelsChanged()
 	return c.val
 }
 
@@ -74,7 +82,58 @@ var (
 	aliasesLabelsHolder mtimeCache
 )
 
-// // loadLabels reads labelsFile (/var/lib/bpftune/aliases.labels.json).
+// labelsFileMtime tracks the last-seen mtime of labels.json.  When it
+// changes, markLabelsChanged() sets staticFilesDirty=true so the next
+// renderToDisk cycle deletes all bucket_*.json + meta.json + fleet.json +
+// swaps.json before regenerating them.  This fixes the "custom bucket
+// disappears" bug where a stale static file (from before the label was
+// added) was served instead of the freshly-labeled dynamic response.
+var (
+	labelsMtimeMu      sync.Mutex
+	labelsLastMtime    time.Time
+	staticFilesDirtyMu sync.Mutex
+	staticFilesDirty   bool
+)
+
+func markLabelsChanged() {
+	labelsMtimeMu.Lock()
+	defer labelsMtimeMu.Unlock()
+	if labelsLastMtime.IsZero() {
+		// First load — don't mark dirty (no static files yet).
+		fi, _ := os.Stat(labelsFile)
+		if fi != nil {
+			labelsLastMtime = fi.ModTime()
+		}
+		return
+	}
+	fi, err := os.Stat(labelsFile)
+	if err != nil {
+		return
+	}
+	if !fi.ModTime().Equal(labelsLastMtime) {
+		labelsLastMtime = fi.ModTime()
+		staticFilesDirtyMu.Lock()
+		staticFilesDirty = true
+		staticFilesDirtyMu.Unlock()
+	}
+}
+
+// StaticFilesAreDirty returns true if labels.json changed since the last
+// renderToDisk cycle, indicating static files should be invalidated.
+func StaticFilesAreDirty() bool {
+	staticFilesDirtyMu.Lock()
+	defer staticFilesDirtyMu.Unlock()
+	return staticFilesDirty
+}
+
+// ClearStaticFilesDirty resets the dirty flag after renderToDisk regenerates.
+func ClearStaticFilesDirty() {
+	staticFilesDirtyMu.Lock()
+	defer staticFilesDirtyMu.Unlock()
+	staticFilesDirty = false
+}
+
+// loadLabels reads labelsFile (/var/lib/bpftune/aliases.labels.json).
 func loadLabels() map[string]string {
 	return labelsHolder.get(labelsFile, func(data []byte) map[string]string {
 		var m map[string]string
@@ -85,7 +144,7 @@ func loadLabels() map[string]string {
 	})
 }
 
-// loadFold reads /etc/bpftune/aliases and extracts {v6:hex: canonical_v4}.
+// loadFoldMap reads /etc/bpftune/aliases and extracts {v6:hex: canonical_v4}.
 // Line form: `2603:c020:0:0:0:0:0:0 = 89.168.0.0 [label]`
 // Only lines where groups 2..7 are all zero are treated as /32 folds.
 func loadFoldMap() map[string]string {
@@ -133,7 +192,7 @@ func loadFoldMap() map[string]string {
 	})
 }
 
-// loadAliasesLabels reads /etc/bpftune/aliases and extracts {to_ip: label}.
+// loadAliasesLabelsMap reads /etc/bpftune/aliases and extracts {to_ip: label}.
 func loadAliasesLabelsMap() map[string]string {
 	return aliasesLabelsHolder.get(aliasesFile, func(data []byte) map[string]string {
 		out := map[string]string{}
@@ -168,11 +227,6 @@ func loadAliasesLabelsMap() map[string]string {
 
 // canonBucketWithPrefix collapses a v4 address to /prefix4, or a v6
 // address (in standard form OR v6:hex form) to /prefix6.
-//
-// v0.4.2: prefix4/prefix6 are read from /var/lib/bpftune/prefix4 and
-// /var/lib/bpftune/prefix6 (mtime-cached, defaults 16 and 32).  When
-// the user changes the prefix, buckets merge or split on the next
-// collect cycle.
 func canonBucketWithPrefix(addr string, prefix4, prefix6 int) string {
 	if addr == "" {
 		return ""
@@ -209,14 +263,6 @@ func canonBucketWithPrefix(addr string, prefix4, prefix6 int) string {
 	return masked.String()
 }
 
-// normalizeIP returns the canonical form (handles v4 + v6).
-func normalizeIP(ipStr string) string {
-	if ip := net.ParseIP(ipStr); ip != nil {
-		return ip.String()
-	}
-	return ipStr
-}
-
 // foldV6 replaces a v6:hex key with its canonical v4 if declared in
 // /etc/bpftune/aliases; otherwise converts v6:hex to standard IPv6 /32
 // form ("xxxx:xxxx::") so labelFor can normalize + look it up.
@@ -236,16 +282,18 @@ func foldV6(addr string) string {
 	return formatIPv6Slash32(n)
 }
 
-// labelFor resolves an address to a human-readable label.
+// ResolveBucket is the SINGLE entry point for label resolution.
+// All code paths that need to convert a raw BPF address (e.g. "v6:26061a40"
+// or "1.2.3.4") to a bucket ID MUST call this. Do NOT call labelFor directly
+// from outside this file — that was the source of the "bucket disappears"
+// bug (labelFor was being re-applied to already-labeled IDs).
 //
-// v0.4.2 chain (per user spec):
+// Resolution chain:
 //  1. Apply v6 fold rules (v6:hex → v4 if /etc/bpftune/aliases declares it)
 //  2. Convert v6:hex to standard IPv6 form (for label matching)
 //  3. Try longest-prefix label match in labels.json + aliases labels
-//     (a /32 label wins over a /16 label for the same IP)
-//  4. Fall back to canonBucketWithPrefix (with current prefix4/prefix6
-//     from /var/lib/bpftune/prefix4 and prefix6)
-func labelFor(addr string) string {
+//  4. Fall back to canonBucketWithPrefix (with current prefix4/prefix6)
+func ResolveBucket(addr string) string {
 	if addr == "" {
 		return ""
 	}
@@ -259,10 +307,40 @@ func labelFor(addr string) string {
 	return canonBucketWithPrefix(addr, prefix4Value(), prefix6Value())
 }
 
+// labelFor is kept as a thin wrapper for backward compat with log_parsing.go
+// and other callers that haven't been updated yet. New code should call
+// ResolveBucket directly.
+//
+// IMPORTANT: If `addr` is already a label (e.g. "controld"), this function
+// returns it unchanged (it's not a parseable IP, so canonBucketWithPrefix
+// returns it as-is, and longestPrefixLabel returns "" for non-IP input).
+// This means calling labelFor on an already-labeled ID is safe but wasteful.
+func labelFor(addr string) string {
+	return ResolveBucket(addr)
+}
+
+// IsLabeledBucketID returns true if s looks like a human-applied label
+// (not a parseable IP). Used by CSV reader to skip re-applying labelFor.
+func IsLabeledBucketID(s string) bool {
+	if s == "" {
+		return false
+	}
+	// v6:hex form is "raw" (not labeled).
+	if strings.HasPrefix(s, "v6:") {
+		return false
+	}
+	// If it parses as an IP, it's a raw /masked form (not labeled).
+	if ip := net.ParseIP(s); ip != nil {
+		return false
+	}
+	// Otherwise it's a label like "controld" or "vps-us".
+	return true
+}
+
 // longestPrefixLabel finds the most specific label match for addr.
 // Iterates labels.json + aliases labels, computes each key's natural
 // prefix length (from trailing zero bytes), and picks the longest
-// matching prefix.  Returns "" if no match.
+// matching prefix. Returns "" if no match.
 func longestPrefixLabel(addr string) string {
 	ip := net.ParseIP(addr)
 	if ip == nil {
@@ -314,12 +392,7 @@ func longestPrefixLabel(addr string) string {
 
 // labelKeyToCIDR parses a labels.json key as a CIDR.
 //   - If the key has "/N" suffix (e.g., "82.43.0.0/16"), parse directly.
-//   - Otherwise, infer prefix length from trailing zero bytes:
-//     "82.43.0.0"     → /16  (2 trailing zero bytes out of 4)
-//     "82.43.215.0"   → /24  (1 trailing zero byte)
-//     "82.43.215.97"  → /32  (0 trailing zero bytes)
-//     "2606:1a40::"   → /32  (12 trailing zero bytes out of 16)
-//     "2a14:7583:abcd:1234::" → /64 (8 trailing zero bytes)
+//   - Otherwise, infer prefix length from trailing zero bytes.
 func labelKeyToCIDR(k string) *net.IPNet {
 	if strings.Contains(k, "/") {
 		_, ipNet, err := net.ParseCIDR(k)
@@ -355,7 +428,6 @@ func labelKeyToCIDR(k string) *net.IPNet {
 // Prefix readers (prefix4 / prefix6 / explore_pct)
 // ============================================================================
 
-// mtimeIntCache is an mtime-based int file cache (for prefix4/prefix6/explore_pct).
 type mtimeIntCache struct {
 	mu    sync.Mutex
 	val   int
@@ -402,14 +474,13 @@ var (
 	explorePctHolder mtimeIntCache
 )
 
-const (
+// Prefix file paths.  Vars (not consts) so --data-root can override.
+var (
 	prefix4Path    = "/var/lib/bpftune/prefix4"
 	prefix6Path    = "/var/lib/bpftune/prefix6"
 	explorePctPath = "/var/lib/bpftune/explore_pct"
 )
 
-// prefix4Value reads /var/lib/bpftune/prefix4 (default 16).  Range: 0-32.
-// Returns 16 if file missing or out of range.
 func prefix4Value() int {
 	n := prefix4Holder.get(prefix4Path, 16)
 	if n < 0 || n > 32 {
@@ -418,8 +489,6 @@ func prefix4Value() int {
 	return n
 }
 
-// prefix6Value reads /var/lib/bpftune/prefix6 (default 32).  Range: 0-128.
-// Returns 32 if file missing or out of range.
 func prefix6Value() int {
 	n := prefix6Holder.get(prefix6Path, 32)
 	if n < 0 || n > 128 {
@@ -428,8 +497,6 @@ func prefix6Value() int {
 	return n
 }
 
-// explorePctValue reads /var/lib/bpftune/explore_pct (default 100).  Range: 0-100.
-// Returns 100 if file missing or out of range.
 func explorePctValue() int {
 	n := explorePctHolder.get(explorePctPath, 100)
 	if n < 0 || n > 100 {

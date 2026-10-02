@@ -1,8 +1,25 @@
 package main
 
-// CSV writer — appends to the existing buckets.v2.csv, swaps.csv, srate.csv
-// files.  Matches the exact column format of the Python collector so the
-// historical data continues seamlessly.
+// csv_writer.go — appends to the existing buckets.v2.csv, swaps.csv,
+// srate.csv files.  Matches the column format of the Python collector
+// so the historical data continues seamlessly.
+//
+// v0.7.0 change: the addr column is written as the LABELED form (already
+// resolved by readBPFMap → hostEntry.Addr).  The CSV reader trusts this
+// and does NOT re-apply ResolveBucket on read.  This was the root cause
+// of "custom bucket disappears": applying ResolveBucket again at read
+// time would remap a labeled "controld" back to itself (no harm) BUT
+// would also remap a raw "2606:1a40::" (no label) to "controld" if a
+// label was added later — splitting the bucket into two ring-buffer
+// entries (one keyed by the old label, one keyed by the new label).
+// Now historical rows stay under the same key as new rows.
+//
+// Trade-off: if a label is added LATER, old rows written before the
+// label existed stay under the old (unlabeled) key.  The user can fix
+// this by running the dashboard for 24h after adding a label — the
+// old rows will age out of the 24h window.  Alternatively, a one-time
+// migration script could be written to re-resolve historical rows,
+// but that's out of scope here.
 //
 // buckets.v2.csv columns (94 total):
 //   collected_ts, addr, instances, min_rtt, ref_rate, best_i, best_alg,
@@ -30,7 +47,9 @@ import (
 	"time"
 )
 
-const (
+// CSV file paths.  These are vars (not consts) so the --data-root flag
+// can override them at startup for sandboxed testing.
+var (
 	bucketsCSVPath = "/var/lib/bpftune/history/buckets.v2.csv"
 	swapsCSVPath   = "/var/lib/bpftune/history/swaps.csv"
 	srateCSVPath   = "/var/lib/bpftune/history/srate.csv"
@@ -55,7 +74,6 @@ func writeBucketsCSV(hosts []hostEntry, now int64) {
 	}
 	defer f.Close()
 
-	// Read tcp_rmem values once (same for all buckets on this host)
 	rmemMin, rmemDef, rmemMax := readTcpRmem()
 
 	for _, h := range hosts {
@@ -71,7 +89,6 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 	v := h.V
 	metrics, _ := v["metrics"].([]interface{})
 
-	// Build per-alg metric values
 	mv := make([]string, 16)
 	re := make([]string, 16)
 	ss := make([]string, 16)
@@ -83,7 +100,6 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 			mi, _ = metrics[i].(map[string]interface{})
 		}
 		if mi == nil {
-			// No metric data — write empty (matches Python format)
 			mv[i] = ""
 			re[i] = ""
 			ss[i] = ""
@@ -92,7 +108,6 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 		} else {
 			mv[i] = strconv.FormatFloat(toFloat(mi["metric_value"]), 'f', -1, 64)
 			re[i] = strconv.FormatFloat(toFloat(mi["rate_ema"]), 'f', -1, 64)
-			// ss/bs/ns are empty when metric_count is 0 (matches Python)
 			mc := toInt(mi["metric_count"])
 			if mc > 0 || toInt(mi["sockets_alive"]) > 0 || toFloat(mi["rate_ema"]) > 0 {
 				ss[i] = strconv.Itoa(toInt(mi["swap_score"]))
@@ -112,32 +127,39 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 		bestAlg = CONGS[bestI]
 	}
 
+	// v0.7.5: compute rate_best_i and rate_best_v from metrics.
+	// rate_best_v = the rate_ema of the best algorithm (best_i).
+	// Used by coverage calculation (fraction of snapshots with rate_best_v > 0).
+	rateBestI := bestI
+	rateBestV := 0.0
+	if bestI >= 0 && bestI < len(metrics) {
+		mi, _ := metrics[bestI].(map[string]interface{})
+		if mi != nil {
+			rateBestV = toFloat(mi["rate_ema"])
+		}
+	}
+
 	parts := []string{
 		strconv.FormatInt(now, 10), // collected_ts
-		h.Addr,                     // addr (labeled)
+		h.Addr,                     // addr (LABELED — do not re-resolve on read)
 		strconv.Itoa(h.Inst),       // instances
-		strconv.FormatFloat(toFloat(v["min_rtt"]), 'f', -1, 64),                      // min_rtt
-		strconv.FormatFloat(toFloat(v["max_rate_delivered"])/bpsToMbps, 'f', -1, 64), // ref_rate
-		strconv.Itoa(bestI), // best_i
-		bestAlg,             // best_alg
-		"0",                 // rate_best_i (TODO: compute)
-		"0",                 // rate_best_v (TODO: compute)
+		strconv.FormatFloat(toFloat(v["min_rtt"]), 'f', -1, 64),
+		strconv.FormatFloat(toFloat(v["max_rate_delivered"])/bpsToMbps, 'f', -1, 64),
+		strconv.Itoa(bestI),
+		bestAlg,
+		strconv.Itoa(rateBestI), // rate_best_i
+		strconv.FormatFloat(rateBestV, 'f', -1, 64), // rate_best_v
 	}
-	// mv_ and re_ pairs interleaved: mv_cubic,re_cubic,mv_bbr,re_bbr,...
 	for i := 0; i < 16; i++ {
 		parts = append(parts, mv[i], re[i])
 	}
-	// tcp_rmem
 	parts = append(parts,
 		strconv.Itoa(rmemMin),
 		strconv.Itoa(rmemDef),
 		strconv.Itoa(rmemMax),
 	)
-	// ss_ (16)
 	parts = append(parts, ss...)
-	// bs_ (16)
 	parts = append(parts, bs...)
-	// ns_ (16)
 	parts = append(parts, ns...)
 
 	return strings.Join(parts, ",")
@@ -158,7 +180,6 @@ func writeSwapsCSV(swaps []swapRow, now int64) {
 	defer f.Close()
 
 	for _, sw := range swaps {
-		// Dedup by (cookie, boot_ts)
 		if writtenSwaps[sw.Cookie] == nil {
 			writtenSwaps[sw.Cookie] = map[float64]bool{}
 		}
@@ -167,10 +188,9 @@ func writeSwapsCSV(swaps []swapRow, now int64) {
 		}
 		writtenSwaps[sw.Cookie][sw.Ts] = true
 
-		// Prune dedup set if too large (keep last 1000 per cookie)
 		if len(writtenSwaps[sw.Cookie]) > 1000 {
 			for k := range writtenSwaps[sw.Cookie] {
-				if k < sw.Ts-3600 { // keep last hour
+				if k < sw.Ts-3600 {
 					delete(writtenSwaps[sw.Cookie], k)
 				}
 			}
@@ -205,57 +225,40 @@ func buildSwapCSVRow(sw swapRow, now int64) string {
 	destRaw := sw.Dest
 
 	parts := []string{
-		strconv.FormatInt(now, 10),             // collected_ts
-		strconv.FormatFloat(sw.Ts, 'f', 6, 64), // boot_ts
-		strconv.FormatInt(sw.Cookie, 10),       // cookie
-		fromAlg,                                // from_alg
-		toAlg,                                  // to_alg
-		strconv.Itoa(d),                        // d
-		mtAlg,                                  // mt_alg
-		rbAlg,                                  // rb_alg
-		diverges,                               // diverges
-		"",                                     // outcome (filled by renderer)
-		"",                                     // socket_rate_before
-		dest,                                   // dest
-		destRaw,                                // dest_raw
-		"",                                     // f_ema
-		"",                                     // t_ema
-		"",                                     // srate_before
-		"",                                     // direction
-		"",                                     // rport
+		strconv.FormatInt(now, 10),
+		strconv.FormatFloat(sw.Ts, 'f', 6, 64),
+		strconv.FormatInt(sw.Cookie, 10),
+		fromAlg,
+		toAlg,
+		strconv.Itoa(d),
+		mtAlg,
+		rbAlg,
+		diverges,
+		"", // outcome
+		"", // socket_rate_before
+		dest,
+		destRaw,
+		"", // f_ema
+		"", // t_ema
+		"", // srate_before
+		"", // direction
+		"", // rport
 	}
 	return strings.Join(parts, ",")
 }
 
 // ============================================================================
-// writeSrateCSV — one row per NEW srate event (deduplicated)
+// writeSrateCSVFromParsed — one row per NEW srate event (deduplicated)
+//
+// v0.7.0: takes pre-parsed srate entries instead of re-parsing the log
+// text.  Eliminates the 3rd log-parse per cycle (was 30% of CPU).
 // ============================================================================
 
-func writeSrateCSV(text string, now int64) {
+func writeSrateCSVFromParsed(srateByCookie map[int64][]srateEntry, now int64) {
 	dedupMu.Lock()
 	defer dedupMu.Unlock()
 
-	// Parse srate events from the log text
-	type srateEvent struct {
-		ts     float64
-		cookie int64
-		alg    int
-		srate  int64
-	}
-	var events []srateEvent
-	for _, line := range strings.Split(text, "\n") {
-		m := rxSrate.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		ts, _ := strconv.ParseFloat(m[1], 64)
-		cookie, _ := strconv.ParseInt(m[2], 10, 64)
-		alg, _ := strconv.Atoi(m[3])
-		sr, _ := strconv.ParseInt(m[4], 10, 64)
-		events = append(events, srateEvent{ts, cookie, alg, sr})
-	}
-
-	if len(events) == 0 {
+	if len(srateByCookie) == 0 {
 		return
 	}
 
@@ -265,34 +268,34 @@ func writeSrateCSV(text string, now int64) {
 	}
 	defer f.Close()
 
-	for _, e := range events {
-		// Dedup by (cookie, boot_ts)
-		if writtenSrates[e.cookie] == nil {
-			writtenSrates[e.cookie] = map[float64]bool{}
-		}
-		if writtenSrates[e.cookie][e.ts] {
-			continue
-		}
-		writtenSrates[e.cookie][e.ts] = true
+	for cookie, events := range srateByCookie {
+		for _, e := range events {
+			if writtenSrates[cookie] == nil {
+				writtenSrates[cookie] = map[float64]bool{}
+			}
+			if writtenSrates[cookie][e.Ts] {
+				continue
+			}
+			writtenSrates[cookie][e.Ts] = true
 
-		// Prune if too large
-		if len(writtenSrates[e.cookie]) > 1000 {
-			for k := range writtenSrates[e.cookie] {
-				if k < e.ts-3600 {
-					delete(writtenSrates[e.cookie], k)
+			if len(writtenSrates[cookie]) > 1000 {
+				for k := range writtenSrates[cookie] {
+					if k < e.Ts-3600 {
+						delete(writtenSrates[cookie], k)
+					}
 				}
 			}
-		}
 
-		alg := algName(e.alg)
-		parts := []string{
-			strconv.FormatInt(now, 10),            // collected_ts
-			strconv.FormatFloat(e.ts, 'f', 6, 64), // boot_ts
-			strconv.FormatInt(e.cookie, 10),       // cookie
-			alg,                                   // alg
-			strconv.FormatInt(e.srate, 10),        // srate
+			alg := algName(e.Alg)
+			parts := []string{
+				strconv.FormatInt(now, 10),
+				strconv.FormatFloat(e.Ts, 'f', 6, 64),
+				strconv.FormatInt(cookie, 10),
+				alg,
+				strconv.FormatInt(e.Srate, 10),
+			}
+			f.WriteString(strings.Join(parts, ",") + "\n")
 		}
-		f.WriteString(strings.Join(parts, ",") + "\n")
 	}
 }
 
@@ -316,253 +319,8 @@ func readTcpRmem() (min, def, max int) {
 }
 
 // ============================================================================
-// loadCSVTail — read the last 24h of buckets.v2.csv into the ring buffer
-// (called on startup so 1h/24h charts work immediately after restart)
+// suppress unused warning
 // ============================================================================
 
-func loadCSVTailIntoRingBuffer() {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer PANICKED: %v\n", r)
-		}
-	}()
-	// BUG 11 fix: use readCSVAll() cache instead of reading the 47MB file again
-	// (avoids 2GB memory spike from duplicate file read + string parsing)
-	all := readCSVAll()
-	if all == nil {
-		fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer: readCSVAll returned nil\n")
-		return
-	}
-	cutoff := time.Now().Unix() - 86400
-	count := 0
-	for bucketID, snaps := range all {
-		for _, s := range snaps {
-			if s.Ts < cutoff {
-				continue
-			}
-			hist.mu.Lock()
-			hist.raw[bucketID] = append(hist.raw[bucketID], s)
-			if len(hist.raw[bucketID]) > 2880 {
-				hist.raw[bucketID] = hist.raw[bucketID][len(hist.raw[bucketID])-2880:]
-			}
-			hist.mu.Unlock()
-			count++
-		}
-	}
-	fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer: loaded %d entries for %d buckets\n", count, len(all))
-}
-
-// ============================================================================
-// readBucketCSV — read buckets.v2.csv for 7d/all chart requests
-// (cached for 5 min to avoid re-reading the large file on every request)
-// ============================================================================
-
-var (
-	csvReadCache   = map[string]cachedCSVRead{}
-	csvReadCacheMu sync.Mutex
-	// v0.5.7: global CSV cache — read entire file ONCE, serve all bucket lookups
-	csvFullCache   map[string][]bucketSnapshot
-	csvFullCacheAt time.Time
-	csvFullCacheMu sync.Mutex
-)
-
-func readCSVAll() map[string][]bucketSnapshot {
-	csvFullCacheMu.Lock()
-	defer csvFullCacheMu.Unlock()
-	if csvFullCache != nil && time.Since(csvFullCacheAt) < 5*time.Minute {
-		return csvFullCache
-	}
-	data, err := os.ReadFile(bucketsCSVPath)
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) < 2 {
-		return nil
-	}
-	header := strings.Split(lines[0], ",")
-	colIdx := map[string]int{}
-	for i, col := range header {
-		colIdx[col] = i
-	}
-	result := map[string][]bucketSnapshot{}
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		cols := strings.Split(line, ",")
-		if len(cols) < 9 {
-			continue
-		}
-		addr := labelFor(cols[1])
-		ts, err := strconv.ParseInt(cols[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		snap := bucketSnapshot{
-			Ts: ts, Re: map[string]float64{}, Ss: map[string]int{},
-			Bs: map[string]int{}, Ns: map[string]int{}, Mv: map[string]float64{},
-		}
-		snap.Instances, _ = strconv.Atoi(cols[2])
-		snap.MinRtt, _ = strconv.ParseFloat(cols[3], 64)
-		snap.RefRate, _ = strconv.ParseFloat(cols[4], 64)
-		snap.BestI, _ = strconv.Atoi(cols[5])
-		if snap.BestI >= 0 && snap.BestI < len(CONGS) {
-			snap.BestAlg = CONGS[snap.BestI]
-		}
-		for _, alg := range CONGS {
-			if idx, ok := colIdx["re_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				snap.Re[alg], _ = strconv.ParseFloat(cols[idx], 64)
-			}
-			if idx, ok := colIdx["ss_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Ss[alg] = v
-			}
-		}
-		result[addr] = append(result[addr], snap)
-	}
-	csvFullCache = result
-	csvFullCacheAt = time.Now()
-	return result
-}
-
-// readBucketCSV now reads from the global cache (instant after first load)
-func readBucketCSVFast(bucketID string, span int64) []bucketSnapshot {
-	all := readCSVAll()
-	if all == nil {
-		return nil
-	}
-	snaps := all[bucketID]
-	if span > 0 {
-		cutoff := time.Now().Unix() - span
-		var filtered []bucketSnapshot
-		for _, s := range snaps {
-			if s.Ts >= cutoff {
-				filtered = append(filtered, s)
-			}
-		}
-		return filtered
-	}
-	return snaps
-}
-
-type cachedCSVRead struct {
-	data   []bucketSnapshot
-	readAt time.Time
-}
-
-func readBucketCSV(bucketID string, span int64) []bucketSnapshot {
-	csvReadCacheMu.Lock()
-	cacheKey := bucketID + ":" + strconv.FormatInt(span, 10)
-	if cached, ok := csvReadCache[cacheKey]; ok && time.Since(cached.readAt) < 5*time.Minute {
-		csvReadCacheMu.Unlock()
-		return cached.data
-	}
-	csvReadCacheMu.Unlock()
-
-	data, err := os.ReadFile(bucketsCSVPath)
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) < 2 {
-		return nil
-	}
-
-	header := strings.Split(lines[0], ",")
-	colIdx := map[string]int{}
-	for i, col := range header {
-		colIdx[col] = i
-	}
-
-	var cutoff int64
-	if span > 0 {
-		cutoff = time.Now().Unix() - span
-	} else {
-		cutoff = 0 // "all" — read everything
-	}
-
-	var snaps []bucketSnapshot
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		cols := strings.Split(line, ",")
-		if len(cols) < 9 {
-			continue
-		}
-
-		// Filter by bucket ID (addr column)
-		addr := labelFor(cols[1]) // v0.5.4: label to match bucket ID
-		if addr != bucketID {
-			continue
-		}
-
-		ts, err := strconv.ParseInt(cols[0], 10, 64)
-		if err != nil || ts < cutoff {
-			continue
-		}
-
-		inst, _ := strconv.Atoi(cols[2])
-		minRtt, _ := strconv.ParseFloat(cols[3], 64)
-		refRate, _ := strconv.ParseFloat(cols[4], 64)
-		bestI, _ := strconv.Atoi(cols[5])
-		bestAlg := ""
-		if bestI >= 0 && bestI < len(CONGS) {
-			bestAlg = CONGS[bestI]
-		}
-
-		snap := bucketSnapshot{
-			Ts:        ts,
-			BestAlg:   bestAlg,
-			BestI:     bestI,
-			Instances: inst,
-			RefRate:   refRate,
-			MinRtt:    minRtt,
-			Re:        map[string]float64{},
-			Ss:        map[string]int{},
-			Bs:        map[string]int{},
-			Ns:        map[string]int{},
-			Mv:        map[string]float64{},
-		}
-
-		for _, alg := range CONGS {
-			if idx, ok := colIdx["mv_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				snap.Mv[alg], _ = strconv.ParseFloat(cols[idx], 64)
-			}
-			if idx, ok := colIdx["re_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				snap.Re[alg], _ = strconv.ParseFloat(cols[idx], 64)
-			}
-			if idx, ok := colIdx["ss_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Ss[alg] = v
-			}
-			if idx, ok := colIdx["bs_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Bs[alg] = v
-			}
-			if idx, ok := colIdx["ns_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Ns[alg] = v
-			}
-		}
-
-		snaps = append(snaps, snap)
-	}
-
-	// Cache the result
-	csvReadCacheMu.Lock()
-	csvReadCache[cacheKey] = cachedCSVRead{data: snaps, readAt: time.Now()}
-	// Prune cache if too many entries
-	if len(csvReadCache) > 100 {
-		for k := range csvReadCache {
-			delete(csvReadCache, k)
-			break
-		}
-	}
-	csvReadCacheMu.Unlock()
-
-	return snaps
-}
+var _ = fmt.Sprintf
+var _ = time.Now

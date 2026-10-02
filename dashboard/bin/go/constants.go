@@ -23,8 +23,5 @@ const (
 	recentProofsCap = 50
 )
 
-// File paths.  Mirrors bpftune_log.py path constants.
-// Names match the existing main.go var block (which we keep using).
-const (
-	stateJSONPath = "/var/lib/bpftune/history/collector-go-state.json"
-)
+// File paths.  Vars (not consts) so --data-root can override at startup.
+var stateJSONPath = "/var/lib/bpftune/history/collector-go-state.json"

@@ -1,12 +1,20 @@
-// bpftune-collector-go: Go replacement for bpftune-collector.py
-//
-// Handles: HTTP server (static files + gzip + SSE), BPF map reading,
-// current.json generation, SSE delta encoding, /api/labels.
-// The Python renderer (bpftune-render.py) stays as-is (runs via cron).
-//
-// Build: go build -o bpftune-collector-go
-// Run:   ./bpftune-collector-go --port 8080 --bind 0.0.0.0
 package main
+
+// main.go — HTTP server, SSE, /api/labels, /current.json.
+//
+// v0.7.0 refactor:
+//   - readBPFMap → bpf_reader.go
+//   - collect() → collect.go
+//   - HTTP /data/* handlers → http_handlers.go
+//   - renderToDisk + static file writers → render.go
+//   - ring buffer + snapshots → history.go
+//   - label resolution → bucketing.go
+//   - CSV writer → csv_writer.go
+//   - CSV reader + cache → csv_reader.go
+//
+// This file is now ~280 lines (down from ~1046). Each concern lives in
+// its own file, so future patches don't require grepping through a
+// monolith to find the right line.
 
 import (
 	"compress/gzip"
@@ -16,9 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -54,498 +60,17 @@ func NewCollector() *Collector {
 		sseClients: make(map[chan []byte]bool),
 		startedAt:  time.Now(),
 	}
-	// v0.5: load history ring buffer from disk (so charts survive restart)
+	// Load history ring buffer from disk (so charts survive restart)
 	hist.loadFromDisk()
-	// v0.5.1: load CSV tail (last 24h) into ring buffer so 1h/24h charts
-	// work immediately after restart
-	go loadCSVTailIntoRingBuffer() // v0.5.6: async so HTTP starts immediately
+	// Load CSV tail (last 24h) into ring buffer so 1h/24h charts
+	// work immediately after restart.  Async so HTTP starts fast.
+	go loadCSVTailIntoRingBuffer()
 	return c
 }
 
 // ============================================================================
-// BPF map reading (via bpftool)
+// current.json writer
 // ============================================================================
-
-// hostEntry is one BPF map entry after label resolution + merge.
-// Mirrors Python read_map()'s (inst, addr, v) tuple.
-type hostEntry struct {
-	Inst int
-	Addr string // labeled + merged (e.g. "home-sco" or "v6:20010db8" → folded)
-	V    map[string]interface{}
-}
-
-// readBPFMap runs bpftool, parses the JSON, applies labelFor + merges
-// by final label.  Mirrors bpftune_log.py:read_map.
-func readBPFMap() ([]hostEntry, error) {
-	cmd := exec.Command("bpftool", "--json", "map", "dump", "name", "remote_host_map")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("bpftool: %w", err)
-	}
-	var raw []map[string]interface{}
-	if err := json.Unmarshal(output, &raw); err != nil {
-		return nil, fmt.Errorf("bpftool json: %w", err)
-	}
-	// Merge by final labeled addr: sum instances, keep the entry
-	// with more instances for the other fields (matches Python).
-	merged := map[string]*hostEntry{}
-	var order []string
-	for _, entry := range raw {
-		fmtData, ok := entry["formatted"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		val, ok := fmtData["value"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		keyData, ok := fmtData["key"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		in6u, ok := keyData["in6_u"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		addrBytes, ok := in6u["u6_addr8"].([]interface{})
-		if !ok || len(addrBytes) != 16 {
-			continue
-		}
-		b := make([]int, 16)
-		for i, v := range addrBytes {
-			b[i] = int(v.(float64))
-		}
-		var addr string
-		if b[10] == 0xff && b[11] == 0xff {
-			addr = fmt.Sprintf("%d.%d.%d.%d", b[12], b[13], b[14], b[15])
-		} else {
-			v6 := (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
-			if v6 != 0 {
-				addr = fmt.Sprintf("v6:%08x", v6)
-			} else {
-				addr = "0.0.0.0"
-			}
-		}
-		// Apply labelFor + fold + canon, then merge by final key.
-		final := labelFor(addr)
-		if final == "" {
-			final = addr
-		}
-		inst := toInt(val["instances"])
-		if existing, ok := merged[final]; ok {
-			existing.Inst += inst
-			// Keep the entry with more instances for the other fields.
-			if inst > existing.Inst-inst {
-				existing.V = val
-			}
-		} else {
-			merged[final] = &hostEntry{Inst: inst, Addr: final, V: val}
-			order = append(order, final)
-		}
-	}
-	out := make([]hostEntry, 0, len(order))
-	for _, addr := range order {
-		out = append(out, *merged[addr])
-	}
-	return out, nil
-}
-
-// ============================================================================
-// Collection cycle — reads BPF map, builds current.json
-// ============================================================================
-
-func (c *Collector) collect() {
-	hosts, err := readBPFMap()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "collector: BPF map read failed: %v\n", err)
-		return
-	}
-
-	now := time.Now().Unix()
-
-	// Build buckets list (top 8 by inst) + metric_by_bucket +
-	// bucket_live (single-point) + live_leaders.  All use the same
-	// iter so we walk hosts once.
-	type bucket struct {
-		Dest    string  `json:"dest"`
-		Inst    int     `json:"inst"`
-		RttUs   float64 `json:"rtt_us"`
-		RefMbps float64 `json:"ref_mbps"`
-		BestAlg string  `json:"best_alg"`
-		NAlg    int     `json:"n_alg"`
-	}
-	var buckets []bucket
-	metricByBucket := map[string]interface{}{}
-	bucketLive := map[string]interface{}{}
-	var liveLeaders []interface{}
-
-	// Vote-sum sort: busiest bucket first (matches Python's
-	// sorted(hosts, key=lambda x: -_vote_sum(x[2])) in
-	// data_metric_by_bucket).
-	sortedHosts := make([]hostEntry, len(hosts))
-	copy(sortedHosts, hosts)
-	// Sort by inst desc — matches Python read_map line 809:
-	//   entries.sort(key=lambda x: -x[0])
-	// Python's data_metric_by_bucket re-sorts by vote_sum desc, but
-	// since metric_by_bucket is a JSON object (unordered), we just
-	// use one sort: inst desc.  This gives the buckets list and
-	// live_leaders the same order Python produces.
-	sort.Slice(sortedHosts, func(i, j int) bool {
-		return sortedHosts[i].Inst > sortedHosts[j].Inst
-	})
-
-	for _, h := range sortedHosts {
-		v := h.V
-		addr := h.Addr
-		if addr == "0.0.0.1" || addr == "?" {
-			continue
-		}
-		if strings.HasPrefix(addr, "127.") ||
-			strings.HasPrefix(addr, "169.254.") ||
-			strings.HasPrefix(addr, "0.") {
-			continue
-		}
-		if h.Inst < 2 {
-			continue
-		}
-		inst := h.Inst
-
-		// Picker's choice (same formula as data_live_leaders).
-		metrics, _ := v["metrics"].([]interface{})
-		bestI := toInt(v["best_i"])
-		if bestI < 0 || bestI >= len(CONGS) {
-			bestI = 0
-		}
-		bestW := 0
-		for i := 0; i < len(CONGS) && i < len(metrics); i++ {
-			mi, _ := metrics[i].(map[string]interface{})
-			if mi == nil {
-				continue
-			}
-			cnt := toInt(mi["metric_count"])
-			rv := toInt(mi["rate_ema"])
-			if cnt < minLeaderTrust || rv == 0 {
-				continue
-			}
-			ss := toInt(mi["swap_score"])
-			ssEff := ss
-			if ssEff == 0 {
-				ssEff = 256
-			}
-			bad := toInt(mi["bad_streak"])
-			nul := toInt(mi["null_streak"])
-			weighted := rv * ssEff / 256
-			pen := 16 + bad*4 + nul*2
-			weighted = weighted * 16 / pen
-			if weighted > bestW {
-				bestW = weighted
-				bestI = i
-			}
-		}
-		bestAlg := CONGS[bestI]
-		if bestI >= len(CONGS) {
-			bestAlg = fmt.Sprintf("alg%d", bestI)
-		}
-		// n_alg = count of metrics with metric_count > 0
-		nAlg := 0
-		for _, m := range metrics {
-			if mi, ok := m.(map[string]interface{}); ok &&
-				toInt(mi["metric_count"]) > 0 {
-				nAlg++
-			}
-		}
-		refMbps := toFloat(v["max_rate_delivered"]) / bpsToMbps
-		// Cap buckets list at 8 (Python data_buckets: n=8).  We use a
-		// conditional append instead of `break` so the loop keeps
-		// going to build metric_by_bucket + bucket_live for ALL
-		// buckets (not just the first 8).
-		if len(buckets) < 8 {
-			buckets = append(buckets, bucket{
-				Dest:    addr,
-				Inst:    inst,
-				RttUs:   toFloat(v["min_rtt"]),
-				RefMbps: round1(refMbps),
-				BestAlg: bestAlg,
-				NAlg:    nAlg,
-			})
-		}
-
-		// metric_by_bucket: full per-alg row matching Python's
-		// data_metric_by_bucket output shape.
-		var metricRows []interface{}
-		for i := 0; i < len(CONGS); i++ {
-			var mi map[string]interface{}
-			if i < len(metrics) {
-				mi, _ = metrics[i].(map[string]interface{})
-			}
-			if mi == nil {
-				mi = map[string]interface{}{}
-			}
-			val := toInt(mi["metric_value"])
-			if val == (1<<63-1) || val < 0 {
-				val = 0
-			}
-			mc := toInt(mi["metric_count"])
-			a := toInt(mi["sockets_alive"])
-			ss := toInt(mi["swap_score"])
-			bs := toInt(mi["bad_streak"])
-			ns := toInt(mi["null_streak"])
-			re := toInt(mi["rate_ema"])
-			penalty := 16.0 / (16.0 + float64(bs)*4.0 + float64(ns)*2.0)
-			score := float64(re) * (float64(ss) / 256.0) * penalty
-			active := mc > 0 || a > 0 || re > 0 || ss > 0
-			var metricVal interface{}
-			if val > 0 {
-				metricVal = round1(float64(val) / 1e6)
-			} else {
-				metricVal = 0
-			}
-			row := map[string]interface{}{
-				"alg":         CONGS[i],
-				"metric":      metricVal,
-				"votes":       mc,
-				"alive":       a,
-				"rate_ema":    re,
-				"swap_score":  ss,
-				"penalty":     round3(penalty),
-				"score":       round2(score),
-				"bad_streak":  bs,
-				"null_streak": ns,
-				"active":      active,
-			}
-			metricRows = append(metricRows, row)
-		}
-		// Sort by (active desc, score desc).
-		sort.SliceStable(metricRows, func(i, j int) bool {
-			ri, _ := metricRows[i].(map[string]interface{})
-			rj, _ := metricRows[j].(map[string]interface{})
-			ai, _ := ri["active"].(bool)
-			aj, _ := rj["active"].(bool)
-			if ai != aj {
-				return ai
-			}
-			si, _ := ri["score"].(float64)
-			sj, _ := rj["score"].(float64)
-			return si > sj
-		})
-		metricByBucket[addr] = metricRows
-
-		// bucket_live (single-point; renderer provides historical series).
-		ts := now
-		cols := map[string]interface{}{}
-		for i := 0; i < len(CONGS); i++ {
-			var mi map[string]interface{}
-			if i < len(metrics) {
-				mi, _ = metrics[i].(map[string]interface{})
-			}
-			if mi == nil {
-				mi = map[string]interface{}{}
-			}
-			cols["re_"+CONGS[i]] = []interface{}{toFloat(mi["rate_ema"])}
-			cols["ss_"+CONGS[i]] = []interface{}{toInt(mi["swap_score"])}
-			cols["bs_"+CONGS[i]] = []interface{}{toInt(mi["bad_streak"])}
-			cols["ns_"+CONGS[i]] = []interface{}{toInt(mi["null_streak"])}
-		}
-		bucketLive[addr] = map[string]interface{}{
-			"ts":   []interface{}{ts},
-			"cols": cols,
-		}
-
-		// live_leaders entry (proper formula).
-		var cands []struct {
-			W, Rv, Ss, Bad, Nul, Cnt, I int
-		}
-		for i := 0; i < len(CONGS); i++ {
-			var mi map[string]interface{}
-			if i < len(metrics) {
-				mi, _ = metrics[i].(map[string]interface{})
-			}
-			if mi == nil {
-				continue
-			}
-			cnt := toInt(mi["metric_count"])
-			rv := toInt(mi["rate_ema"])
-			ss := toInt(mi["swap_score"])
-			bad := toInt(mi["bad_streak"])
-			nul := toInt(mi["null_streak"])
-			if cnt < minLeaderTrust || rv == 0 {
-				continue
-			}
-			ssEff := ss
-			if ssEff == 0 {
-				ssEff = 256
-			}
-			weighted := rv * ssEff / 256
-			pen := 16 + bad*4 + nul*2
-			weighted = weighted * 16 / pen
-			cands = append(cands, struct {
-				W, Rv, Ss, Bad, Nul, Cnt, I int
-			}{weighted, rv, ss, bad, nul, cnt, i})
-		}
-		if len(cands) > 0 {
-			sort.SliceStable(cands, func(i, j int) bool { return cands[i].W > cands[j].W })
-			topN := liveTopN
-			if len(cands) < topN {
-				topN = len(cands)
-			}
-			topRows := make([]interface{}, 0, topN)
-			for _, c := range cands[:topN] {
-				topRows = append(topRows, map[string]interface{}{
-					"alg":        CONGS[c.I],
-					"weighted":   c.W,
-					"rate_ema":   c.Rv,
-					"swap_score": c.Ss,
-					"bad":        c.Bad,
-					"null":       c.Nul,
-					"count":      c.Cnt,
-				})
-			}
-			// Cap live_leaders at LIVE_MAX_BUCKETS (8).  Use a
-			// conditional append instead of `break` — we still
-			// need to build metric_by_bucket + bucket_live for
-			// the remaining buckets in this loop iteration.
-			if len(liveLeaders) < liveMaxBuckets {
-				liveLeaders = append(liveLeaders, map[string]interface{}{
-					"dest": addr,
-					"inst": inst,
-					"top":  topRows,
-				})
-			}
-		}
-	}
-
-	// Build current.json
-	doc := map[string]interface{}{
-		"generated_ts": now,
-		"build": map[string]interface{}{
-			// v0.4.3: mirror Python data_build exactly.
-			//   version      = bpftune package version (from dpkg-query)
-			//   dash_version = git HEAD short SHA (dashboard commit)
-			//   service      = systemctl is-active bpftune
-			//   uptime_min   = minutes since bpftune service started
-			//   started_utc  = "HH:MM:SS" UTC of bpftune service start
-			"version":      bpftuneVersion(),
-			"dash_version": dashVersion(),
-			"service":      bpftuneServiceActive(),
-			"uptime_min":   uptimeMin(),
-			"started_utc":  startedUTC(),
-			"log_path":     "/var/log/bpftune-met-live.log",
-			// v0.4.2: surface prefix4/prefix6/explore_pct so the
-			// dashboard can display them in the build/service panel.
-			"prefix4":     prefix4Value(),
-			"prefix6":     prefix6Value(),
-			"explore_pct": explorePctValue(),
-		},
-		"system":           readSystemInfo(),
-		"buckets":          buckets,
-		"metric_by_bucket": metricByBucket,
-		"bucket_live":      bucketLive,
-		"live_leaders":     liveLeaders,
-		"hostname":         readProc("/proc/sys/kernel/hostname"),
-		"now_mono":         readProcUptime(),
-	}
-
-	// 0.4 full port: parse log files for recent_swaps, recent_proofs,
-	// swap_outcomes, bucket_ips, log_window, proofs_raw.
-	topSwaps, topProofs, swapOutcomes, bucketIPs, logWindow, proofsRaw := c.parseLogs()
-	doc["recent_swaps"] = topSwaps
-	doc["recent_proofs"] = topProofs
-	doc["swap_outcomes"] = swapOutcomes
-	doc["bucket_ips"] = bucketIPs
-	doc["log_window"] = logWindow
-	doc["proofs_raw"] = proofsRaw
-	doc["proof"] = proofsRaw
-
-	// v0.5: add missing data panels (churn, rate, divergence, tunables)
-	// These were previously only in the Python collector.
-	// v0.5.12: parse log ONCE, pass results to all functions (was 4x parses)
-	logText := readLogTail(logTailBytes)
-	allSwaps, allMet, allSrate := parseSwapsMetsSrates(logText)
-	doc["churn"] = buildChurnFromParsed(allSwaps)
-	doc["rate"] = buildRate(logText)
-	doc["divergence"] = buildDivergenceFromParsed(allSwaps, allMet, allSrate)
-	doc["tunables"] = buildTunables()
-
-	// v0.5: capture snapshots for the in-memory ring buffer
-	// (replaces Python renderer cron + SQLite + CSV)
-	captureSnapshotsFromBPF(hosts, now)
-	// v0.5.14: rebuild bucket_live from ring buffer (full 1h time series, not 1 point)
-	// This fixes the "charts go empty every 30s" issue — SSE pushes real time-series data
-	hist.mu.RLock()
-	for _, h := range sortedHosts {
-		addr := h.Addr
-		rawSnaps := hist.raw[addr]
-		cutoff := now - 3600 // last 1h
-		var tsArr []interface{}
-		colsLive := map[string]interface{}{}
-		for _, alg := range CONGS {
-			colsLive["re_"+alg] = []interface{}{}
-			colsLive["ss_"+alg] = []interface{}{}
-			colsLive["bs_"+alg] = []interface{}{}
-			colsLive["ns_"+alg] = []interface{}{}
-		}
-		for _, s := range rawSnaps {
-			if s.Ts < cutoff {
-				continue
-			}
-			tsArr = append(tsArr, s.Ts)
-			for _, alg := range CONGS {
-				reArr, _ := colsLive["re_"+alg].([]interface{})
-				colsLive["re_"+alg] = append(reArr, s.Re[alg])
-				ssArr, _ := colsLive["ss_"+alg].([]interface{})
-				colsLive["ss_"+alg] = append(ssArr, s.Ss[alg])
-				bsArr, _ := colsLive["bs_"+alg].([]interface{})
-				colsLive["bs_"+alg] = append(bsArr, s.Bs[alg])
-				nsArr, _ := colsLive["ns_"+alg].([]interface{})
-				colsLive["ns_"+alg] = append(nsArr, s.Ns[alg])
-			}
-		}
-		if len(tsArr) > 0 {
-			bucketLive[addr] = map[string]interface{}{
-				"ts":   tsArr,
-				"cols": colsLive,
-			}
-		}
-	}
-	hist.mu.RUnlock()
-
-	// v0.5.1: write to CSV files (same format as Python collector)
-	// buckets.v2.csv: one row per bucket per cycle
-	// swaps.csv: one row per NEW swap event (deduplicated)
-	// srate.csv: one row per NEW srate event (deduplicated)
-	writeBucketsCSV(hosts, now)
-	// v0.5.12: reuse already-parsed swaps (no re-parse)
-	writeSwapsCSV(allSwaps, now)
-	writeSrateCSV(logText, now)
-
-	// Update current state + compute key hashes
-	c.mu.Lock()
-	c.current = doc
-	c.keyHashes = computeKeyHashes(doc)
-	c.mu.Unlock()
-
-	// Write current.json to disk
-	c.writeCurrentJSON()
-
-	// Notify SSE clients
-	c.notifySSE()
-}
-
-// voteSum sums metric_count across all algs for one bucket.  Used to
-// sort hosts busiest-first (matches Python _vote_sum).
-func voteSum(v map[string]interface{}) int {
-	if v == nil {
-		return 0
-	}
-	metrics, _ := v["metrics"].([]interface{})
-	total := 0
-	for _, m := range metrics {
-		if mi, ok := m.(map[string]interface{}); ok {
-			total += toInt(mi["metric_count"])
-		}
-	}
-	return total
-}
 
 func (c *Collector) writeCurrentJSON() {
 	c.mu.RLock()
@@ -577,17 +102,11 @@ func computeKeyHashes(doc map[string]interface{}) map[string]string {
 
 func (c *Collector) notifySSE() {
 	c.mu.RLock()
-	hashes := make(map[string]string, len(c.keyHashes))
-	for k, v := range c.keyHashes {
-		hashes[k] = v
-	}
 	current := c.current
 	c.mu.RUnlock()
 
-	// For each SSE client, send delta
 	c.mu.Lock()
 	for client := range c.sseClients {
-		// Send full payload (simplified — in production, track per-client state)
 		msg := map[string]interface{}{"__t": "f", "v": current}
 		data, _ := json.Marshal(msg)
 		select {
@@ -611,37 +130,24 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 		c.serveStatic(w, r, filepath.Join(binDir, r.URL.Path), "")
 		return
 	}
-	// v0.5: dynamic /data/ files served from in-memory ring buffer
-	// (replaces the Python renderer cron + SQLite + CSV)
+	// /data/* — static file first (10 min fresh), then dynamic fallback.
 	if strings.HasPrefix(r.URL.Path, "/data/") {
 		sub := r.URL.Path[len("/data/"):]
 		if sub == "" || strings.HasSuffix(sub, ".csv") || strings.Contains(sub, "..") || strings.HasPrefix(sub, ".") {
 			http.NotFound(w, r)
 			return
 		}
-		// v0.5.8: serve static files first (pre-built by renderToDisk every 5 min)
-		// This makes the dashboard FAST — no dynamic building on every request
 		staticPath := filepath.Join(histDir, "data", sub)
 		if fi, err := os.Stat(staticPath); err == nil && time.Since(fi.ModTime()) < 10*time.Minute {
 			c.serveStatic(w, r, staticPath, "")
 			return
 		}
-		// Fall back to dynamic (only if static file is stale or missing)
-		// Dynamic files (served from ring buffer)
+		// Dynamic fallback
 		if strings.HasPrefix(sub, "bucket_") && strings.HasSuffix(sub, ".json") {
 			bucketID := strings.TrimSuffix(strings.TrimPrefix(sub, "bucket_"), ".json")
-			// Un-sanitize: convert underscores back to colons for v6
-			bucketID = strings.ReplaceAll(bucketID, "_", ":")
-			// But for v4 labeled buckets, the ID is the label (e.g., "home-sco")
-			// The sanitization replaced non-alphanumeric with _, so "home-sco" stays "home-sco"
-			// For v6 like "v6:2606abcd", it was sanitized to "v6_2606abcd" → we need to restore
-			// Actually, the dashboard.js does: safe.replace(/:/g, "_")
-			// So "v6:2606abcd" → "v6_2606abcd". We need to reverse: _ → : only for v6_ prefix
-			if strings.HasPrefix(bucketID, "v6:") {
-				// already has colon (wasn't replaced)
-			} else if strings.HasPrefix(sub, "bucket_v6_") {
-				bucketID = "v6:" + strings.TrimPrefix(sub, "bucket_v6_")
-				bucketID = strings.TrimSuffix(bucketID, ".json")
+			// Un-sanitize: underscores → colons for v6 form
+			if strings.HasPrefix(bucketID, "v6_") {
+				bucketID = "v6:" + strings.TrimPrefix(bucketID, "v6_")
 			}
 			hist.handleBucketJSON(w, r, bucketID)
 			return
@@ -653,7 +159,6 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 			hist.handleMetaJSON(w, r, bucketsAsMaps(buckets))
 			return
 		}
-		// v0.5.20: swaps.json served as static file (built by renderToDisk)
 		if sub == "fleet.json" {
 			c.mu.RLock()
 			buckets := c.current["buckets"]
@@ -661,8 +166,21 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 			hist.handleFleetJSON(w, r, bucketsAsMaps(buckets))
 			return
 		}
-		// Fall back to static file serving (for any other /data/ files)
-		c.serveStatic(w, r, filepath.Join(histDir, "data", sub), "")
+		if sub == "swaps.json" {
+			c.mu.RLock()
+			so := c.current["swap_outcomes"]
+			c.mu.RUnlock()
+			if m, ok := so.(map[string]interface{}); ok {
+				hist.handleSwapsJSON(w, r, m)
+			} else {
+				// v0.7.0: return empty object instead of 404 when no swaps yet.
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Write([]byte("{}"))
+			}
+			return
+		}
+		c.serveStatic(w, r, staticPath, "")
 		return
 	}
 	if r.URL.Path == "/current.json" {
@@ -686,7 +204,6 @@ func (c *Collector) serveStatic(w http.ResponseWriter, r *http.Request, path, co
 		http.NotFound(w, r)
 		return
 	}
-	// Guess MIME type
 	if contentType == "" {
 		contentType = "application/octet-stream"
 		switch filepath.Ext(path) {
@@ -700,7 +217,6 @@ func (c *Collector) serveStatic(w http.ResponseWriter, r *http.Request, path, co
 			contentType = "application/json; charset=utf-8"
 		}
 	}
-	// Gzip if client supports it
 	if acceptsGzip(r) && shouldGzip(path) {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Encoding", "gzip")
@@ -749,7 +265,6 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send initial full payload
 	c.mu.RLock()
 	current := c.current
 	c.mu.RUnlock()
@@ -761,7 +276,6 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Register as SSE client
 	ch := make(chan []byte, 10)
 	c.mu.Lock()
 	c.sseClients[ch] = true
@@ -772,7 +286,6 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 		c.mu.Unlock()
 	}()
 
-	// Poll for changes every 1s
 	lastHash := ""
 	for {
 		select {
@@ -782,7 +295,6 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		case <-time.After(1 * time.Second):
-			// Check for changes
 			c.mu.RLock()
 			newHash := ""
 			if c.current != nil {
@@ -794,7 +306,6 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 			if newHash != lastHash && newHash != "" {
 				lastHash = newHash
-				// Send full payload (simplified — production would send delta)
 				c.mu.RLock()
 				msg := map[string]interface{}{"__t": "f", "v": c.current}
 				c.mu.RUnlock()
@@ -806,11 +317,13 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ============================================================================
+// /api/labels handler
+// ============================================================================
+
 func (c *Collector) handleLabels(w http.ResponseWriter, r *http.Request) {
-	// GET: return labels + groups
 	if r.Method == "GET" {
 		labels := loadLabels()
-		// Read aliases file for groups
 		aliases := readAliases()
 		groups := buildGroups(aliases, labels)
 
@@ -826,7 +339,6 @@ func (c *Collector) handleLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST: update labels (basic implementation)
 	if r.Method == "POST" {
 		var req map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -835,10 +347,7 @@ func (c *Collector) handleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 		ip, _ := req["ip"].(string)
 		label, _ := req["label"].(string)
-		// v0.5.5: canonicalize IP to current prefix width before storing
-		// so a /128 v6 like "2603:c020:8028:8800::" becomes "2603:c020::"
-		// (matching the BPF map's /32 form).  Without this, the label
-		// key doesn't match the bucket ID and the "move" appears to fail.
+		// Canonicalize IP to current prefix width before storing.
 		ip = canonBucketWithPrefix(ip, prefix4Value(), prefix6Value())
 
 		labels := loadLabels()
@@ -849,7 +358,12 @@ func (c *Collector) handleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 		saveLabels(labels)
 
-		// Re-read + return
+		// v0.7.0: invalidate static files immediately so the new label
+		// appears in meta.json + bucket_*.json without waiting 5 min.
+		staticFilesDirtyMu.Lock()
+		staticFilesDirty = true
+		staticFilesDirtyMu.Unlock()
+
 		labels = loadLabels()
 		aliases := readAliases()
 		groups := buildGroups(aliases, labels)
@@ -904,7 +418,6 @@ func buildGroups(aliases []string, labels map[string]string) map[string]interfac
 		if len(parts) < 2 {
 			continue
 		}
-		// Format: from_ip = to_ip label
 		if !strings.Contains(raw, "=") {
 			continue
 		}
@@ -988,7 +501,23 @@ func toString(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
+	if n, ok := v.(int); ok {
+		return fmt.Sprintf("%d", n)
+	}
 	return ""
+}
+
+// jsonNewEncoder wraps encoding/json.NewEncoder for use by http_handlers.go.
+func jsonNewEncoder(w interface{}) *jsonEncoderImpl {
+	return &jsonEncoderImpl{w: w.(http.ResponseWriter)}
+}
+
+type jsonEncoderImpl struct {
+	w http.ResponseWriter
+}
+
+func (e *jsonEncoderImpl) Encode(v interface{}) error {
+	return json.NewEncoder(e.w).Encode(v)
 }
 
 // ============================================================================
@@ -998,15 +527,52 @@ func toString(v interface{}) string {
 func main() {
 	port := flag.Int("port", 8082, "HTTP port")
 	bind := flag.String("bind", "127.0.0.1", "bind address")
+	// v0.7.0: allow overriding data paths for testing / debugging / sandboxes.
+	dataRoot := flag.String("data-root", "/var/lib/bpftune", "root for state files (history/, aliases.labels.json, prefix4, etc.)")
+	aliasesPath := flag.String("aliases", "/etc/bpftune/aliases", "path to /etc/bpftune/aliases")
+	binPath := flag.String("bin-dir", "/opt/bpftune-dashboard/bin", "path to dashboard.js + dashboard.css")
+	// v0.7.3: configurable ring buffer cap.  Default 120 = 1h at 30s.
+	// For servers with more buckets, use 60 (30min) to save memory.
+	ringCapFlag := flag.Int("ring-cap", 120, "ring buffer entries per bucket (120=1h, 60=30min, 240=2h)")
 	flag.Parse()
+
+	// v0.7.3: set ring buffer cap
+	ringCap = *ringCapFlag
+
+	// Apply overrides (only if user passed a non-default value).
+	if *dataRoot != "/var/lib/bpftune" {
+		histDir = *dataRoot + "/history"
+		labelsFile = *dataRoot + "/aliases.labels.json"
+		// v0.7.0: all path vars are now vars (not consts) so we can override.
+		prefix4Path = *dataRoot + "/prefix4"
+		prefix6Path = *dataRoot + "/prefix6"
+		explorePctPath = *dataRoot + "/explore_pct"
+		bucketsCSVPath = *dataRoot + "/history/buckets.v2.csv"
+		swapsCSVPath = *dataRoot + "/history/swaps.csv"
+		srateCSVPath = *dataRoot + "/history/srate.csv"
+		stateJSONPath = *dataRoot + "/history/collector-go-state.json"
+	}
+	if *aliasesPath != "/etc/bpftune/aliases" {
+		aliasesFile = *aliasesPath
+	}
+	if *binPath != "/opt/bpftune-dashboard/bin" {
+		binDir = *binPath
+	}
 
 	collector := NewCollector()
 
-	// Initial collection
-	// v0.5.9: synchronous first collect — current.json populated before HTTP starts
+	// Synchronous first collect — current.json populated before HTTP starts.
 	collector.collect()
 
-	// Start collection loop (every 30s)
+	// v0.7.3: synchronous first renderToDisk — static files ready before
+	// HTTP starts.  This adds ~5-15s to startup but ensures all chart
+	// requests are served from fast static files (not slow CSV reads).
+	// fast=true: only 1h+24h (7d+all generated by renderSlowToDisk below).
+	collector.renderToDisk()
+	// Also generate 7d+all on startup (synchronous, ~10-30s for large CSV)
+	collector.renderSlowToDisk()
+
+	// Collection loop (every 30s)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -1015,9 +581,8 @@ func main() {
 		}
 	}()
 
-	// v0.5.8: render static files every 5 min (like Python renderer cron)
+	// renderToDisk loop (every 5 min): 1h + 24h + meta + swaps + fleet
 	go func() {
-		collector.renderToDisk()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -1025,7 +590,21 @@ func main() {
 		}
 	}()
 
-	// Start HTTP server
+	// renderSlowToDisk loop (once a day at 4am, or every 24h): 7d + all
+	go func() {
+		// Calculate time until next 4am
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day()+1, 4, 0, 0, 0, now.Location())
+		time.Sleep(next.Sub(now))
+		collector.renderSlowToDisk()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			collector.renderSlowToDisk()
+		}
+	}()
+
+	// HTTP server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", collector.handleIndex)
 
@@ -1037,8 +616,6 @@ func main() {
 		Handler: mux,
 	}
 
-	// Serve static files from bin dir (for dashboard.js, dashboard.css)
-	// The handleIndex function handles this already.
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "collector: HTTP server failed: %v\n", err)
 		os.Exit(1)

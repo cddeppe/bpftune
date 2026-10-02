@@ -100,25 +100,23 @@ type swapRow struct {
 // Main entry — parseLogs
 // ============================================================================
 
-// parseLogs reads the log tail (last 2MB across all bpftune-met-*.log
-// files), parses swaps/mets/srates/proofs, derives swap outcomes, and
-// returns the dashboard fields: recent_swaps (top 18), recent_proofs
-// (top 18), swap_outcomes (composite + srate + sustained + loss
-// recovery), bucket_ips, log_window, proofs_raw.
-func (c *Collector) parseLogs() (topSwaps, topProofs []interface{},
+// buildLogPanels is the entry point for log-derived dashboard panels.
+// Takes pre-parsed swaps/mets/srates (parsed ONCE per cycle in collect.go)
+// so we don't re-parse the log 4 times per cycle (was hitting 40% CPU peak).
+//
+// Returns: topSwaps (top 18), topProofs (top 18), swapOutcomes, bucketIPs,
+// logWindow, proofsRaw.
+func buildLogPanels(swaps []swapRow,
+	metByCookie map[int64][]metEntry,
+	srateByCookie map[int64][]srateEntry,
+	cdest map[string][2]string, text string) (topSwaps, topProofs []interface{},
 	swapOutcomes, bucketIPs, logWindow, proofsRaw interface{}) {
 
-	text := readLogTail(logTailBytes)
 	if text == "" {
-		// Empty log — return minimal defaults so current.json has
-		// the right shape even when bpftune isn't running.
 		return []interface{}{}, []interface{}{},
 			emptySwapOutcomes(), map[string]interface{}{},
 			emptyLogWindow(), []interface{}{}
 	}
-
-	swaps, metByCookie, srateByCookie := parseSwapsMetsSrates(text)
-	cdest := cookieDestMap(text)
 
 	// ----- recent_swaps (newest-first, last 18) --------------------------
 	allSwaps := buildRecentSwapRows(swaps, metByCookie, srateByCookie, cdest)
@@ -809,6 +807,49 @@ type proofSample struct {
 	sum     int64
 	n       int
 	sampMax int64
+}
+
+// buildProofsRawEvents returns PER-EVENT proof data (not aggregated).
+// Each entry has: ts, alg, rate, tier, dest.
+// The dashboard.js filters by dest and aggregates per-bucket.
+// This fixes the "proof leaderboard is empty" bug.
+func buildProofsRawEvents(text string) []interface{} {
+	var out []interface{}
+	cdest := cookieDestMap(text)
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.Contains(line, "proof cookie=") {
+			continue
+		}
+		m := rxProof.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		ts, _ := strconv.ParseFloat(m[1], 64)
+		cookie := m[2]
+		alg, _ := strconv.Atoi(m[3])
+		rate, _ := strconv.ParseInt(m[4], 10, 64)
+		tier := m[5]
+		tierLabel := "good"
+		if tier == "2" {
+			tierLabel = "proved"
+		}
+		dest := ""
+		if d, ok := cdest[cookie]; ok {
+			ds := destStr(d[0], d[1])
+			dest = labelFor(ds)
+			if dest == "" {
+				dest = ds
+			}
+		}
+		out = append(out, map[string]interface{}{
+			"ts":   ts,
+			"alg":  algName(alg),
+			"rate": round1(float64(rate) / bpsToMbps),
+			"tier": tierLabel,
+			"dest": dest,
+		})
+	}
+	return out
 }
 
 func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
