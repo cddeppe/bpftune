@@ -1863,6 +1863,7 @@
       options: timeOpts({
         scales: {
           x: {type: "category", grid: {display: false},
+              min: undefined, max: undefined,
               ticks: {maxRotation: 0, autoSkip: true, autoSkipPadding: 24,
                       padding: 4, maxTicksLimit: 8}},
           y: {beginAtZero: true, grid: {drawTicks: false},
