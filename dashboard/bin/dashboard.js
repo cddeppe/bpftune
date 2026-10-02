@@ -1779,7 +1779,7 @@
           backgroundColor: "#4e79a7",
           borderColor: "#4e79a7",
           borderRadius: 2,
-          maxBarThickness: 14,
+          parsing: false,
         }],
       },
       options: timeOpts({
