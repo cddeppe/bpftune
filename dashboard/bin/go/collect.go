@@ -83,7 +83,7 @@ func (c *Collector) collect() {
 	doc["swap_outcomes"] = swapOutcomes
 	doc["bucket_ips"] = bucketIPs
 	doc["log_window"] = logWindow
-	doc["proofs_raw"] = proofsRaw
+	doc["proofs_raw"] = buildProofsRawEvents(logText)
 	doc["proof"] = proofsRaw
 
 	// ----- Other data panels (reuse parsed log results) ----------------

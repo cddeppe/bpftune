@@ -468,7 +468,7 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 func sanitizeBucketID(id string) string {
 	var b strings.Builder
 	for _, c := range id {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
 			b.WriteRune(c)
 		} else {
 			b.WriteByte('_')

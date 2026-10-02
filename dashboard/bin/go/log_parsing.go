@@ -809,6 +809,47 @@ type proofSample struct {
 	sampMax int64
 }
 
+
+
+func buildProofsRawEvents(text string) []interface{} {
+	var out []interface{}
+	cdest := cookieDestMap(text)
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.Contains(line, "proof cookie=") {
+			continue
+		}
+		m := rxProof.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		ts, _ := strconv.ParseFloat(m[1], 64)
+		cookie := m[2]
+		alg, _ := strconv.Atoi(m[3])
+		rate, _ := strconv.ParseInt(m[4], 10, 64)
+		tier := m[5]
+		tierLabel := "good"
+		if tier == "2" {
+			tierLabel = "proved"
+		}
+		dest := ""
+		if d, ok := cdest[cookie]; ok {
+			ds := destStr(d[0], d[1])
+			dest = labelFor(ds)
+			if dest == "" {
+				dest = ds
+			}
+		}
+		out = append(out, map[string]interface{}{
+			"ts":   ts,
+			"alg":  algName(alg),
+			"rate": round1(float64(rate) / bpsToMbps),
+			"tier": tierLabel,
+			"dest": dest,
+		})
+	}
+	return out
+}
+
 func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
 	events := map[int]proofEvent{}
 	samples := map[int]proofSample{}
@@ -818,7 +859,7 @@ func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
 	}{}
 
 	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, "proof cookie=") {
+		if !strings.Contains(line, "proof cookie=") {
 			m := rxProof.FindStringSubmatch(line)
 			if m == nil {
 				continue
