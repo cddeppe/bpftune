@@ -1694,6 +1694,7 @@
   }
 
   function renderScoreNow() {
+    console.log("renderScoreNow", state.bucketDoc ? "has doc, ranges: " + Object.keys(state.bucketDoc.series || {}).length : "no doc");
     var rng = $("range").value;
     var bid = $("bucket").value;
     if (bid === "all") { var hb = _heaviestBucketWithCoverage(); if (hb) bid = hb.bid; }
@@ -2315,5 +2316,4 @@ function _populateBucketSelect(desiredBucket) {
         if (window.__liveFetch) window.__liveFetch();
       });
   }
-    if (b.log_path)   rows.push(["log", b.log_path, "dim"]);
 
