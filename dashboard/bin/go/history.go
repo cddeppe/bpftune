@@ -734,6 +734,12 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 		id, _ := b["id"].(string)
 		if id == "" {
 			id, _ = b["dest"].(string)
+			if id != "" {
+				id = labelFor(id)
+				if id == "" {
+					id, _ = b["dest"].(string)
+				}
+			}
 		}
 		if id == "" {
 			continue
