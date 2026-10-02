@@ -775,7 +775,52 @@
     if (_bs && _bs.options.length > 0 && _bs.options[0].value !== 'all') {
       _bs.add(new Option('All Buckets', 'all'), 0);
     }
-    if (_bs && _prevVal) { _bs.value = _prevVal; }
+    // API-009 fix: merge in any buckets present in doc.buckets that
+    // renderBuckets() didn't add (e.g. buckets whose addr didn't make
+    // the meta.json top-N but are alive right now).  These show up as
+    // "<shortAddr> (live)" so the user can still pick them.
+    if (_bs && doc.buckets && doc.buckets.length) {
+      var existingIds = {};
+      var existingTexts = {};
+      for (var ei = 0; ei < _bs.options.length; ei++) {
+        existingIds[_bs.options[ei].value] = true;
+        existingTexts[_bs.options[ei].text] = true;
+      }
+      // Find the insertion point: after the static 'All Buckets' (and
+      // any other meta-derived entries) but BEFORE the first custom-
+      // labeled "(live)" entry from a prior cycle, so live entries
+      // cluster at the bottom of the dropdown.
+      var insertAt = _bs.options.length;
+      for (var ii = 0; ii < _bs.options.length; ii++) {
+        if (/\(live\)$/.test(_bs.options[ii].text)) {
+          insertAt = ii;
+          break;
+        }
+      }
+      for (var bi = 0; bi < doc.buckets.length; bi++) {
+        var b = doc.buckets[bi];
+        if (!b || !b.dest) continue;
+        if (existingIds[b.dest]) continue;
+        var liveText = shortAddr(b.dest) + ' (live)';
+        if (existingTexts[liveText]) continue;
+        try {
+          _bs.add(new Option(liveText, b.dest), insertAt);
+          existingIds[b.dest] = true;
+          existingTexts[liveText] = true;
+          insertAt++;
+        } catch (e) { /* IE quirk: ignore */ }
+      }
+    }
+    // API-009 fix: only restore _prevVal if it still exists in the
+    // dropdown — otherwise the select silently ends up with no value
+    // selected and the bucket panels render empty.  Fall back to 'all'.
+    if (_bs && _prevVal) {
+      var _stillThere = false;
+      for (var si = 0; si < _bs.options.length; si++) {
+        if (_bs.options[si].value === _prevVal) { _stillThere = true; break; }
+      }
+      _bs.value = _stillThere ? _prevVal : 'all';
+    }
     else if (_bs) { _bs.value = 'all'; }
     if (_bs && !_bs._refilterHooked) {
       _bs.addEventListener('change', _reFilterPanels);
