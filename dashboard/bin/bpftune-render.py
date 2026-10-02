@@ -590,7 +590,10 @@ def aggregate_all(bfile, algs, now):
                 lo = None if span is None else now - span
                 if lo is not None and t < lo:
                     continue
-                b = int((t - (lo or 0)) // width)
+                # PY-001 fix: epoch-align bin index so bin centers don't shift
+                # when `now` advances between renders. The window filter (lo)
+                # still excludes old rows, but the bin INDEX is absolute.
+                b = int(t // width)
                 key = (ri, b)
                 cell = buck.get(key)
                 if cell is None:
@@ -614,9 +617,9 @@ def aggregate_all(bfile, algs, now):
         for ri, rkey in enumerate(rkeys):
             bins = sorted({k[1] for k in buck if k[0] == ri})
             span, width = rspecs[ri]
-            lo = None if span is None else now - span
-            base = lo if lo is not None else 0
-            ts_out = [int(base + b * width + width / 2) for b in bins]
+            # PY-001 fix: epoch-aligned bin centers — no longer depend on `now`.
+            # ts_out = b * width + width // 2 (stable across renders)
+            ts_out = [int(b * width + width // 2) for b in bins]
             series = {"ts": ts_out}
             is24 = (rkey == "24h")
             for ci, (cname, _) in enumerate(wanted):
@@ -848,7 +851,8 @@ def emit_swaps(rows, srate_rows, now):
             t = ts_of(r)
             if t is None or (lo is not None and t < lo):
                 continue
-            b = int((t - (lo or 0)) // width)
+            # PY-006 fix: epoch-align bin index (was: int((t - (lo or 0)) // width))
+            b = int(t // width)
             d = 1 if truthy(r.get("diverges")) else 0
             o = str(r.get("outcome", "")).strip().lower()
             if o == "win":
@@ -861,7 +865,7 @@ def emit_swaps(rows, srate_rows, now):
             elif o2 == "loss":
                 acc[b][d]["ul"] += 1
 
-        base = lo if lo is not None else 0
+        # PY-006 fix: epoch-aligned bin centers (no longer depend on `now`)
         node = {"ts": [], "swaps": []}
         for d in (0, 1):
             node["d%d_rate"           % d] = []
@@ -874,7 +878,7 @@ def emit_swaps(rows, srate_rows, now):
             node["d%d_n_sustained"    % d] = []
 
         for b in sorted(acc):
-            node["ts"].append(int(base + b * width + width / 2))
+            node["ts"].append(int(b * width + width // 2))
             total = 0
             for d in (0, 1):
                 bucket = acc[b][d]
