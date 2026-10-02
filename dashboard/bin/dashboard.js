@@ -1914,6 +1914,7 @@ _safeRender("score-now", function() { renderScoreNow(); });
       renderNow();
       renderRecentSwapsForBucket();
       renderMetricForBucket();
+      _safeRender("score-now", function() { renderScoreNow(); });
     }).catch(function (e) {
       state.bucketDoc = null;
       renderNow();
