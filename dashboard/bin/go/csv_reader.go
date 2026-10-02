@@ -92,13 +92,6 @@ func readCSVTail(span int64) map[string][]bucketSnapshot {
 		if snap.BestI >= 0 && snap.BestI < len(CONGS) {
 			snap.BestAlg = CONGS[snap.BestI]
 		}
-		// v0.7.5: read rate_best_i and rate_best_v (for coverage calculation)
-		if len(cols) > 8 && cols[7] != "" {
-			snap.RateBestI, _ = strconv.Atoi(cols[7])
-		}
-		if len(cols) > 8 && cols[8] != "" {
-			snap.RateBestV, _ = strconv.ParseFloat(cols[8], 64)
-		}
 		for i, alg := range CONGS {
 			if i >= 16 {
 				break
@@ -191,13 +184,6 @@ func readCSVAll() map[string][]bucketSnapshot {
 		snap.BestI, _ = strconv.Atoi(cols[5])
 		if snap.BestI >= 0 && snap.BestI < len(CONGS) {
 			snap.BestAlg = CONGS[snap.BestI]
-		}
-		// v0.7.5: read rate_best_i and rate_best_v (for coverage calculation)
-		if len(cols) > 8 && cols[7] != "" {
-			snap.RateBestI, _ = strconv.Atoi(cols[7])
-		}
-		if len(cols) > 8 && cols[8] != "" {
-			snap.RateBestV, _ = strconv.ParseFloat(cols[8], 64)
 		}
 		for i, alg := range CONGS {
 			if i >= 16 {
@@ -297,13 +283,6 @@ func readBucketCSV(bucketID string, span int64) []bucketSnapshot {
 		snap.BestI, _ = strconv.Atoi(cols[5])
 		if snap.BestI >= 0 && snap.BestI < len(CONGS) {
 			snap.BestAlg = CONGS[snap.BestI]
-		}
-		// v0.7.5: read rate_best_i and rate_best_v (for coverage calculation)
-		if len(cols) > 8 && cols[7] != "" {
-			snap.RateBestI, _ = strconv.Atoi(cols[7])
-		}
-		if len(cols) > 8 && cols[8] != "" {
-			snap.RateBestV, _ = strconv.ParseFloat(cols[8], 64)
 		}
 		for i, alg := range CONGS {
 			if i >= 16 {

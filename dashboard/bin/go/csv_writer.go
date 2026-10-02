@@ -162,18 +162,6 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 		bestAlg = CONGS[bestI]
 	}
 
-	// v0.7.5: compute rate_best_i and rate_best_v from metrics.
-	// rate_best_v = the rate_ema of the best algorithm (best_i).
-	// Used by coverage calculation (fraction of snapshots with rate_best_v > 0).
-	rateBestI := bestI
-	rateBestV := 0.0
-	if bestI >= 0 && bestI < len(metrics) {
-		mi, _ := metrics[bestI].(map[string]interface{})
-		if mi != nil {
-			rateBestV = toFloat(mi["rate_ema"])
-		}
-	}
-
 	parts := []string{
 		strconv.FormatInt(now, 10), // collected_ts
 		h.Addr,                     // addr (LABELED — do not re-resolve on read)
@@ -182,8 +170,8 @@ func buildBucketCSVRow(h hostEntry, now int64, rmemMin, rmemDef, rmemMax int) st
 		strconv.FormatFloat(toFloat(v["max_rate_delivered"])/bpsToMbps, 'f', -1, 64),
 		strconv.Itoa(bestI),
 		bestAlg,
-		strconv.Itoa(rateBestI), // rate_best_i
-		strconv.FormatFloat(rateBestV, 'f', -1, 64), // rate_best_v
+		"0", // rate_best_i (TODO: compute)
+		"0", // rate_best_v (TODO: compute)
 	}
 	for i := 0; i < 16; i++ {
 		parts = append(parts, mv[i], re[i])

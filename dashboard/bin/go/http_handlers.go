@@ -52,12 +52,12 @@ func (h *historyStore) handleBucketJSON(w http.ResponseWriter, r *http.Request, 
 				}
 				snaps = filtered
 			}
-		case "24h", "7d", "30d", "all":
+		case "24h", "7d", "all":
 			// v0.7.3: 24h/7d/all from CSV (dynamic fallback when static file stale)
 			snaps = readBucketCSV(bucketID, int64(span))
 		}
 
-		series, _ := buildSeriesFromSnaps(snaps, width)
+		series := buildSeriesFromSnaps(snaps, width)
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
@@ -213,9 +213,16 @@ func (h *historyStore) handleFleetJSON(w http.ResponseWriter, r *http.Request, b
 		var have, seen int
 		for _, s := range snaps {
 			seen++
-			if s.RateBestV > 0 {
-				have++
-			}
+			hasRate := false
+				for i := 0; i < 16; i++ {
+					if s.Re[i] > 0 {
+						hasRate = true
+						break
+					}
+				}
+				if hasRate {
+					have++
+				}
 		}
 		if seen == 0 {
 			continue

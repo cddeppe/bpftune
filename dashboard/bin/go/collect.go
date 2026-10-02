@@ -83,10 +83,7 @@ func (c *Collector) collect() {
 	doc["swap_outcomes"] = swapOutcomes
 	doc["bucket_ips"] = bucketIPs
 	doc["log_window"] = logWindow
-	// v0.7.5: proofs_raw = per-event data (with dest, rate, tier)
-	// The dashboard.js filters by dest and aggregates per-bucket.
-	// proof = aggregated per-alg data (for "All Buckets" view).
-	doc["proofs_raw"] = buildProofsRawEvents(logText)
+	doc["proofs_raw"] = proofsRaw
 	doc["proof"] = proofsRaw
 
 	// ----- Other data panels (reuse parsed log results) ----------------

@@ -28,7 +28,6 @@ package main
 //     path sanitized it.
 
 import (
-	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -305,9 +304,16 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 		var have, seen int
 		for _, s := range snaps {
 			seen++
-			if s.RateBestV > 0 {
-				have++
-			}
+			hasRate := false
+				for i := 0; i < 16; i++ {
+					if s.Re[i] > 0 {
+						hasRate = true
+						break
+					}
+				}
+				if hasRate {
+					have++
+				}
 		}
 		if seen == 0 {
 			continue
@@ -407,7 +413,7 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 				}
 				snaps = filtered
 			}
-		case "24h", "7d", "30d", "all":
+		case "24h", "7d", "all":
 			if h.csvAll != nil {
 				snaps = readBucketCSVFromMap(h.csvAll, bucketID, int64(span))
 			} else {
@@ -415,39 +421,8 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 			}
 		}
 
-		series, tsArr := buildSeriesFromSnaps(snaps, width)
-		// v0.7.5c: swaps per bin — read from swaps.csv + align with ts array.
-		// Inlined (no function call) to avoid any type assertion issues.
-		swapsArr := make([]interface{}, len(tsArr))
-		if len(tsArr) > 0 {
-			binCounts := map[int64]int{}
-			if f, err := os.Open(swapsCSVPath); err == nil {
-				scanner := bufio.NewScanner(f)
-				scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-				scanner.Scan() // skip header
-				for scanner.Scan() {
-					cols := strings.Split(scanner.Text(), ",")
-					if len(cols) < 13 {
-						continue
-					}
-					dest := ResolveBucket(cols[11])
-					if dest != bucketID {
-						continue
-					}
-					swapTs, err := strconv.ParseInt(cols[0], 10, 64)
-					if err != nil {
-						continue
-					}
-					binIdx := swapTs / int64(width)
-					binCounts[binIdx]++
-				}
-				f.Close()
-			}
-			for i, ts := range tsArr {
-				swapsArr[i] = binCounts[ts/int64(width)]
-			}
-		}
-		series["swaps"] = swapsArr
+		series := buildSeriesFromSnaps(snaps, width)
+		series["swaps"] = countSwapsPerBin(swapOutcomes, bucketID, width, span)
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
@@ -510,7 +485,7 @@ func sanitizeBucketID(id string) string {
 
 // buildSeriesFromSnaps bins snapshots into `width`-second bins and
 // produces the time-series arrays for one range.
-func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) (map[string]interface{}, []int64) {
+func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interface{} {
 	type bin struct {
 		ts    int64
 		snaps []bucketSnapshot
@@ -567,7 +542,7 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) (map[string]interfa
 	for k, v := range arrs {
 		series[k] = v
 	}
-	return series, tsArr
+	return series
 }
 
 // writeJSONToDisk writes a JSON file to /var/lib/bpftune/history/data/<name>
@@ -581,54 +556,7 @@ func writeJSONToDisk(name string, doc interface{}) {
 	_ = os.Rename(tmp, path)
 }
 
-// countSwapsPerBinFromCSV reads swaps from swaps.csv (full history) and
-// aligns the result with the ts array from buildSeriesFromSnaps.
-// This fixes the "swaps per bin doesn't match other charts" bug.
-func countSwapsPerBinFromCSV(bucketID string, width int, span int, tsInterface interface{}) []interface{} {
-	tsArr, ok := tsInterface.([]int64)
-	if !ok || len(tsArr) == 0 {
-		return []interface{}{}
-	}
-
-	// Read swaps.csv and count per bin
-	binCounts := map[int64]int{}
-	if f, err := os.Open(swapsCSVPath); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
-		scanner.Scan()                                     // skip header
-		for scanner.Scan() {
-			line := scanner.Text()
-			cols := strings.Split(line, ",")
-			if len(cols) < 13 {
-				continue
-			}
-			// Resolve dest (col 11) to label — same as bucket resolution
-			dest := ResolveBucket(cols[11])
-			if dest != bucketID {
-				continue
-			}
-			ts, err := strconv.ParseInt(cols[0], 10, 64) // collected_ts
-			if err != nil {
-				continue
-			}
-			binIdx := ts / int64(width)
-			binCounts[binIdx]++
-		}
-	}
-
-	// Build aligned array — same length as tsArr
-	result := make([]interface{}, len(tsArr))
-	for i, ts := range tsArr {
-		binIdx := ts / int64(width)
-		result[i] = binCounts[binIdx]
-	}
-	return result
-}
-
 // countSwapsPerBin counts swap events per time bin for a specific bucket.
-// v0.7.5c: deprecated — use countSwapsPerBinFromCSV instead (reads from
-// swaps.csv for full history, not just log tail).
 func countSwapsPerBin(swapOutcomes interface{}, bucketID string, width int, span int) []interface{} {
 	so, ok := swapOutcomes.(map[string]interface{})
 	if !ok {
