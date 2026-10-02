@@ -625,6 +625,22 @@ class LabelsHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    startup_init()
+    print("[labels-api] listening on port %d" % PORT, file=sys.stderr)
+    server = HTTPServer(("127.0.0.1", PORT), LabelsHandler)
+    server.serve_forever()
+
+
+def startup_init():
+    """API-002 fix: extracted from the __main__ block so the collector
+    can invoke the same startup-time reimport + auto-fold pass when it
+    imports bpftune_labels_api as a module (otherwise the labels API
+    would only run its startup logic when launched as a standalone
+    server, which the collector's daemon mode never does).
+
+    Safe to call multiple times — reimport_labels_from_aliases() and
+    auto_fold() are both idempotent.
+    """
     # bpftune regenerates labels.json on startup with ONLY canonical IPs.
     # Re-import ALL IPs from aliases so the modal shows everyone.
     try:
@@ -648,6 +664,3 @@ if __name__ == "__main__":
                       file=sys.stderr)
     except Exception as e:
         print("[labels-api] startup auto-fold failed: %s" % e, file=sys.stderr)
-    print("[labels-api] listening on port %d" % PORT, file=sys.stderr)
-    server = HTTPServer(("127.0.0.1", PORT), LabelsHandler)
-    server.serve_forever()

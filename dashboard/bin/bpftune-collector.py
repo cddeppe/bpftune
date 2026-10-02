@@ -1508,6 +1508,17 @@ def _daemon_loop():
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     print("collector: daemon mode started (60s interval)", file=sys.stderr)
+    # API-002 fix: run the labels-API startup_init() (reimport aliases +
+    # auto-fold) here too, so the same one-time setup that the standalone
+    # labels-api.py server does on boot also happens when the collector
+    # imports bpftune_labels_api as a module.  Without this, daemon-mode
+    # collectors would never reimport aliases until the operator manually
+    # restarted labels-api.service.
+    if _labels is not None and hasattr(_labels, 'startup_init'):
+        try:
+            _labels.startup_init()
+        except Exception as e:
+            print("collector: labels startup_init failed: %s" % e, file=sys.stderr)
     # Start SSE server in background thread (port 8082, localhost only)
     sse_thread = threading.Thread(target=_start_sse_server, daemon=True)
     sse_thread.start()
