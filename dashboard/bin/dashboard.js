@@ -1845,17 +1845,26 @@
     mk("swaps", {
       type: "bar",
       data: {
+        labels: ts.map(function (t) {
+          var dt = new Date(t * 1000);
+          var hh = String(dt.getHours()).padStart(2, "0");
+          var mm = String(dt.getMinutes()).padStart(2, "0");
+          return hh + ":" + mm;
+        }),
         datasets: [{
           label: "swaps",
-          data: d.swaps.map(function(v, k) { return {x: ts[k] * 1000, y: v}; }),
-          backgroundColor: "rgba(78, 121, 167, 0.4)",
+          data: d.swaps,
+          backgroundColor: "#4e79a7",
           borderColor: "#4e79a7",
           borderRadius: 2,
-          borderWidth: 1,
+          maxBarThickness: 14,
         }],
       },
       options: timeOpts({
         scales: {
+          x: {type: "category", grid: {display: false},
+              ticks: {maxRotation: 0, autoSkip: true, autoSkipPadding: 24,
+                      padding: 4, maxTicksLimit: 8}},
           y: {beginAtZero: true, grid: {drawTicks: false},
               ticks: {maxTicksLimit: 4, padding: 6}},
         },

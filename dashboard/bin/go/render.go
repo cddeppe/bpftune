@@ -286,6 +286,16 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 		cov float64
 	}
 	var pairs []pair
+
+	// v0.7.5f: fleet diagnostics — log CSV state once per render.
+	csvAllNil := h.csvAll == nil
+	csvAllLen := 0
+	if !csvAllNil {
+		csvAllLen = len(h.csvAll)
+	}
+	os.Stderr.WriteString("fleet-diag: csvAll=" + boolStr(csvAllNil) +
+		" csvAllBuckets=" + itoa(csvAllLen) +
+		" liveBuckets=" + itoa(len(buckets)) + "\n")
 	for _, b := range buckets {
 		id, _ := b["dest"].(string)
 		if id == "" {
@@ -300,6 +310,7 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 			snaps = readBucketCSV(id, 86400)
 		}
 		if len(snaps) == 0 {
+			os.Stderr.WriteString("fleet-diag: bucket=" + id + " snaps=0 (skipped)\n")
 			continue
 		}
 		var have, seen int
@@ -664,3 +675,15 @@ func jsonUnmarshal(data []byte, v interface{}) error {
 
 // toString forces import of strconv for loadCSVTailIntoRingBuffer's panic message
 var _ = strconv.Itoa
+
+// v0.7.5f: helpers for fleet diagnostics logging.
+func boolStr(b bool) string {
+	if b {
+		return "nil"
+	}
+	return "set"
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
+}
