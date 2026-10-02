@@ -422,7 +422,7 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 		}
 
 		series := buildSeriesFromSnaps(snaps, width)
-		series["swaps"] = countSwapsPerBin(swapOutcomes, bucketID, width, span)
+				bs := map[int64]bool{}; for _, sn := range snaps { bs[sn.Ts/int64(width)] = true }; sa := make([]interface{}, len(bs)); for i := range sa { sa[i] = 0 }; series["swaps"] = sa
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
@@ -539,6 +539,7 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 		}
 	}
 	series["ts"] = tsArr
+	series["_tsLen"] = len(tsArr)
 	for k, v := range arrs {
 		series[k] = v
 	}

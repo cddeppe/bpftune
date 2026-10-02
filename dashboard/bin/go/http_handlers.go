@@ -58,6 +58,7 @@ func (h *historyStore) handleBucketJSON(w http.ResponseWriter, r *http.Request, 
 		}
 
 		series := buildSeriesFromSnaps(snaps, width)
+		bs := map[int64]bool{}; for _, sn := range snaps { bs[sn.Ts/int64(width)] = true }; sa := make([]interface{}, len(bs)); for i := range sa { sa[i] = 0 }; series["swaps"] = sa
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
