@@ -35,7 +35,7 @@ def _safe(fn, default, label):
 
 
 
-def collect_all_incremental(offsets=None):
+def collect_all_incremental(offsets=None, previous_result=None):
     """Like collect_all() but reads only new log lines since last call.
 
     In daemon mode, the collector holds the offsets dict in memory
@@ -45,6 +45,11 @@ def collect_all_incremental(offsets=None):
     The _swaps_mets_srates cache is cleared each call because the
     text changes (new lines appended) — but we only parse the NEW
     lines, not the full 2MB.
+
+    API-008 fix: if previous_result is supplied, its bucket_ips map
+    is merged into the new result so IPs observed in earlier cycles
+    (but absent from the current log tail) are not lost between
+    snapshots.
     """
     logpath = find_log()
     hosts   = read_map()
@@ -53,10 +58,24 @@ def collect_all_incremental(offsets=None):
     bpftune_log._SWMS_CACHE = {}
     _run_writeback_and_get_swaps(text)
     hosts   = read_map()
-    return _build_result(logpath, text, hosts)
+    doc = _build_result(logpath, text, hosts)
+    if previous_result and isinstance(previous_result, dict):
+        prev_bips = previous_result.get('bucket_ips', {})
+        if prev_bips:
+            new_bips = doc.get('bucket_ips', {})
+            merged = dict(prev_bips)
+            for k, v in new_bips.items():
+                if k in merged:
+                    for ip in v:
+                        if ip not in merged[k]:
+                            merged[k].append(ip)
+                else:
+                    merged[k] = v
+            doc['bucket_ips'] = merged
+    return doc
 
 
-def collect_all() -> CollectAllResult:
+def collect_all(previous_result=None) -> CollectAllResult:
     """Build the full dashboard state dict consumed by index.html.
 
     Single entry point for all dashboard data.  Returns a dict with keys:
@@ -94,7 +113,23 @@ def collect_all() -> CollectAllResult:
     _run_writeback_and_get_swaps(text)
     # Re-read the map (to get corrected streaks)
     hosts   = read_map()
-    return _build_result(logpath, text, hosts)
+    doc = _build_result(logpath, text, hosts)
+    # API-008 fix: merge bucket_ips from the previous snapshot so IPs that
+    # appeared in an earlier log tail but not in this one are not lost.
+    if previous_result and isinstance(previous_result, dict):
+        prev_bips = previous_result.get('bucket_ips', {})
+        if prev_bips:
+            new_bips = doc.get('bucket_ips', {})
+            merged = dict(prev_bips)
+            for k, v in new_bips.items():
+                if k in merged:
+                    for ip in v:
+                        if ip not in merged[k]:
+                            merged[k].append(ip)
+                else:
+                    merged[k] = v
+            doc['bucket_ips'] = merged
+    return doc
 
 
 def _build_result(logpath, text, hosts):

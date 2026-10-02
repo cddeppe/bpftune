@@ -965,7 +965,12 @@ def run_cli_snapshot(map_raw=""):
                 tmp_map = None
         # Use incremental reading (daemon mode): only parse new log
         # lines since last cycle.  First call reads full tail.
-        doc = _cli_mod.collect_all()
+        # API-008: pass the last full result so bucket_ips can be merged
+        # across snapshots (the log tail rotates, so IPs visible last
+        # cycle would otherwise disappear from this cycle's view).
+        with _result_lock:
+            prev = _last_full_result
+        doc = _cli_mod.collect_all(previous_result=prev)
         tmp = str(CURRENT_JSON) + ".tmp"
         with open(tmp, "w") as f:
             json.dump(doc, f, separators=(",", ":"))
