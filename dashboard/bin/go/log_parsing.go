@@ -242,12 +242,8 @@ func buildRecentSwapRows(swaps []swapRow,
 		fromAlg := algName(sw.From)
 		toAlg := algName(sw.To)
 
-		// v0.5.2: convert boot_ts (uptime) to epoch seconds
-		uptime := readProcUptime()
-		nowEpoch := float64(time.Now().Unix())
-		epochTs := nowEpoch - uptime + sw.Ts
 		row := map[string]interface{}{
-			"boot_ts":           epochTs,
+			"boot_ts":           sw.Ts,
 			"from_alg":          fromAlg,
 			"to_alg":            toAlg,
 			"d":                 d,
@@ -557,12 +553,20 @@ func fieldValue(s swapOutRow, field string) string {
 func buildSwapsListForOutcomes(swaps []swapOutRow) []interface{} {
 	out := make([]interface{}, 0, len(swaps))
 	for _, s := range swaps {
+		// BUG 14 fix: use nil for unmeasured outcomes (dashboard expects null, not "")
+		var oc, ou_ interface{}
+		if s.Outcome != "" {
+			oc = s.Outcome
+		}
+		if s.OutcomeSustained != "" {
+			ou_ = s.OutcomeSustained
+		}
 		out = append(out, map[string]interface{}{
 			"ts":                s.Ts,
 			"cookie":            s.Cookie,
 			"dest":              s.Dest,
-			"outcome":           s.Outcome,
-			"outcome_sustained": s.OutcomeSustained,
+			"outcome":           oc,
+			"outcome_sustained": ou_,
 		})
 	}
 	return out
@@ -606,12 +610,8 @@ func buildRecentProofRows(text string, cdest map[string][2]string) []interface{}
 				dest = ds
 			}
 		}
-		// v0.5.4: convert boot_ts (uptime) to epoch for recent_proofs
-		uptime := readProcUptime()
-		nowEpoch := float64(time.Now().Unix())
-		epochTs := nowEpoch - uptime + ts
 		out = append(out, map[string]interface{}{
-			"boot_ts": epochTs,
+			"boot_ts": ts,
 			"alg":     algName(alg),
 			"mbps":    round1(float64(rate) / bpsToMbps),
 			"tier":    tierLabel,
@@ -630,7 +630,10 @@ func cookieDestMap(text string) map[string][2]string {
 	for _, line := range strings.Split(text, "\n") {
 		if m := rxSwap.FindStringSubmatch(line); m != nil {
 			// swap row: groups 2=cookie, 10=dest, 11=dest6
-			out[m[2]] = [2]string{m[10], m[11]}
+			// BUG 5 fix: only update if dest is present (don't overwrite with empty)
+			if m[10] != "" || m[11] != "" {
+				out[m[2]] = [2]string{m[10], m[11]}
+			}
 			continue
 		}
 		if m := rxEstab.FindStringSubmatch(line); m != nil {
@@ -640,12 +643,6 @@ func cookieDestMap(text string) map[string][2]string {
 	}
 	return out
 }
-
-// ============================================================================
-// buildBucketIPs — all dest IPs grouped by /prefix4 (v4) or /prefix6 (v6)
-// v0.4.2: respects current prefix4/prefix6 from /var/lib/bpftune/.
-// ============================================================================
-
 func buildBucketIPs(text string) map[string]interface{} {
 	buckets := map[string][]string{}
 	p4 := prefix4Value()

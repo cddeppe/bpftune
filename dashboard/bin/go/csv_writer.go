@@ -22,6 +22,7 @@ package main
 //   collected_ts, boot_ts, cookie, alg, srate
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -320,104 +321,35 @@ func readTcpRmem() (min, def, max int) {
 // ============================================================================
 
 func loadCSVTailIntoRingBuffer() {
-	data, err := os.ReadFile(bucketsCSVPath)
-	if err != nil {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer PANICKED: %v\n", r)
+		}
+	}()
+	// BUG 11 fix: use readCSVAll() cache instead of reading the 47MB file again
+	// (avoids 2GB memory spike from duplicate file read + string parsing)
+	all := readCSVAll()
+	if all == nil {
+		fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer: readCSVAll returned nil\n")
 		return
 	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) < 2 {
-		return
+	cutoff := time.Now().Unix() - 86400
+	count := 0
+	for bucketID, snaps := range all {
+		for _, s := range snaps {
+			if s.Ts < cutoff {
+				continue
+			}
+			hist.mu.Lock()
+			hist.raw[bucketID] = append(hist.raw[bucketID], s)
+			if len(hist.raw[bucketID]) > 2880 {
+				hist.raw[bucketID] = hist.raw[bucketID][len(hist.raw[bucketID])-2880:]
+			}
+			hist.mu.Unlock()
+			count++
+		}
 	}
-
-	// Parse header to get column indices
-	header := strings.Split(lines[0], ",")
-	colIdx := map[string]int{}
-	for i, col := range header {
-		colIdx[col] = i
-	}
-
-	// Read the last ~2880*10 = 28800 lines (24h at 30s, ~10 buckets per cycle)
-	// But cap at 50000 to avoid excessive memory
-	start := len(lines) - 30000
-	if start < 1 {
-		start = 1
-	}
-
-	cutoff := time.Now().Unix() - 86400 // 24h ago
-
-	for i := start; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		cols := strings.Split(line, ",")
-		if len(cols) < 9 {
-			continue
-		}
-
-		ts, err := strconv.ParseInt(cols[0], 10, 64)
-		if err != nil || ts < cutoff {
-			continue
-		}
-		addr := labelFor(cols[1]) // v0.5.4: label old raw IPs to match BPF map keys
-		inst, _ := strconv.Atoi(cols[2])
-		minRtt, _ := strconv.ParseFloat(cols[3], 64)
-		refRate, _ := strconv.ParseFloat(cols[4], 64)
-		bestI, _ := strconv.Atoi(cols[5])
-		bestAlg := ""
-		if bestI >= 0 && bestI < len(CONGS) {
-			bestAlg = CONGS[bestI]
-		}
-
-		snap := bucketSnapshot{
-			Ts:        ts,
-			BestAlg:   bestAlg,
-			BestI:     bestI,
-			Instances: inst,
-			RefRate:   refRate,
-			MinRtt:    minRtt,
-			Re:        map[string]float64{},
-			Ss:        map[string]int{},
-			Bs:        map[string]int{},
-			Ns:        map[string]int{},
-			Mv:        map[string]float64{},
-		}
-
-		// Parse mv_/re_ pairs and ss_/bs_/ns_ values
-		for _, alg := range CONGS {
-			mvKey := "mv_" + alg
-			reKey := "re_" + alg
-			ssKey := "ss_" + alg
-			bsKey := "bs_" + alg
-			nsKey := "ns_" + alg
-			if idx, ok := colIdx[mvKey]; ok && idx < len(cols) && cols[idx] != "" {
-				snap.Mv[alg], _ = strconv.ParseFloat(cols[idx], 64)
-			}
-			if idx, ok := colIdx[reKey]; ok && idx < len(cols) && cols[idx] != "" {
-				snap.Re[alg], _ = strconv.ParseFloat(cols[idx], 64)
-			}
-			if idx, ok := colIdx[ssKey]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Ss[alg] = v
-			}
-			if idx, ok := colIdx[bsKey]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Bs[alg] = v
-			}
-			if idx, ok := colIdx[nsKey]; ok && idx < len(cols) && cols[idx] != "" {
-				v, _ := strconv.Atoi(cols[idx])
-				snap.Ns[alg] = v
-			}
-		}
-
-		// v0.5.6: directly populate raw (no addSnapshot side effects)
-		hist.mu.Lock()
-		hist.raw[addr] = append(hist.raw[addr], snap)
-		if len(hist.raw[addr]) > 2880 {
-			hist.raw[addr] = hist.raw[addr][len(hist.raw[addr])-2880:]
-		}
-		hist.mu.Unlock()
-	}
+	fmt.Fprintf(os.Stderr, "loadCSVTailIntoRingBuffer: loaded %d entries for %d buckets\n", count, len(all))
 }
 
 // ============================================================================

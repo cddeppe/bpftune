@@ -393,7 +393,7 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 		if id == "" {
 			continue
 		}
-		inst, _ := b["inst"].(int)
+		inst := toInt(b["inst"])
 		label := id // already labeled by readBPFMap
 		var instSum int
 		var instCount int
@@ -422,10 +422,10 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 		nj := 0
 		for _, b := range buckets {
 			if b["id"] == entries[i].id || b["dest"] == entries[i].id {
-				ni, _ = b["n_alg"].(int)
+				ni = toInt(b["n_alg"])
 			}
 			if b["id"] == entries[j].id || b["dest"] == entries[j].id {
-				nj, _ = b["n_alg"].(int)
+				nj = toInt(b["n_alg"])
 			}
 		}
 		if ni != nj {
@@ -455,7 +455,7 @@ func (h *historyStore) handleMetaJSON(w http.ResponseWriter, r *http.Request, bu
 	doc := map[string]interface{}{
 		"generated_ts":   time.Now().Unix(),
 		"ranges":         rngList,
-		"algs":           CONGS,
+		"algs":           sortedAlgs(),
 		"buckets":        bucketEntries,
 		"default_bucket": defaultBucket,
 		"has_tcp_rmem":   false, // TODO: detect from BPF map
@@ -503,7 +503,7 @@ func (h *historyStore) handleFleetJSON(w http.ResponseWriter, r *http.Request, b
 		var have, seen int
 		for _, s := range snaps {
 			seen++
-			if s.RefRate > 0 {
+			if s.RateBestV > 0 {
 				have++
 			}
 		}
@@ -738,7 +738,7 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 		if id == "" {
 			continue
 		}
-		inst, _ := b["inst"].(int)
+		inst := toInt(b["inst"])
 		var instSum int
 		var instCount int
 		var lastTs int64
@@ -757,7 +757,7 @@ func (h *historyStore) renderMetaToDisk(buckets []map[string]interface{}) {
 		} else {
 			im = float64(inst)
 		}
-		nAlg, _ := b["n_alg"].(int)
+		nAlg := toInt(b["n_alg"])
 		entries = append(entries, entry{id, id, im, lastTs, nAlg})
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -839,7 +839,13 @@ func (h *historyStore) renderSwapsToDisk(so map[string]interface{}) {
 		for i, bi := range binIdxs {
 			swapsArr[i] = binCounts[bi]
 		}
+		// BUG 3 fix: add ts array (dashboard.js reads d.ts for x-axis labels)
+		tsArr := make([]interface{}, len(binIdxs))
+		for i, bi := range binIdxs {
+			tsArr[i] = bi*int64(width) + int64(width)/2
+		}
 		doc[rngName] = map[string]interface{}{
+			"ts":    tsArr,
 			"swaps": swapsArr,
 		}
 	}
@@ -864,7 +870,7 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 		var have, seen int
 		for _, s := range snaps {
 			seen++
-			if s.RefRate > 0 {
+			if s.RateBestV > 0 {
 				have++
 			}
 		}
@@ -948,7 +954,10 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 			"collected_ts": last.Ts, "best_alg": last.BestAlg,
 			"best_i": last.BestI, "instances": last.Instances,
 			"ref_rate": last.RefRate, "min_rtt": last.MinRtt,
-			"re": reMap,
+			"rate_best_i":  last.RateBestI,
+			"rate_best_v":  last.RateBestV,
+			"tcp_rmem_max": last.TcpRmemMax,
+			"re":           reMap,
 		}
 	}
 
