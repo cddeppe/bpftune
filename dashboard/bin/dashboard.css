@@ -485,16 +485,16 @@
   }
   @media (min-width: 700px) {
     .tun-grid { grid-template-columns: 1fr 1fr; }
-  /* v0.7.5p: tunables stack in 1 column on mobile (override nth-child) */
-  @media (max-width: 699px) {
-  }
-
   }
   .tun-group { min-width: 0; }
   .tun-group:nth-child(1) { grid-column: 1; grid-row: 1; }
   .tun-group:nth-child(2) { grid-column: 1; grid-row: 2; }
   .tun-group:nth-child(3) { grid-column: 1; grid-row: 3; }
   .tun-group:nth-child(4) { grid-column: 2; grid-row: 1 / span 3; }
+
+  /* v0.7.5p: tunables stack in 1 column on mobile (override nth-child) */
+  @media (max-width: 699px) {
+  }
   
 
   /* v0.7.5p: combined build/service/system box — 2 cols desktop, 1 col mobile */
