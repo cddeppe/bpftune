@@ -1,3 +1,17 @@
+bpftune (0.4.88) unstable; urgency=medium
+
+  * Fix: re-enable swap_score write in score_pending_rejected (Bug T1).
+    Was disabled in 0.4.76 but score_pending_swap was re-enabled.
+    ~8% of swaps left swap_score stale.
+  * Fix: remove drop_count double increment in net_buffer_tuner (Bug T3).
+    Threshold fired at 2x intended rate.
+  * Fix: syslog format-string vulnerability in libbpftune.c (Bug T4).
+    syslog(level, buf, buflen+1) → syslog(level, "%s", buf)
+  * Fix: bpftune_log_buf buf_off overshoot in libbpftune.c (Bug T5).
+    vsnprintf return value was not clamped to buffer size.
+
+ -- Christophe Deppe <cdeppe@gmail.com>  Sat, 03 Oct 2026 19:12:22 +0200
+
 bpftune (0.4.87) unstable; urgency=medium
 
   * Fix: remove unused cur_rate param from score_pending_swap (Bug #4).
