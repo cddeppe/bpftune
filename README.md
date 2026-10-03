@@ -162,7 +162,7 @@ Configurable prefix masking: `bpftune --prefix4=24 --prefix6=64` (runtime, takes
 
 ## Dashboard
 
-Full web dashboard with real-time SSE (Server-Sent Events) updates:
+Full web dashboard (Go binary, port 8080) with real-time SSE (Server-Sent Events) updates:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -228,8 +228,8 @@ Full web dashboard with real-time SSE (Server-Sent Events) updates:
 ### Two-tier real-time collection
 
 ```
-bpftune-collector.service (daemon)
-  ├─ SSE server (port 8082, HTTP/1.1)
+bpftune-collector-go.service (Go binary)
+  ├─ SSE server (port 8080, built into Go collector)
   │    pushes to browser when data changes
   ├─ 30s lightweight loop
   │    BPF map dump (~50ms, no log parsing)
@@ -251,7 +251,7 @@ The dropdown defaults to "All Buckets" (aggregate view). Select a specific bucke
 
 ### IP Label Editor
 
-Group IPs by label. The `labels-api` (port 8081) manages:
+Group IPs by label. The `labels-api` (served by Go collector on port 8080) manages:
 - `labels.json` — display labels (IP → name)
 - `/etc/bpftune/aliases` — BPF fold rules (FROM = TO [label])
 - BPF aliases map — live kernel updates via `bpftool`
@@ -292,23 +292,22 @@ Group IPs by label. The `labels-api` (port 8081) manages:
 │  bpftune-met-trace.service                                      │
 │    cat /sys/kernel/tracing/trace_pipe → /var/log/bpftune-*.log  │
 │                                                                 │
-│  bpftune-collector.service (daemon, Python)                     │
-│    30s: BPF map + incremental log → current.json + SSE push     │
-│    5min: full log parsing → swap outcomes, proofs, charts       │
-│    streak_writeback: corrects kernel streaks from sustained     │
+│  bpftune-collector-go.service (Go binary, port 8080)            │
+│    30s: BPF map dump + log parse → current.json + SSE push      │
+│    5min: renderToDisk (read 8MB CSV tail → static JSON files)  │
+│    daily: renderSlowToDisk (stream full CSV → 7d/30d/all)       │
+│    streaming CSV reader: 3-5MB memory (not 680MB)              │
+│    SSE + /api/labels + /data/* all on port 8080 (no nginx)      │
 │                                                                 │
-│  labels-api.service (port 8081, Python)                         │
+│  labels-api.py (called by Go collector for /api/labels)         │
 │    IP label editor + auto_fold + BPF aliases map management     │
-│                                                                 │
-│  bpftune-render.py (hourly cron)                                │
-│    CSV → data/*.json (historical pages, swaps.json, fleet.json) │
 └──────────────────────────┬──────────────────────────────────────┘
-                           │ nginx (port 8080)
+                           │ Go collector (port 8080)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Browser (dashboard.js)                     │
 │                                                                 │
-│  EventSource("/sse") → real-time data push                      │
+│  EventSource("/sse") → real-time data push (port 8080)          │
 │  renderLiveState(doc) → all panels                              │
 │  _filterByBucket(doc, label) → per-bucket filtering             │
 │  _reFilterPanels() → instant re-render on bucket change         │
@@ -321,7 +320,7 @@ Group IPs by label. The `labels-api` (port 8081) manages:
 ## Branches
 
 - **`main`** — BPF tuner only (C code in `src/`)
-- **`dashboard`** — dashboard only (Python + HTML + JS in `dashboard/bin/`)
+- **`dashboard`** — dashboard only (Go binary + HTML + JS in `dashboard/bin/`)
 
 Never commit dashboard files to main or vice versa.
 
@@ -329,20 +328,28 @@ Never commit dashboard files to main or vice versa.
 
 ```
 dashboard/bin/
-  bpftune_log.py       — base: constants, TypedDicts, log parsing, labels, map reader
-  bpftune_data.py      — data functions + outcomes + writeback
-  bpftune-cli.py       — entry point: collect_all, collect_lightweight, render
-  bpftune-collector.py — daemon: 30s lightweight + 5min full + SSE server
-  labels-api.py        — IP label editor + auto_fold + BPF aliases management
-  bpftune-render.py    — hourly historical renderer (CSV → JSON)
-  streak_writeback.py  — sustained→kernel streak correction
-  dashboard.js         — frontend (renderLiveState, filtering, charts)
-  dashboard.css        — styling
-  index.html           — HTML structure
-  test_bpftune_cli.py  — 58 tests (31 unit + 27 integration)
+  go/                    — Go source (13 files)
+    main.go              — HTTP server, SSE, systemd service entry point
+    collect.go           — per-cycle collection pipeline (30s)
+    render.go            — renderToDisk (5min) + renderSlowToDisk (daily)
+    csv_reader.go        — streaming CSV reader + ring buffer loading
+    csv_writer.go        — CSV append (buckets, swaps, srate)
+    bucketing.go         — label resolution (ResolveBucket, single source of truth)
+    bpf_reader.go        — bpftool JSON parser + BPF map reader
+    history.go           — ring buffer (120 entries, [16] arrays)
+    http_handlers.go     — /data/bucket_*.json, /data/meta.json, /data/fleet.json
+    log_parsing.go       — swap/met/srate parsing from journal log tail
+    data_panels.go       — proof leaderboard, rate progression, divergence
+    system_info.go       — kernel, CPU, memory, load info
+    constants.go         — 16 congestion control algorithm names
+  labels-api.py          — IP label editor (called by Go collector for /api/labels)
+  dashboard.js          — frontend (renderLiveState, filtering, charts, SSE client)
+  dashboard.css         — styling
+  index.html            — HTML structure
 ```
 
-CI: GitHub Actions runs 58 tests on every push to `dashboard`.
+The Go collector replaces the old Python collector + renderer + nginx front-end.
+It serves everything on port 8080 directly — no nginx, no cron, no Python services.
 
 ---
 
@@ -521,7 +528,7 @@ On each target host:
 curl -fsSL https://raw.githubusercontent.com/cddeppe/bpftune/main/update.sh | sudo bash -s -- --dashboard-only
 ```
 
-Pulls `origin/dashboard`, syncs to `/opt/bpftune-dashboard/bin/` + `/var/lib/bpftune/history/`, restarts `bpftune-collector` + `bpftune-labels-api`, runs tests.
+Pulls `origin/dashboard`, builds Go binary (or downloads from GitHub Releases), syncs to `/opt/bpftune-dashboard/bin/`, restarts `bpftune-collector-go`, verifies on port 8080.
 
 ## Verify
 
@@ -532,14 +539,14 @@ sudo bpftool cgroup tree 2>/dev/null | grep -c conn_tuner   # want 2
 # BPF maps loaded
 sudo bpftool map show | grep -E 'remote_host|dest_alias'    # want both
 
-# Dashboard tests
-python3 /opt/bpftune-dashboard/bin/test_bpftune_cli.py       # 58 tests
+# Dashboard running
+systemctl status bpftune-collector-go                       # active (running)
 
-# Dashboard renders
-python3 /opt/bpftune-dashboard/bin/bpftune-cli.py --once | head -10
+# Go tests (if building from source)
+cd /root/bpftune/dashboard/bin/go && go test ./...          # ok
 
-# SSE real-time
-curl -s http://localhost:8082/current.json | python3 -c "import json,sys; print(len(json.load(sys.stdin)), 'keys')"
+# Dashboard responding
+curl -s http://localhost:8080/current.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('buckets',[])), 'buckets')"
 
 # Version
 dpkg-query -W -f='${Version}' bpftune                        # 0.4.83
