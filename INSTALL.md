@@ -298,8 +298,8 @@ assign names to IP groups, or edit manually:
 ```bash
 # Edit /var/lib/bpftune/aliases.labels.json
 {
-    "2606:1a40::": "home-sco",
-    "89.168.0.0": "vps-de"
+    "2001:db8::": "home-sco",
+    "89.0.0.0": "vps-de"
 }
 
 # Restart to pick up changes

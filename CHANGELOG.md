@@ -61,7 +61,7 @@ optimized for low memory and low CPU on small VPS instances.
   - SrateBefore: last srate event before swap
   - Rport: from met event
 - **Truth file** (`truth_writer.go`) — `writeTruthRow()` appends
-  `{"bucket":"82.43.0.0","tgt":"4","cls":"win"}` to
+  `{"bucket":"82.0.0.0","tgt":"4","cls":"win"}` to
   `swaps_truth.jsonl` for the bpftune tuner. Called from `writeSwapsCSV`
   after dedup (one truth entry per resolved swap).
 
@@ -86,8 +86,8 @@ optimized for low memory and low CPU on small VPS instances.
   - Hooked from `collect()` as async goroutine (every 30s cycle)
 
 ### Fixed
-- `swapDestToIP()`: converts kernel's decimal u32 (e.g., "1378604897")
-  to dotted-quad IP (e.g., "82.43.215.97"). Without this, `net.ParseIP()`
+- `swapDestToIP()`: converts kernel's decimal u32 (e.g., "82.0.0.0")
+  to dotted-quad IP (e.g., "82.0.0.0"). Without this, `net.ParseIP()`
   returned nil and ALL swaps were skipped.
 - `mapLookupBytes()`: uses raw "value" bytes from bpftool --json (list
   of hex strings) instead of re-serializing from formatted.value. Also
@@ -162,7 +162,7 @@ optimized for low memory and low CPU on small VPS instances.
 
 ### Fixed
 - `csv_reader.go`: apply `ResolveBucket()` at read time in `readCSVTail`,
-  `readCSVAll`, and `readBucketCSV`. Old raw-IP rows (e.g., `2a01:7e03::`)
+  `readCSVAll`, and `readBucketCSV`. Old raw-IP rows (e.g., `2001:db8::`)
   now consolidate under their current label (e.g., `home-sco`). Fixes the
   "coverage shows – for labeled buckets" bug.
 - Swaps chart: added `min: undefined, max: undefined` to x-axis config

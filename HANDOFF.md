@@ -99,7 +99,7 @@ All dashboard files live at `dashboard/bin/` in the checkout.
 
 ## SESSION 2026-09-26 (late) -- 0.4.79 prefix, alias, labels, attach-verify
 
-Follow-on to the 0.4.78.2 session.  Three new tuner capabilities
+Follow-on to the 0.0.0.0 session.  Three new tuner capabilities
 plus a fix for the long-running silent-detach problem.
 
 ### 0.4.79 -- configurable bucket prefix
@@ -153,8 +153,8 @@ The optional third column on an alias rule is a display label.  The
 tuner loader writes:
 
     /var/lib/bpftune/aliases.labels.json
-    {"147.224.0.0": "loc-1",
-     "89.168.0.0":  "loc-2",
+    {"147.0.0.0": "loc-1",
+     "89.0.0.0":  "loc-2",
      ...}
 
 Deduplicated: one entry per canonical IP, regardless of how many
@@ -185,8 +185,8 @@ label back to its canonical IP.  That was a single fixup, not a
 standing procedure.  Current collectors never write labels.
 
 Verified live on vps-3959: a socket to a Location-3 IP landed under
-canonical bucket `44.235.0.0`; the CSV `addr` column says `44.235.0.0`;
-the dropdown says `loc-3` (the current label for 44.235.0.0).
+canonical bucket `44.0.0.0`; the CSV `addr` column says `44.0.0.0`;
+the dropdown says `loc-3` (the current label for 44.0.0.0).
 
 ### 0.4.79 -- MIN_BUCKET_ROWS 20 -> 5
 
@@ -213,8 +213,8 @@ The optional third column on an alias rule is a display label.  The
 loader writes:
 
     /var/lib/bpftune/aliases.labels.json
-    {"147.224.0.0": "location-1",
-     "89.168.0.0":  "location-2",
+    {"147.0.0.0": "location-1",
+     "89.0.0.0":  "location-2",
      ...}
 
 Deduplicated: one entry per canonical IP, regardless of how many
@@ -224,11 +224,11 @@ The collector (`_label_for(addr)` in the row builder) and the CLI
 (`_label_for(addr)` in `read_map`) read that file on each run and
 substitute the label for the canonical IP in the `addr` column.
 Everything downstream -- renderer, dashboard, all panels -- shows
-`location-1` instead of `147.224.0.0`.  The BPF map key stays
+`location-1` instead of `147.0.0.0`.  The BPF map key stays
 IP-shaped; only the display changes.
 
 Verified live on vps-3959: a socket to a Location-3 IP landed under
-canonical bucket `44.235.0.0` and the CSV `addr` column shows
+canonical bucket `44.0.0.0` and the CSV `addr` column shows
 `location-3`.
 
 ### 0.4.79 -- streak counter batch bug
@@ -342,14 +342,14 @@ grouped under labels `location-1` through `location-5`.
   `cat > /tmp/script.py << 'PYEOF' ... PYEOF` then execute
   the file; single-shot terminal pages truncate or reflow long
   lines.
-## SESSION 2026-09-26 -- 0.4.78.2 IPv6 end-to-end, dashboard layout pass
+## SESSION 2026-09-26 -- 0.0.0.0 IPv6 end-to-end, dashboard layout pass
 
-Follow-on to the 0.4.78.1 session.  Two things landed: IPv6 bucket
+Follow-on to the 0.0.0.0 session.  Two things landed: IPv6 bucket
 keys are now propagated through the whole pipeline (BPF printk ->
 collector -> truth file -> reanchor reader -> map), and the
 dashboard got a substantial layout pass plus a dark mode.
 
-### 0.4.78.2 -- v6:XXXXXXXX bucket keys
+### 0.0.0.0 -- v6:XXXXXXXX bucket keys
 
 Three independent defects in the same chain:
 
@@ -431,7 +431,7 @@ Visual:
   dark and persists to localStorage, falling back to
   prefers-color-scheme if nothing is saved.
 - Destinations in the recent lists are shortened to /16
-  (`82.43.0.0`) to fit next to the algorithm column; v6 strings
+  (`82.0.0.0`) to fit next to the algorithm column; v6 strings
   pass through unchanged.
 - Proof leaderboard: the three series are inline covbars
   (30 -> 60 px) with a fixed-width right-aligned number column
@@ -451,7 +451,7 @@ recommended fix is to enlarge the tracefs buffer
 
 ### New host: al (VPS-IP)
 
-First install completed: 0.4.78.1 tuner, dashboard at
+First install completed: 0.0.0.0 tuner, dashboard at
 `/opt/bpftune/tools/`, nginx serving `/var/lib/bpftune/history/`
 on 8080, met-trace installed manually (deploy-all bailed at its
 bpftool check before reaching the unit-write step).  nginx worker
@@ -491,17 +491,17 @@ needs `o+x /var/lib/bpftune` and `o+rx .../history`.
 - **When two code paths produce the same field, keep them in
   one file.**  `_swaps_mets_srates` had its own `rx_sw` regex
   and tuple, separate from `_SWAP_DEST_RX` used for the proof
-  cookie map.  The 0.4.78.1 v6 patch updated only the latter,
+  cookie map.  The 0.0.0.0 v6 patch updated only the latter,
   and swap rows stayed empty until a follow-up commit.
 - **Aliases lie.**  "sustained" in srate.csv is burst.  Cost
   more session time than any other single confusion.
-## SESSION 2026-09-25 (late) -- 0.4.78.1 IPv6 visibility, dashboard pass
+## SESSION 2026-09-25 (late) -- 0.0.0.0 IPv6 visibility, dashboard pass
 
 Follow-on to the session already written above. Everything in
 bf740a8 is accurate for 0.4.76/77/78. This section covers what
 landed after that.
 
-### 0.4.78.1 -- IPv6 destination visibility
+### 0.0.0.0 -- IPv6 destination visibility
 
 Every printk that reported a destination used dest=%u from
 bpf_ntohl(ops->remote_ip4), which is 0 on IPv6 sockets. On a
@@ -567,7 +567,7 @@ Home bucket effect (heavy):
 
 ### New host: al (VPS-IP)
 
-Fully installed: bpftune 0.4.78.1, dashboard installed beside
+Fully installed: bpftune 0.0.0.0, dashboard installed beside
 itself at /opt/bpftune/tools/, nginx serving /var/lib/bpftune/
 history/ on 8080. nginx worker needs o+x on /var/lib/bpftune and
 o+rx on .../history -- the parent is 0700 root:root by default and
@@ -645,7 +645,7 @@ Two halves, one per repo.
   * Collector (dashboard branch, commit 8b6f15d) writes one JSON
     line per resolved swap to /var/lib/bpftune/history/
     swapscore_truth.jsonl:
-        {"bucket":"82.43.0.0","tgt":"lp","cls":"win"}
+        {"bucket":"82.0.0.0","tgt":"lp","cls":"win"}
     Classification uses the sustained ruler: median srate in
     [T+60, T+300] vs srate_before, win >= 1.1x, loss <= 0.9x.
 
@@ -3044,7 +3044,7 @@ drop-in: step became 1/64, matching the exact delta seen in the map.
 1. metric_value -> count-based incremental mean, divisor min(count+1,
    METRIC_AVG_CAP=32).  Early observations move the value a lot, later
    ones settle it.  Verified: bbr 5->6 moved by (obs-value)/6 exactly.
-2. Skip 127.0.0.0/8, 169.254.0.0/16, ::1, fe80::/10 at bucket-key.
+2. Skip 127.0.0.0/8, 169.0.0.0/16, ::1, fe80::/10 at bucket-key.
 3. Add remote_port to midsamp and closport printks (fixes 443 pairing).
 4. Remove dead per-alg min_rtt/max_rate_delivered; STATE_VERSION=3.
 5. Cold-start coverage: force-sample least-sampled alg until every alg

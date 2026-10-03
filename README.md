@@ -27,8 +27,8 @@ Instead of picking one congestion control algorithm globally, this fork learns w
                     │   ▼                                      │
                     │  remote_host_map (LRU_HASH, 4096)        │
                     │  ┌────────────────────────────────────┐  │
-                    │  │ 203.0.113.0  inst=820  best=cubic  │  │
-                    │  │ 198.51.100.0 inst=300  best=htcp   │  │
+                    │  │ 203.0.0.0  inst=820  best=cubic  │  │
+                    │  │ 198.0.0.0 inst=300  best=htcp   │  │
                     │  │ 2001:db8::   inst=229  best=dctcp  │  │
                     │  │ 2001:db8:1:: inst=12K   best=bbr   │  │
                     │  │ ...                                │  │
@@ -143,14 +143,14 @@ Multiple IPs that lead to the same server are grouped into one bucket via BPF al
 
 ```
 /etc/bpftune/aliases:
-    203.0.113.15           = 203.0.113.0    location-a
-    2001:db8:1::abcd       = 203.0.113.0    location-a
-    198.51.100.20          = 198.51.100.0   location-b
+    203.0.0.0           = 203.0.0.0    location-a
+    2001:db8:1::abcd       = 203.0.0.0    location-a
+    198.0.0.0          = 198.0.0.0   location-b
     ...
 
 BPF lookup at ESTABLISHED:
-    socket dest = 203.0.113.15
-    → alias map hit → bucket key = 203.0.113.0
+    socket dest = 203.0.0.0
+    → alias map hit → bucket key = 203.0.0.0
     → all IPs in the group share one bucket's stats (instances, rate_ema, swaps)
 ```
 
@@ -192,7 +192,7 @@ Full web dashboard (Go binary, port 8080) with real-time SSE (Server-Sent Events
 │  dest          inst    rtt    ref     best     algs  coverage                   │
 │  2001:db8::    12K     0.0    0.0     cubic    16    —                          │
 │  location-a    820     34.9   0.0     dctcp    16    —                          │
-│  198.51.100.0  1.6K    65.1   67.1    scalable 15    —                          │
+│  198.0.0.0  1.6K    65.1   67.1    scalable 15    —                          │
 │  ...                                                                            │
 ├──────────────────────────────────────────────┬──────────────────────────────────┤
 │  SWAP TARGET LEADERBOARD                     │  RECENT SWAPS                    │
@@ -434,9 +434,9 @@ bpftune -q help         # list of queries
 ### IP grouping via aliases (`/etc/bpftune/aliases`)
 
 ```
-203.0.113.15     = 203.0.113.0    location-a
-2001:db8:1::abcd = 203.0.113.0    location-a
-198.51.100.20    = 198.51.100.0   location-b
+203.0.0.0     = 203.0.0.0    location-a
+2001:db8:1::abcd = 203.0.0.0    location-a
+198.0.0.0    = 198.0.0.0   location-b
 ```
 
 `FROM = TO` folds `FROM` into `TO`'s bucket. Optional `label` shows in the dashboard. Live updates via the dashboard's **IP Label Editor** modal (labels-api writes file + reloads BPF map via `bpftool`, no daemon restart). Manual edits need `systemctl restart bpftune`.
