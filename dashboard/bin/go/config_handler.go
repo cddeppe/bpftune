@@ -75,7 +75,12 @@ func (c *Collector) handleConfig(w http.ResponseWriter, r *http.Request) {
         explorePctHolder.mtime = time.Time{}
         explorePctHolder.mu.Unlock()
 
-        // Invalidate static files
+        // Restart bpftune to pick up new config values (reads file on startup)
+    if len(changed) > 0 {
+        exec.Command("systemctl", "restart", "bpftune").Run()
+    }
+
+    // Invalidate static files
         staticFilesDirtyMu.Lock()
         staticFilesDirty = true
         staticFilesDirtyMu.Unlock()
@@ -93,12 +98,4 @@ func (c *Collector) handleConfig(w http.ResponseWriter, r *http.Request) {
     http.NotFound(w, r)
 }
 
-// updateBPFConfig updates the tuner_config_map BPF ARRAY via bpftool.
-// slot 0 = explore_pct, slot 1 = prefix4, slot 2 = prefix6.
-func updateBPFConfig(slot int, value int) {
-    keyHex := fmt.Sprintf("%02x 00 00 00", slot)
-    valHex := fmt.Sprintf("%02x 00 00 00", value)
-    cmd := exec.Command("bpftool", "map", "update", "name", "tuner_config_map",
-        "key", keyHex, "value", valHex)
-    cmd.Run()
-}
+
