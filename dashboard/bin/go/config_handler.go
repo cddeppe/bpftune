@@ -41,7 +41,6 @@ func (c *Collector) handleConfig(w http.ResponseWriter, r *http.Request) {
             n := toInt(v)
             if n >= 1 && n <= 32 {
                 os.WriteFile(prefix4Path, []byte(fmt.Sprintf("%d", n)), 0644)
-                updateBPFConfig(1, n)
                 changed = append(changed, "prefix4")
             }
         }
@@ -50,7 +49,6 @@ func (c *Collector) handleConfig(w http.ResponseWriter, r *http.Request) {
             n := toInt(v)
             if n >= 1 && n <= 128 {
                 os.WriteFile(prefix6Path, []byte(fmt.Sprintf("%d", n)), 0644)
-                updateBPFConfig(2, n)
                 changed = append(changed, "prefix6")
             }
         }
@@ -59,7 +57,6 @@ func (c *Collector) handleConfig(w http.ResponseWriter, r *http.Request) {
             n := toInt(v)
             if n >= 0 && n <= 100 {
                 os.WriteFile(explorePctPath, []byte(fmt.Sprintf("%d", n)), 0644)
-                updateBPFConfig(0, n)
                 changed = append(changed, "explore_pct")
             }
         }
