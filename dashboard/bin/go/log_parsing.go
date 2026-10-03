@@ -94,6 +94,11 @@ type swapRow struct {
 	Dest   string // raw numeric string, may be ""
 	Dest6  string
 	Dest6b string
+	// Enriched fields (filled in by enrichSwapsForCSV before writeSwapsCSV)
+	Outcome     string // "win"/"loss"/"null"/"no_post"/""
+	SrateBefore string // pre-swap srate value as string
+	Direction   string // "origin"/"client"/""
+	Rport       string // remote port from met event
 }
 
 // ============================================================================
@@ -847,7 +852,6 @@ func buildProofsRawEvents(text string) []interface{} {
 	}
 	return out
 }
-
 
 func proofEvents(text string) (map[int]proofEvent, map[int]proofSample) {
 	events := map[int]proofEvent{}

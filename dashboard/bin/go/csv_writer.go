@@ -69,7 +69,9 @@ var (
 func writeCSVHeaderIfEmpty(path, header string) {
 	info, err := os.Stat(path)
 	if err != nil {
-		if !os.IsNotExist(err) { return }
+		if !os.IsNotExist(err) {
+			return
+		}
 		os.WriteFile(path, []byte(header+"\n"), 0644)
 		return
 	}
@@ -79,21 +81,29 @@ func writeCSVHeaderIfEmpty(path, header string) {
 }
 
 func bucketsCSVHeader() string {
-	parts := []string{"collected_ts","addr","instances","min_rtt","ref_rate","best_i","best_alg","rate_best_i","rate_best_v"}
-	for _, alg := range CONGS { parts = append(parts, "mv_"+alg, "re_"+alg) }
-	parts = append(parts, "tcp_rmem_min","tcp_rmem_def","tcp_rmem_max")
-	for _, alg := range CONGS { parts = append(parts, "ss_"+alg) }
-	for _, alg := range CONGS { parts = append(parts, "bs_"+alg) }
-	for _, alg := range CONGS { parts = append(parts, "ns_"+alg) }
+	parts := []string{"collected_ts", "addr", "instances", "min_rtt", "ref_rate", "best_i", "best_alg", "rate_best_i", "rate_best_v"}
+	for _, alg := range CONGS {
+		parts = append(parts, "mv_"+alg, "re_"+alg)
+	}
+	parts = append(parts, "tcp_rmem_min", "tcp_rmem_def", "tcp_rmem_max")
+	for _, alg := range CONGS {
+		parts = append(parts, "ss_"+alg)
+	}
+	for _, alg := range CONGS {
+		parts = append(parts, "bs_"+alg)
+	}
+	for _, alg := range CONGS {
+		parts = append(parts, "ns_"+alg)
+	}
 	return strings.Join(parts, ",")
 }
 
 func swapsCSVHeader() string {
-	return strings.Join([]string{"collected_ts","boot_ts","cookie","from_alg","to_alg","d","mt_alg","rb_alg","diverges","outcome","socket_rate_before","dest","dest_raw","f_ema","t_ema","srate_before","direction","rport"}, ",")
+	return strings.Join([]string{"collected_ts", "boot_ts", "cookie", "from_alg", "to_alg", "d", "mt_alg", "rb_alg", "diverges", "outcome", "socket_rate_before", "dest", "dest_raw", "f_ema", "t_ema", "srate_before", "direction", "rport"}, ",")
 }
 
 func srateCSVHeader() string {
-	return strings.Join([]string{"collected_ts","boot_ts","cookie","alg","srate"}, ",")
+	return strings.Join([]string{"collected_ts", "boot_ts", "cookie", "alg", "srate"}, ",")
 }
 
 // ============================================================================
@@ -231,6 +241,10 @@ func writeSwapsCSV(swaps []swapRow, now int64) {
 
 		row := buildSwapCSVRow(sw, now)
 		f.WriteString(row + "\n")
+		// v0.7.6: write truth file entry for resolved swaps
+		if sw.Outcome == "win" || sw.Outcome == "loss" || sw.Outcome == "null" {
+			writeTruthRow(destIP(sw.Dest), strconv.Itoa(sw.To), sw.Outcome)
+		}
 	}
 }
 
@@ -267,15 +281,15 @@ func buildSwapCSVRow(sw swapRow, now int64) string {
 		mtAlg,
 		rbAlg,
 		diverges,
-		"", // outcome
-		"", // socket_rate_before
+		sw.Outcome,     // outcome (enriched: win/loss/null/no_post/"")
+		sw.SrateBefore, // socket_rate_before (enriched: pre-swap srate)
 		dest,
 		destRaw,
-		"", // f_ema
-		"", // t_ema
-		"", // srate_before
-		"", // direction
-		"", // rport
+		"",             // f_ema (TODO: from BPF map)
+		"",             // t_ema (TODO: from BPF map)
+		sw.SrateBefore, // srate_before (same as socket_rate_before)
+		sw.Direction,   // direction (enriched: origin/client/"")
+		sw.Rport,       // rport (enriched: from met event)
 	}
 	return strings.Join(parts, ",")
 }

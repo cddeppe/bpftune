@@ -107,7 +107,10 @@ func (c *Collector) collect() {
 
 	// ----- Write CSV rows (write labeled form; reader trusts label) ----
 	writeBucketsCSV(hosts, now)
-	writeSwapsCSV(allSwaps, now)
+	// v0.7.6: enrich swaps with outcome/direction/srate_before before CSV write.
+	// Mirrors Python _resolve_pending enrichment logic.
+	enrichSwapsForCSV(allSwaps, allMets, allSrates)
+	writeSwapsCSV(allSwaps, now)            // truth writing happens inside, after dedup
 	writeSrateCSVFromParsed(allSrates, now) // v0.7: no re-parse
 
 	// ----- Update current state + push to SSE --------------------------
