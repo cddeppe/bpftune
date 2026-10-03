@@ -2163,24 +2163,13 @@ function _populateBucketSelect(desiredBucket) {
     var p4 = b.prefix4 || 16;
     var p6 = b.prefix6 || 32;
     var ep = b.explore_pct || 100;
-    var choice = prompt(
-      'Edit which setting?
-
-' +
-      '1. prefix4  (current: /' + p4 + ', range 1-32)
-' +
-      '2. prefix6  (current: /' + p6 + ', range 1-128)
-' +
-      '3. exploration (current: ' + ep + '%, range 0-100)
-
-' +
-      'Enter 1, 2, or 3:'
-    );
+    var msg = "Edit which setting? 1=prefix4(/" + p4 + ") 2=prefix6(/" + p6 + ") 3=explore(" + ep + "%)";
+    var choice = prompt(msg);
+    if (choice === null) return;
     choice = choice.trim();
-    if (choice === '1') editConfig('prefix4', p4, 1, 32);
-    else if (choice === '2') editConfig('prefix6', p6, 1, 128);
-    else if (choice === '3') editConfig('explore_pct', ep, 0, 100);
-    else alert('Invalid choice: ' + choice);
+    if (choice === "1") editConfig("prefix4", p4, 1, 32);
+    else if (choice === "2") editConfig("prefix6", p6, 1, 128);
+    else if (choice === "3") editConfig("explore_pct", ep, 0, 100);
   }
 
   boot();
