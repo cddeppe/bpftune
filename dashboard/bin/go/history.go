@@ -53,6 +53,10 @@ type historyStore struct {
 	// v0.7.3: csvAll is loaded once per renderToDisk cycle, then freed.
 	// This avoids holding the 47MB CSV in memory permanently.
 	csvAll map[string][]bucketSnapshot
+	// v0.7.5p: streamed series for slow ranges (7d/30d/all).
+	// Set by renderSlowToDisk via streamCSVToSeries(), then freed.
+	// renderBucketToDisk uses this instead of readBucketCSVFromMap.
+	streamedSeries map[string]map[string]map[string]interface{}
 }
 
 // ringCap is the ring buffer size.  Default 120 = 1h at 30s intervals.

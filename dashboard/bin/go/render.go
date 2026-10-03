@@ -93,15 +93,33 @@ func (c *Collector) renderSlowToDisk() {
 		return
 	}
 
-	// Load CSV once for all buckets
-	hist.csvAll = readCSVAll()
-	defer func() { hist.csvAll = nil }()
+	// v0.7.5p: stream CSV directly into binned series (low memory).
+	// Memory: ~3-5MB instead of ~680MB for a 223MB CSV.
+	bucketIDs := make([]string, 0, len(bucketMaps))
+	for _, b := range bucketMaps {
+		id, _ := b["dest"].(string)
+		if id != "" {
+			bucketIDs = append(bucketIDs, id)
+		}
+	}
 
-	// Write bucket_<id>.json with ALL ranges (fast=false)
+	hist.mu.Lock()
+	hist.streamedSeries = streamCSVToSeries(bucketIDs)
+	hist.mu.Unlock()
+
+	defer func() {
+		hist.mu.Lock()
+		hist.streamedSeries = nil
+		hist.mu.Unlock()
+	}()
+
+	// Write bucket_<id>.json with ALL ranges (fast=false).
+	// renderBucketToDisk uses streamedSeries for slow ranges (7d/30d/all)
+	// and falls back to ring buffer / readCSVTail for fast ranges (1h/24h).
 	hist.renderBucketsToDisk(bucketMaps, swapOutcomes, false)
 
 	os.Stderr.WriteString("renderSlowToDisk: regenerated 7d+all for " +
-		toString(len(bucketMaps)) + " buckets\n")
+		toString(len(bucketMaps)) + " buckets (streamed)\n")
 }
 
 // invalidateStaticFiles deletes all /data/*.json so the next renderToDisk
@@ -404,29 +422,40 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 			continue
 		}
 
-		var snaps []bucketSnapshot
-		switch rngName {
-		case "1h":
-			snaps = h.raw[bucketID]
-			if span > 0 {
-				cutoff := time.Now().Unix() - int64(span)
-				var filtered []bucketSnapshot
-				for _, s := range snaps {
-					if s.Ts >= cutoff {
-						filtered = append(filtered, s)
-					}
+		// v0.7.5p: for slow ranges, use pre-built streamed series if available
+		var series map[string]interface{}
+		if h.streamedSeries != nil && !isFastRange(rngName) {
+			if bucketSeries, ok := h.streamedSeries[bucketID]; ok {
+				if rngSeries, ok := bucketSeries[rngName]; ok {
+					series = rngSeries
 				}
-				snaps = filtered
-			}
-		case "24h", "7d", "30d", "all":
-			if h.csvAll != nil {
-				snaps = readBucketCSVFromMap(h.csvAll, bucketID, int64(span))
-			} else {
-				snaps = readBucketCSV(bucketID, int64(span))
 			}
 		}
 
-		series := buildSeriesFromSnaps(snaps, width)
+		if series == nil {
+			var snaps []bucketSnapshot
+			switch rngName {
+			case "1h":
+				snaps = h.raw[bucketID]
+				if span > 0 {
+					cutoff := time.Now().Unix() - int64(span)
+					var filtered []bucketSnapshot
+					for _, s := range snaps {
+						if s.Ts >= cutoff {
+							filtered = append(filtered, s)
+						}
+					}
+					snaps = filtered
+				}
+			case "24h", "7d", "30d", "all":
+				if h.csvAll != nil {
+					snaps = readBucketCSVFromMap(h.csvAll, bucketID, int64(span))
+				} else {
+					snaps = readBucketCSV(bucketID, int64(span))
+				}
+			}
+			series = buildSeriesFromSnaps(snaps, width)
+		}
 				bs := map[int64]bool{}; for _, sn := range snaps { bs[sn.Ts/int64(width)] = true }; var bis []int64; for bi := range bs { bis = append(bis, bi) }; sort.Slice(bis, func(i, j int) bool { return bis[i] < bis[j] }); sa := make([]interface{}, len(bis)); bc := map[int64]int{}; if f, e := os.Open(swapsCSVPath); e == nil { sc := bufio.NewScanner(f); sc.Buffer(make([]byte, 1<<20), 1<<20); sc.Scan(); for sc.Scan() { c := strings.Split(sc.Text(), ","); if len(c) < 13 { continue }; if ResolveBucket(c[11]) != bucketID { continue }; st, _ := strconv.ParseInt(c[0], 10, 64); bc[st/int64(width)]++ }; f.Close() }; for i, bi := range bis { sa[i] = bc[bi] }; series["swaps"] = sa
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
