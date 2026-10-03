@@ -1,6 +1,8 @@
 #!/bin/bash
 # update.sh — bpftune fork updater (atomic, single-file)
 #
+# Updates the bpftune .deb + Go dashboard collector.
+#
 # Usage:
 #   sudo bash update.sh                # check + upgrade .deb and dashboard
 #   sudo bash update.sh --tuner-only    # only update .deb, skip dashboard
@@ -9,6 +11,7 @@
 #
 # Idempotent: re-running when already up-to-date is a no-op.
 # Checks (in order): local /mnt/backup .deb → GitHub releases → skip if not newer.
+# Go binary: downloaded from GitHub Releases or built from source (needs Go).
 
 set -Eeuo pipefail
 
@@ -148,9 +151,9 @@ for a in d.get('assets', []):
     fi
 fi
 
-# ---------- Step 2: dashboard ----------
+# ---------- Step 2: dashboard (Go collector) ----------
 if [ "$DO_DASHBOARD" = 1 ]; then
-    step "2. Update dashboard code"
+    step "2. Update dashboard (Go collector)"
 
     if [ ! -d /root/bpftune/.git ]; then
         warn "no /root/bpftune git checkout — run install.sh --dashboard-only to bootstrap"
@@ -164,96 +167,112 @@ if [ "$DO_DASHBOARD" = 1 ]; then
         fi
         NEW_HASH=$(git rev-parse --short HEAD)
         if [ "$OLD_HASH" = "$NEW_HASH" ]; then
-            ok "dashboard already at latest ($NEW_HASH)"
+            ok "dashboard code already at latest ($NEW_HASH)"
         else
-            ok "dashboard updated: $OLD_HASH → $NEW_HASH"
+            ok "dashboard code updated: $OLD_HASH → $NEW_HASH"
         fi
 
-        mkdir -p "$DASH_BIN" "$SERVED"
-        cp dashboard/bin/*.py dashboard/bin/*.js dashboard/bin/*.css "$DASH_BIN"/
-        chmod 644 "$DASH_BIN"/*.py "$DASH_BIN"/*.css "$DASH_BIN"/*.js
-        chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
-        [ -f dashboard/bin/index.html ] && cp dashboard/bin/index.html "$SERVED"/
-        cp "$DASH_BIN"/dashboard.css "$SERVED"/ 2>/dev/null || true
-        cp "$DASH_BIN"/dashboard.js  "$SERVED"/ 2>/dev/null || true
-        ok "files synced to $DASH_BIN + $SERVED"
+        DASH_BIN=/opt/bpftune-dashboard/bin
+        SERVED=/var/lib/bpftune/history
+        GO_BIN="$DASH_BIN/bpftune-collector-go"
+        mkdir -p "$DASH_BIN" "$SERVED/data"
 
-        for svc in bpftune-collector bpftune-labels-api bpftune-met-trace; do
-            if systemctl is-enabled "$svc" 2>/dev/null | grep -q enabled; then
-                systemctl restart "$svc" 2>/dev/null && ok "$svc restarted" || warn "$svc restart failed"
-            fi
-        done
-
-        if [ -f "$DASH_BIN"/test_bpftune_cli.py ]; then
-            printf "  running tests... "
-            TEST_OUT=$(python3 "$DASH_BIN"/test_bpftune_cli.py 2>&1 || true)
-            if printf "%s" "$TEST_OUT" | grep -qE '^OK$'; then
-                RAN=$(printf "%s" "$TEST_OUT" | grep -oE 'Ran [0-9]+ tests?' | tail -1)
-                ok "tests passed ($RAN)"
-            else
-                printf "\n"
-                printf "%s\n" "$TEST_OUT" | tail -5
-                warn "tests reported failures — investigate before relying on dashboard"
-            fi
-        fi
-
-        sleep 2
-        if curl -fsS http://127.0.0.1:8082/current.json 2>/dev/null \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'  current.json OK, {len(d)} keys')" 2>/dev/null; then
-            :
+        # --- 2a. Get updated Go binary ---
+        BIN_URL="https://github.com/${REPO}/releases/latest/download/bpftune-collector-go-${ARCH}"
+        if curl -fsSL "$BIN_URL" -o /tmp/bpftune-collector-go-"$ARCH" 2>/dev/null; then
+            # Stop service before swapping binary (avoid "Text file busy")
+            systemctl stop bpftune-collector-go 2>/dev/null || true
+            sleep 2
+            cp /tmp/bpftune-collector-go-"$ARCH" "$GO_BIN"
+            chmod +x "$GO_BIN"
+            ok "Go binary updated from GitHub Releases"
+        elif [ -f "$BACKUP_DIR/bpftune-collector-go-$ARCH" ]; then
+            systemctl stop bpftune-collector-go 2>/dev/null || true
+            sleep 2
+            cp "$BACKUP_DIR/bpftune-collector-go-$ARCH" "$GO_BIN"
+            chmod +x "$GO_BIN"
+            ok "Go binary copied from $BACKUP_DIR"
+        elif command -v go >/dev/null 2>&1; then
+            printf "  building Go binary from source...\n"
+            systemctl stop bpftune-collector-go 2>/dev/null || true
+            sleep 2
+            cd /root/bpftune/dashboard/bin/go
+            CGO_ENABLED=0 go build -o "$GO_BIN" .
+            chmod +x "$GO_BIN"
+            ok "Go binary rebuilt from source"
+            cd /root/bpftune
         else
-            warn "collector not yet serving /current.json (journalctl -u bpftune-collector -f)"
+            warn "could not update Go binary (no GitHub release, no Go installed, no backup) — keeping existing binary"
         fi
 
-        # --- 2c. refresh bpftune-met-trace.service (fix trace_pipe truncation) ---
-        MET_SVC=/etc/systemd/system/bpftune-met-trace.service
-        NEW_MET=$(cat <<'METEOF'
-[Unit]
-Description=bpftune trace_pipe capture to /var/log/bpftune-met-live.log
-After=bpftune.service
-Wants=bpftune.service
+        # --- 2b. Deploy frontend files ---
+        cp dashboard/bin/dashboard.js dashboard/bin/dashboard.css "$DASH_BIN"/ 2>/dev/null || true
+        cp dashboard/bin/index.html "$DASH_BIN"/ 2>/dev/null || true
+        cp dashboard/bin/labels-api.py "$DASH_BIN"/ 2>/dev/null || true
+        chmod 644 "$DASH_BIN"/*.css "$DASH_BIN"/*.js 2>/dev/null || true
+        chmod 755 "$DASH_BIN"/labels-api.py 2>/dev/null || true
+        ok "frontend files synced"
 
-[Service]
-Type=simple
-ExecStart=/bin/sh -c 'while true; do cat /sys/kernel/tracing/trace_pipe >> /var/log/bpftune-met-live.log 2>&1; sleep 0.1; done'
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-METEOF
-)
-        if [ -f "$MET_SVC" ]; then
-            OLD_MD5=$(md5sum "$MET_SVC" | awk '{print $1}')
-            NEW_MD5=$(printf "%s\n" "$NEW_MET" | md5sum | awk '{print $1}')
-            if [ "$OLD_MD5" != "$NEW_MD5" ]; then
-                printf "%s\n" "$NEW_MET" > "$MET_SVC"
-                systemctl daemon-reload
-                systemctl restart bpftune-met-trace 2>/dev/null && ok "bpftune-met-trace.service refreshed (trace_pipe loop)" || warn "bpftune-met-trace restart failed"
-            else
-                ok "bpftune-met-trace.service already up-to-date"
+        # --- 2c. Handle nginx port 8080 conflict ---
+        if command -v nginx >/dev/null 2>&1; then
+            if grep -rq 'listen.*8080' /etc/nginx/ 2>/dev/null; then
+                rm -f /etc/nginx/conf.d/bpftune-dashboard.conf 2>/dev/null || true
+                python3 - <<'NGINX_CLEANUP'
+import re, sys
+path = "/etc/nginx/nginx.conf"
+try:
+    s = open(path).read()
+except:
+    sys.exit(0)
+for anchor in ["listen 0.0.0.0:8080", "listen 8080"]:
+    idx = s.find(anchor)
+    if idx != -1:
+        break
+else:
+    sys.exit(0)
+server_start = s.rfind("server {", 0, idx)
+if server_start == -1:
+    sys.exit(0)
+brace_start = s.find("{", server_start)
+depth = 0; i = brace_start; end = None
+while i < len(s):
+    if s[i] == "{": depth += 1
+    elif s[i] == "}":
+        depth -= 1
+        if depth == 0: end = i + 1; break
+    i += 1
+if end is None:
+    sys.exit(0)
+line_start = s.rfind("\n", 0, server_start) + 1
+s = s[:line_start] + s[end:]
+s = re.sub(r"\n\n\n+", "\n\n", s)
+open(path, "w").write(s)
+NGINX_CLEANUP
+                nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+                ok "removed nginx 8080 block"
             fi
         fi
 
-        # --- 2d. ensure render.py executable + data/ symlinks exist ---
-        chmod 755 "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
-        mkdir -p "$SERVED/data"
-        for f in "$SERVED"/data/*.json; do
-            [ -f "$f" ] || continue
-            bn=$(basename "$f")
-            [ -L "$SERVED/$bn" ] || ln -sf "data/$bn" "$SERVED/$bn"
-        done
+        # Kill any lingering process on 8080
+        fuser -k 8080/tcp 2>/dev/null || true
 
-        # --- 2e. ensure cron has the symlink step ---
-        CRON_FILE=/etc/cron.d/bpftune-history
-        if [ -f "$CRON_FILE" ] && ! grep -q 'ln -sf' "$CRON_FILE"; then
-            cat > "$CRON_FILE" <<'CRONEOF'
-# managed by bpftune install.sh
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-2 * * * * root /opt/bpftune-dashboard/bin/bpftune-render.py && for f in /var/lib/bpftune/history/data/*.json; do [ -f "$f" ] && ln -sf "data/$(basename "$f")" "/var/lib/bpftune/history/$(basename "$f")"; done >> /var/log/bpftune-render.log 2>&1
-CRONEOF
-            chmod 644 "$CRON_FILE"
-            ok "cron updated with symlink step"
+        # --- 2d. Start/restart Go collector ---
+        systemctl restart bpftune-collector-go 2>/dev/null || systemctl start bpftune-collector-go 2>/dev/null || true
+        sleep 5
+
+        if systemctl is-active bpftune-collector-go >/dev/null 2>&1; then
+            ok "bpftune-collector-go restarted"
+        else
+            warn "bpftune-collector-go failed to start — check: journalctl -u bpftune-collector-go -n 30"
+        fi
+
+        # --- 2e. Verify ---
+        sleep 5
+        if curl -fsS http://127.0.0.1:8080/current.json 2>/dev/null \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'  current.json OK, {len(d.get(\"buckets\",[]))} buckets')" 2>/dev/null; then
+            ok "dashboard responding on port 8080"
+        else
+            warn "dashboard not yet responding (first collect takes ~10s)"
         fi
     fi
 fi
@@ -280,8 +299,8 @@ svc_status() {
 }
 svc_status bpftune
 [ "$DO_DASHBOARD" = 1 ] && [ -d /root/bpftune/.git ] && {
-    svc_status bpftune-collector
-    svc_status bpftune-labels-api
+    svc_status bpftune-collector-go
+    svc_status bpftune-met-trace
 }
 
 printf "\nDone.\n"

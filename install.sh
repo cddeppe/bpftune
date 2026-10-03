@@ -1,6 +1,9 @@
 #!/bin/bash
 # install.sh — bpftune fork installer (atomic, single-file)
 #
+# Installs the bpftune kernel module (.deb) + optional Go dashboard collector.
+# The Go collector serves everything on port 8080 directly (no nginx needed).
+#
 # Usage:
 #   sudo bash install.sh                 # interactive: asks about dashboard
 #   sudo bash install.sh --yes            # non-interactive, defaults to dashboard=yes
@@ -10,6 +13,7 @@
 #
 # Idempotent: re-running upgrades in place rather than breaking the install.
 # Works on: Debian / Ubuntu on amd64 or arm64.
+# Dashboard binary: pre-built from GitHub Releases or built from source (needs Go).
 
 set -Eeuo pipefail
 
@@ -175,14 +179,14 @@ if [ "$DASHBOARD_UNSPECIFIED" = 1 ] && [ "$DASHBOARD" = 1 ] && [ "$ASSUME_YES" =
     [[ "$REPLY" =~ ^[Nn]$ ]] && DASHBOARD=0
 fi
 
-# ---------- Step 3: dashboard ----------
+# ---------- Step 3: dashboard (Go collector) ----------
 if [ "$DASHBOARD" = 1 ]; then
-    step "2. Install dashboard"
+    step "2. Install dashboard (Go collector)"
 
     DASH_BIN=/opt/bpftune-dashboard/bin
     SERVED=/var/lib/bpftune/history
 
-    # --- 3a. git clone or update ---
+    # --- 3a. git clone or update (for frontend files + Go source) ---
     if [ -d /root/bpftune/.git ]; then
         cd /root/bpftune
         git fetch origin --prune
@@ -198,54 +202,116 @@ if [ "$DASHBOARD" = 1 ]; then
     DASH_HASH=$(git rev-parse --short HEAD)
     printf "  head: %s\n" "$DASH_HASH"
 
-    # --- 3b. deploy files ---
-    mkdir -p "$DASH_BIN" "$SERVED"
-    cp dashboard/bin/*.py dashboard/bin/*.js dashboard/bin/*.css "$DASH_BIN"/
-    chmod 644 "$DASH_BIN"/*.py "$DASH_BIN"/*.css "$DASH_BIN"/*.js
-    chmod 755 "$DASH_BIN"/bpftune-collector.py "$DASH_BIN"/bpftune-cli.py "$DASH_BIN"/labels-api.py "$DASH_BIN"/bpftune-render.py 2>/dev/null || true
-    [ -f dashboard/bin/index.html ] && cp dashboard/bin/index.html "$SERVED"/
-    cp "$DASH_BIN"/dashboard.css "$SERVED"/ 2>/dev/null || true
-    cp "$DASH_BIN"/dashboard.js  "$SERVED"/ 2>/dev/null || true
-    ok "files deployed to $DASH_BIN + $SERVED"
+    # --- 3b. Get the Go binary (try GitHub Releases first, then build from source) ---
+    GO_BIN="$DASH_BIN/bpftune-collector-go"
+    mkdir -p "$DASH_BIN"
 
-    # --- 3c. systemd services ---
-    cat > /etc/systemd/system/bpftune-collector.service <<'EOF'
+    # Try to download pre-built binary from GitHub Releases
+    BIN_URL="https://github.com/${REPO}/releases/latest/download/bpftune-collector-go-${ARCH}"
+    if curl -fsSL "$BIN_URL" -o /tmp/bpftune-collector-go-"$ARCH" 2>/dev/null; then
+        cp /tmp/bpftune-collector-go-"$ARCH" "$GO_BIN"
+        chmod +x "$GO_BIN"
+        ok "downloaded Go binary from GitHub Releases ($ARCH)"
+    elif [ -f "$BACKUP_DIR/bpftune-collector-go-$ARCH" ]; then
+        cp "$BACKUP_DIR/bpftune-collector-go-$ARCH" "$GO_BIN"
+        chmod +x "$GO_BIN"
+        ok "copied Go binary from $BACKUP_DIR"
+    elif command -v go >/dev/null 2>&1; then
+        printf "  building Go binary from source...\n"
+        cd /root/bpftune/dashboard/bin/go
+        CGO_ENABLED=0 go build -o "$GO_BIN" .
+        chmod +x "$GO_BIN"
+        ok "built Go binary from source"
+        cd /root/bpftune
+    else
+        fail "Could not get Go binary. Options:
+   (a) Create a GitHub release with bpftune-collector-go-{amd64,arm64} assets
+   (b) Install Go: apt-get install -y golang-go && re-run install.sh
+   (c) Pre-build on another host and copy to $BACKUP_DIR/bpftune-collector-go-$ARCH"
+    fi
+
+    # --- 3c. Deploy frontend files ---
+    cp dashboard/bin/dashboard.js dashboard/bin/dashboard.css "$DASH_BIN"/ 2>/dev/null || true
+    cp dashboard/bin/index.html "$DASH_BIN"/ 2>/dev/null || true
+    cp dashboard/bin/labels-api.py "$DASH_BIN"/ 2>/dev/null || true
+    chmod 644 "$DASH_BIN"/*.css "$DASH_BIN"/*.js 2>/dev/null || true
+    chmod 755 "$DASH_BIN"/labels-api.py 2>/dev/null || true
+    ok "frontend files deployed to $DASH_BIN"
+
+    # --- 3d. Handle nginx port 8080 conflict (if present) ---
+    if [ "$HAVE_NGINX" = 1 ]; then
+        if grep -rq 'listen.*8080' /etc/nginx/ 2>/dev/null; then
+            warn "nginx has a server block on port 8080 — removing (conflicts with Go collector)"
+            # Remove any 8080 server block from nginx.conf
+            python3 - <<'NGINX_CLEANUP'
+import re, sys
+path = "/etc/nginx/nginx.conf"
+try:
+    s = open(path).read()
+except:
+    sys.exit(0)
+for anchor in ["listen 0.0.0.0:8080", "listen 8080"]:
+    idx = s.find(anchor)
+    if idx != -1:
+        break
+else:
+    sys.exit(0)
+server_start = s.rfind("server {", 0, idx)
+if server_start == -1:
+    sys.exit(0)
+brace_start = s.find("{", server_start)
+depth = 0; i = brace_start; end = None
+while i < len(s):
+    if s[i] == "{": depth += 1
+    elif s[i] == "}":
+        depth -= 1
+        if depth == 0: end = i + 1; break
+    i += 1
+if end is None:
+    sys.exit(0)
+line_start = s.rfind("\n", 0, server_start) + 1
+s = s[:line_start] + s[end:]
+s = re.sub(r"\n\n\n+", "\n\n", s)
+open(path, "w").write(s)
+NGINX_CLEANUP
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+            ok "nginx 8080 block removed"
+        else
+            ok "nginx present, no 8080 conflict"
+        fi
+    fi
+
+    # Kill any lingering process on port 8080
+    fuser -k 8080/tcp 2>/dev/null || true
+
+    # --- 3f. Install Go collector systemd service ---
+    cat > /etc/systemd/system/bpftune-collector-go.service <<EOF
 [Unit]
-Description=bpftune dashboard data collector (daemon, SSE on 8082)
+Description=bpftune dashboard collector (Go) — replaces Python collector
 After=network.target bpftune.service
 Wants=bpftune.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/bpftune-dashboard/bin/bpftune-collector.py --daemon
+ExecStart=$DASH_BIN/bpftune-collector-go --port 8080 --bind 0.0.0.0
 Restart=always
 RestartSec=5
-User=root
-Nice=10
 StandardOutput=journal
 StandardError=journal
+ProtectSystem=full
+ReadWritePaths=/var/lib/bpftune
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    systemctl enable bpftune-collector-go
+    ok "bpftune-collector-go.service installed + enabled"
 
-    cat > /etc/systemd/system/bpftune-labels-api.service <<'EOF'
-[Unit]
-Description=bpftune dashboard IP label editor API (port 8081)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /opt/bpftune-dashboard/bin/labels-api.py
-Restart=always
-RestartSec=2
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    cat > /etc/systemd/system/bpftune-met-trace.service <<'EOF'
+    # --- 3g. Ensure bpftune-met-trace service (trace_pipe capture) ---
+    if ! systemctl is-enabled bpftune-met-trace 2>/dev/null | grep -q enabled; then
+        cat > /etc/systemd/system/bpftune-met-trace.service <<'EOF'
 [Unit]
 Description=bpftune trace_pipe capture to /var/log/bpftune-met-live.log
 After=bpftune.service
@@ -260,112 +326,42 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    systemctl daemon-reload
-    systemctl enable --now bpftune-collector bpftune-labels-api bpftune-met-trace 2>/dev/null \
-        || warn "one or more services failed to enable immediately — see journalctl"
-    ok "systemd services created + started"
-
-    # --- 3d. nginx config ---
-    if [ "$HAVE_NGINX" = 1 ]; then
-        NG_CONF=/etc/nginx/conf.d/bpftune-dashboard.conf
-        if [ -f "$NG_CONF" ] || grep -rq 'listen.*8080' /etc/nginx/ 2>/dev/null; then
-            warn "nginx :8080 already configured — overwriting $NG_CONF"
-        fi
-        cat > "$NG_CONF" <<'EOF'
-# managed by bpftune install.sh — do not edit; re-run install.sh to regenerate
-server {
-    listen 8080;
-    server_name _;
-    root /var/lib/bpftune/history;
-    index index.html;
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    location /sse {
-        proxy_pass http://127.0.0.1:8082/sse;
-        proxy_set_header Host $host;
-        proxy_set_header X-Accel-Buffering "no";
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-        proxy_http_version 1.1;
-        chunked_transfer_encoding off;
-    }
-
-    location /api/labels/ {
-        proxy_pass http://127.0.0.1:8081/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location = /current.json {
-        proxy_pass http://127.0.0.1:8082/current.json;
-        proxy_set_header Host $host;
-        add_header Cache-Control "no-store, max-age=0";
-    }
-}
-EOF
-        if ! grep -q 'include.*mime.types' /etc/nginx/nginx.conf 2>/dev/null; then
-            sed -i '/http {/a\    include /etc/nginx/mime.types;\n    default_type application/octet-stream;' /etc/nginx/nginx.conf
-        fi
-        if nginx -t 2>/dev/null; then
-            systemctl reload nginx
-            ok "nginx configured (port 8080, /sse, /api/labels, /current.json)"
-        else
-            warn "nginx -t failed — inspect $NG_CONF manually"
-        fi
+        systemctl daemon-reload
+        systemctl enable --now bpftune-met-trace 2>/dev/null || true
+        ok "bpftune-met-trace.service installed (trace_pipe capture)"
     else
-        warn "nginx not installed — dashboard files at $DASH_BIN (serve manually)"
-        warn "  install with: apt-get install -y nginx && bash install.sh --dashboard-only"
+        ok "bpftune-met-trace.service already running"
     fi
 
-    # --- 3e. cron: hourly render + daily state backup ---
-    cat > /etc/cron.d/bpftune-history <<'EOF'
-# managed by bpftune install.sh
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-2 * * * * root /opt/bpftune-dashboard/bin/bpftune-render.py && for f in /var/lib/bpftune/history/data/*.json; do [ -f "$f" ] && ln -sf "data/$(basename "$f")" "/var/lib/bpftune/history/$(basename "$f")"; done >> /var/log/bpftune-render.log 2>&1
-EOF
-    chmod 644 /etc/cron.d/bpftune-history
+    # --- 3h. Remove old render cron (Go collector renders internally) ---
+    rm -f /etc/cron.d/bpftune-history 2>/dev/null || true
+    ok "removed old render cron (Go collector handles rendering every 5 min)"
 
+    # --- 3i. Keep state backup cron ---
     cat > /etc/cron.d/bpftune-state-backup <<'EOF'
 # managed by bpftune install.sh
 0 3 * * * root cp /var/lib/bpftune/tcp_conn_tuner.state /mnt/backup/tcp_conn_tuner.state.$(date +\%A) 2>/dev/null || true
 EOF
     chmod 644 /etc/cron.d/bpftune-state-backup
-    ok "cron configured (hourly render + 3am daily state backup)"
+    ok "state backup cron configured (3am daily)"
 
-    # --- 3f. initial collection ---
-    sleep 2
-    if python3 "$DASH_BIN"/bpftune-collector.py 2>&1 | tail -1; then
-        ok "initial collection done — current.json ready"
-    else
-        warn "initial collection failed — daemon will retry (journalctl -u bpftune-collector -f)"
-    fi
-
-    # --- 3f.1: render.py output dir + symlinks (data/*.json -> root) ---
+    # --- 3j. Start Go collector + verify ---
     mkdir -p "$SERVED/data"
-    if [ -d "$SERVED/data" ]; then
-        for f in "$SERVED"/data/*.json; do
-            [ -f "$f" ] || continue
-            bn=$(basename "$f")
-            [ -L "$SERVED/$bn" ] || ln -sf "data/$bn" "$SERVED/$bn"
-        done
-        ok "data/ symlinks created in $SERVED"
+    systemctl start bpftune-collector-go
+    sleep 5
+
+    if systemctl is-active bpftune-collector-go >/dev/null 2>&1; then
+        ok "bpftune-collector-go is running"
+    else
+        fail "bpftune-collector-go failed to start — check: journalctl -u bpftune-collector-go -n 30"
     fi
 
-    # --- 3g. tests ---
-    if [ -f "$DASH_BIN"/test_bpftune_cli.py ]; then
-        printf "  running tests... "
-        TEST_OUT=$(python3 "$DASH_BIN"/test_bpftune_cli.py 2>&1 || true)
-        TEST_TAIL=$(printf "%s" "$TEST_OUT" | tail -3)
-        printf "\n%s\n" "$TEST_TAIL"
-        if printf "%s" "$TEST_OUT" | grep -qE '^OK$|Ran [0-9]+ tests'; then
-            ok "tests passed"
-        else
-            warn "tests reported failures — see output above"
-        fi
+    sleep 5
+    if curl -fsS http://127.0.0.1:8080/current.json 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'  current.json OK, {len(d.get(\"buckets\",[]))} buckets')" 2>/dev/null; then
+        ok "dashboard responding on port 8080"
+    else
+        warn "dashboard not yet responding (first collect takes ~10s — retry in a moment)"
     fi
 fi
 
@@ -385,12 +381,9 @@ svc_status() {
 }
 svc_status bpftune
 if [ "$DASHBOARD" = 1 ]; then
-    svc_status bpftune-collector
-    svc_status bpftune-labels-api
+    svc_status bpftune-collector-go
     svc_status bpftune-met-trace
-    if [ "$HAVE_NGINX" = 1 ]; then
-        ok "dashboard URL: http://$(hostname -f 2>/dev/null || hostname):8080/"
-    fi
+    ok "dashboard URL: http://$(hostname -I 2>/dev/null | awk '{print $1}' || hostname):8080/"
 fi
 
 printf "\nDone.\n"
