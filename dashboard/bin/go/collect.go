@@ -78,6 +78,11 @@ func (c *Collector) collect() {
 
 	// ----- Log-derived panels (single parse, multiple consumers) --------
 	topSwaps, topProofs, swapOutcomes, bucketIPs, logWindow, proofsRaw := buildLogPanels(allSwaps, allMets, allSrates, cdest, logText)
+
+	// v0.7.6: streak writeback — patch BPF map bad_streak/null_streak from
+	// sustained outcomes (60-300s after swap). Mirrors deleted Python
+	// streak_writeback.py. Async to avoid blocking the 30s collect cycle.
+	go c.writebackStreaks(allSwaps, allMets, allSrates)
 	doc["recent_swaps"] = topSwaps
 	doc["recent_proofs"] = topProofs
 	doc["swap_outcomes"] = swapOutcomes
