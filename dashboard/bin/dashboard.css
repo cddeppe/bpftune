@@ -492,10 +492,11 @@
   .tun-group:nth-child(3) { grid-column: 1; grid-row: 3; }
   .tun-group:nth-child(4) { grid-column: 2; grid-row: 1 / span 3; }
 
-  /* v0.7.5p: tunables stack in 1 column on mobile */
+  /* mobile: tunables stack in 1 column */
   @media (max-width: 699px) {
+    .tun-group:nth-child(n) { grid-column: 1 !important; grid-row: auto !important; }
   }
-  
+
 
   /* v0.7.5p: combined build/service/system box — 2 cols desktop, 1 col mobile */
   .bs-sys-grid {
