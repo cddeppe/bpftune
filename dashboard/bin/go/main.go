@@ -197,6 +197,10 @@ func (c *Collector) handleIndex(w http.ResponseWriter, r *http.Request) {
 		c.handleLabels(w, r)
 		return
 	}
+	if r.URL.Path == "/api/config" {
+		c.handleConfig(w, r)
+		return
+	}
 	http.NotFound(w, r)
 }
 
