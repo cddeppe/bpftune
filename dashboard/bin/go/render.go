@@ -83,6 +83,9 @@ func (c *Collector) renderToDisk() {
 // v0.7.3: these ranges barely change in 5 min, so no need to regenerate
 // them every 5 min.  Runs on startup + once a day.
 func (c *Collector) renderSlowToDisk() {
+	// v0.7.9: rotate CSVs daily to prevent endless growth
+	rotateAllCSVs()
+
 	c.mu.RLock()
 	buckets := c.current["buckets"]
 	swapOutcomes := c.current["swap_outcomes"]

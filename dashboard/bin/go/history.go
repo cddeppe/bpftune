@@ -148,11 +148,11 @@ func aggregateSnapshots(snaps []bucketSnapshot) bucketSnapshot {
 // v0.7.4: five ranges. 1h+24h are "fast" (every 5 min). 7d+30d+all are
 // "slow" (daily at 4am).  "all" = full history, never pruned.
 var ranges = map[string][2]interface{}{
-	"1h":  {3600, 60},         // 1h, 60s bins
-	"24h": {86400, 300},       // 24h, 5min bins
-	"7d":  {7 * 86400, 3600},  // 7d, 1h bins
-	"30d": {30 * 86400, 3600}, // 30d, 1h bins
-	"all": {nil, 21600},       // unlimited, 6h bins
+	"1h":  {3600, 60},          // 1h, 60s bins
+	"24h": {86400, 300},        // 24h, 5min bins
+	"7d":  {7 * 86400, 3600},   // 7d, 1h bins
+	"30d": {30 * 86400, 3600},  // 30d, 1h bins
+	"all": {90 * 86400, 86400}, // 90 days, 24h bins (lightweight overview)
 }
 
 // isFastRange returns true for ranges that update every 5 min (1h, 24h).
