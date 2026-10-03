@@ -495,16 +495,16 @@ func streamCSVToSeries(bucketIDs []string) map[string]map[string]map[string]inte
 				break
 			}
 			if idx, ok := colIdx["re_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				re[i], _ = strconv.ParseFloat(cols[idx], 64)
+				{ v, _ := strconv.ParseFloat(cols[idx], 64); if v > 10000000 { v = 0 }; re[i] = v }
 			}
 			if idx, ok := colIdx["ss_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				ss[i], _ = strconv.Atoi(cols[idx])
+				{ v, _ := strconv.Atoi(cols[idx]); if v > 1000 { v = 0 }; ss[i] = v }
 			}
 			if idx, ok := colIdx["bs_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				bs[i], _ = strconv.Atoi(cols[idx])
+				{ v, _ := strconv.Atoi(cols[idx]); if v > 1000 { v = 0 }; bs[i] = v }
 			}
 			if idx, ok := colIdx["ns_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
-				ns[i], _ = strconv.Atoi(cols[idx])
+				{ v, _ := strconv.Atoi(cols[idx]); if v > 1000 { v = 0 }; ns[i] = v }
 			}
 			if idx, ok := colIdx["mv_"+alg]; ok && idx < len(cols) && cols[idx] != "" {
 				mv[i], _ = strconv.ParseFloat(cols[idx], 64)
