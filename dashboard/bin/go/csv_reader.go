@@ -343,7 +343,7 @@ func loadCSVTailIntoRingBuffer() {
 			os.Stderr.WriteString("loadCSVTailIntoRingBuffer PANICKED: " + toString(r) + "\n")
 		}
 	}()
-	all := readCSVAll()
+	all := readCSVTail(3600)
 	if all == nil {
 		os.Stderr.WriteString("loadCSVTailIntoRingBuffer: readCSVAll returned nil\n")
 		return
