@@ -101,20 +101,22 @@ func computeKeyHashes(doc map[string]interface{}) map[string]string {
 // ============================================================================
 
 func (c *Collector) notifySSE() {
-	c.mu.RLock()
-	current := c.current
-	c.mu.RUnlock()
+        c.mu.RLock()
+        current := c.current
+        c.mu.RUnlock()
 
-	c.mu.Lock()
-	for client := range c.sseClients {
-		msg := map[string]interface{}{"__t": "f", "v": current}
-		data, _ := json.Marshal(msg)
-		select {
-		case client <- data:
-		default: // client buffer full, skip
-		}
-	}
-	c.mu.Unlock()
+        // v0.7.5m: marshal ONCE, send to all clients
+        msg := map[string]interface{}{"__t": "f", "v": current}
+        data, _ := json.Marshal(msg)
+
+        c.mu.Lock()
+        for client := range c.sseClients {
+                select {
+                case client <- data:
+                default:
+                }
+        }
+        c.mu.Unlock()
 }
 
 // ============================================================================
@@ -286,35 +288,21 @@ func (c *Collector) handleSSE(w http.ResponseWriter, r *http.Request) {
 		c.mu.Unlock()
 	}()
 
-	lastHash := ""
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case data := <-ch:
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		case <-time.After(1 * time.Second):
-			c.mu.RLock()
-			newHash := ""
-			if c.current != nil {
-				data, _ := json.Marshal(c.current)
-				sum := md5.Sum(data)
-				newHash = fmt.Sprintf("%x", sum)
-			}
-			c.mu.RUnlock()
-
-			if newHash != lastHash && newHash != "" {
-				lastHash = newHash
-				c.mu.RLock()
-				msg := map[string]interface{}{"__t": "f", "v": c.current}
-				c.mu.RUnlock()
-				data, _ := json.Marshal(msg)
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
-			}
-		}
-	}
+	// v0.7.5m: removed per-second hash polling (was the 9% CPU sink).
+        // notifySSE() pushes to the channel every 30s after collect().
+        // Keep a 25s keepalive comment to prevent proxy idle timeout.
+        for {
+                select {
+                case <-r.Context().Done():
+                        return
+                case data := <-ch:
+                        fmt.Fprintf(w, "data: %s\n\n", data)
+                        flusher.Flush()
+                case <-time.After(25 * time.Second):
+                        fmt.Fprintf(w, ": keepalive\n\n")
+                        flusher.Flush()
+                }
+        }
 }
 
 // ============================================================================
