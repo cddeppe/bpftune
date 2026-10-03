@@ -221,7 +221,7 @@ Full web dashboard (Go binary, port 8080) with real-time SSE (Server-Sent Events
 │                                                                                 │
 │  Rate EMA per algorithm — Mb/s   ████▆▆▅▅▄▄▃▃  (1h: last 60min)            │
 │  Swap Score per algorithm       ██████████████                                  │
-│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄▅▅                                    │
+│  Bad Streak / Null Streak       ▁▁▂▂▃▃▄▄▅▅                                     │
 │  Swaps per bin                  ▃ ▅▇█▇▅▃ ▁▁  (same axis as above)          │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
