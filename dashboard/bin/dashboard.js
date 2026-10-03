@@ -145,11 +145,11 @@
       if (!_k || !_v) return;
       var _kt = _k.textContent;
       if (_kt.indexOf('prefix4') >= 0) {
-        _v.innerHTML = '/<input type="number" id="cfg-p4" value="' + b.prefix4 + '" min="1" max="32" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
+        _v.innerHTML = '/<input type="text" id="cfg-p4" value="' + b.prefix4 + '" min="1" max="32" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
       } else if (_kt.indexOf('prefix6') >= 0) {
-        _v.innerHTML = '/<input type="number" id="cfg-p6" value="' + b.prefix6 + '" min="1" max="128" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
+        _v.innerHTML = '/<input type="text" id="cfg-p6" value="' + b.prefix6 + '" min="1" max="128" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
       } else if (_kt.indexOf('exploration') >= 0) {
-        _v.innerHTML = '<input type="number" id="cfg-ep" value="' + b.explore_pct + '" min="0" max="100" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">%';
+        _v.innerHTML = '<input type="text" id="cfg-ep" value="' + b.explore_pct + '" min="0" max="100" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">%';
       }
     });
     var _sb = document.createElement('button');
@@ -165,7 +165,7 @@
       if (ep) ch.explore_pct = parseInt(ep.value);
       fetch('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(ch)})
         .then(function(r) { return r.json(); })
-        .then(function(d) { if (d.ok) { status('Config saved — live on next bpftune restart'); if (window.__liveFetch) window.__liveFetch(); } })
+        .then(function(d) { if (d.ok) { status('Config saved — live on next bpftune restart'); if (d.prefix4 != null) { var _i = document.getElementById('cfg-p4'); if (_i) _i.value = d.prefix4; } if (d.prefix6 != null) { var _i2 = document.getElementById('cfg-p6'); if (_i2) _i2.value = d.prefix6; } if (d.explore_pct != null) { var _i3 = document.getElementById('cfg-ep'); if (_i3) _i3.value = d.explore_pct; } } })
         .catch(function(e) { err('config: ' + e.message); });
     };
     _be.appendChild(_sb);
