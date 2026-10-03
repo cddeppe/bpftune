@@ -50,7 +50,7 @@ static __always_inline int update_backlog(void)
 	__u64 time, cpubit;
 	int cpu;
 
-	drop_count++;
+	/* 0.4.88: removed — callers already increment */
 
 	/* if we drop more than 1/32 of the backlog queue size/min,
 	 * increase backlog queue size.  This means as the queue size

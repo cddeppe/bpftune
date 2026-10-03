@@ -102,7 +102,7 @@ void bpftune_log_syslog(__attribute__((unused)) void *ctx, int level,
 
 	buflen = vsnprintf(buf, sizeof(buf), fmt, args);
 	if (buflen > 0)
-		syslog(level, buf, buflen + 1);
+		syslog(level, "%s", buf);
 }
 
 /* log to ctx buffer for specific thread, fall back to usual log destination */
@@ -117,8 +117,10 @@ void bpftune_log_buf(void *ctx, int level, const char *fmt, va_list args)
 	va_copy(nextargs, args);
 	self = pthread_self();
 	if (c->buf_thread == self && c->buf_off <= c->buf_sz) {
-		c->buf_off += vsnprintf(c->buf + c->buf_off,
-					c->buf_sz - c->buf_off, fmt, args);
+		int _ret = vsnprintf(c->buf + c->buf_off,
+		                        c->buf_sz - c->buf_off, fmt, args);
+		if (_ret > 0)
+		    c->buf_off += (_ret < (c->buf_sz - c->buf_off)) ? _ret : (c->buf_sz - c->buf_off - 1);
 	} else {
 		if (c->buf_thread != self && c->nextlogfn)
 			c->nextlogfn(ctx, level, fmt, nextargs);

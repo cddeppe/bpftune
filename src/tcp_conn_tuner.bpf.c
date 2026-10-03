@@ -579,8 +579,10 @@ score_pending_rejected(struct bpf_sock_ops *ops, struct remote_host *rh,
                 cur32 = (drop > cur32) ? 0 : cur32 - drop;
         }
         if (cur32 > 1024) cur32 = 1024;
-        /* 0.4.76: score write DISABLED. */
-        (void)cur32;
+        /* 0.4.88: re-enable score write (was disabled in 0.4.76).
+         * score_pending_swap was re-enabled in 03f86ff but this sibling
+         * was missed. ~8% of swaps (rejected path) left swap_score stale. */
+        rh->metrics[tgt].swap_score = (__u16)cur32;
 
         /* 0.4.82: streak update based on actual outcome (if >=30s). */
         if (ratio_q >= 282) {
