@@ -126,7 +126,7 @@
       rows.push(["uptime", h + "h " + m + "m"]);
     }
     if (b.started_utc) rows.push(["started", b.started_utc + " UTC", "dim"]);
-    if (b.prefix4 != null) rows.push(["prefix4 (v4)", "/" + b.prefix4, "dim"]);
+    if (b.prefix4 != null) rows.push(["prefix4 (v4)", "/" + b.prefix4 + " <button onclick="editConfig('prefix4'," + b.prefix4 + ",1,32)" style="font-size:10px;padding:1px 6px;cursor:pointer;border:1px solid var(--muted);border-radius:3px;background:var(--good);color:#fff">edit</button>", "dim"]);
     if (b.prefix6 != null) rows.push(["prefix6 (v6)", "/" + b.prefix6, "dim"]);
     if (b.explore_pct != null) rows.push(["exploration", b.explore_pct + "%", b.explore_pct > 0 ? "hi" : "dim"]);
     setHTML("lv-build", rows.map(function (r) {
@@ -2124,6 +2124,29 @@ function _populateBucketSelect(desiredBucket) {
       .catch(function (e) {
         err("FAIL: " + (e && e.message ? e.message : e), e);
       });
+  }
+
+
+  function editConfig(name, current, min, max) {
+    var label = name === 'explore_pct' ? current + '%' : '/' + current;
+    var newVal = prompt(name + ' (current: ' + label + ', range: ' + min + '-' + max + '):', current);
+    if (newVal === null) return;
+    newVal = parseInt(newVal);
+    if (isNaN(newVal) || newVal < min || newVal > max) {
+      alert('Invalid value. Must be between ' + min + ' and ' + max);
+      return;
+    }
+    fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({[name]: newVal})
+    }).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          status(name + ' updated — live on next bpftune restart');
+          if (window.__liveFetch) window.__liveFetch();
+        }
+      }).catch(function(e) { err('config: ' + e.message); });
   }
 
   boot();
