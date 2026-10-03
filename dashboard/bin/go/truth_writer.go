@@ -1,6 +1,6 @@
 package main
 
-// truth_writer.go — appends resolved swap outcomes to swaps_truth.jsonl
+// truth_writer.go — appends resolved swap outcomes to swapscore_truth.jsonl
 // for the bpftune tuner.  Mirrors Python _truth_write.
 //
 // Format: one JSON object per line:
@@ -20,7 +20,7 @@ import (
 	"strings"
 )
 
-var truthFilePath = "/var/lib/bpftune/history/swaps_truth.jsonl"
+var truthFilePath = "/var/lib/bpftune/history/swapscore_truth.jsonl"
 
 // writeTruthRow appends a truth entry for a resolved swap.
 // Only writes if outcome is win/loss/null (not "no_post" or empty).

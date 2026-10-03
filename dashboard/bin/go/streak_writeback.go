@@ -410,7 +410,15 @@ func streaksFromHistory(outcomes []string) (bad, null uint8) {
 // swap_score, rate_ema, sockets_*, prefix fields, rate_hist are
 // preserved from the lookup.  Mirrors Python _patch_streaks.
 func patchStreaks(buf []byte, algIdx int, bad, null uint8) {
+	// D3 fix: bounds-check algIdx to prevent out-of-bounds write panic.
+	// A malformed log line with to=99 would crash the entire collector.
+	if algIdx < 0 || algIdx >= numTCPConnMetrics {
+		return
+	}
 	base := offMetricsArray + (algIdx * sizeofTCPConnMetric)
+	if base+offMetricNullStreak+1 > len(buf) {
+		return
+	}
 	buf[base+offMetricBadStreak] = bad
 	buf[base+offMetricNullStreak] = null
 	// Explicitly DO NOT touch swap_score (offset 40) or rate_ema (38).

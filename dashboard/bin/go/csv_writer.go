@@ -243,7 +243,7 @@ func writeSwapsCSV(swaps []swapRow, now int64) {
 		f.WriteString(row + "\n")
 		// v0.7.6: write truth file entry for resolved swaps
 		if sw.Outcome == "win" || sw.Outcome == "loss" || sw.Outcome == "null" {
-			writeTruthRow(destIP(sw.Dest), strconv.Itoa(sw.To), sw.Outcome)
+			writeTruthRow(destIP(sw.Dest), algName(sw.To), sw.Outcome)
 		}
 	}
 }
