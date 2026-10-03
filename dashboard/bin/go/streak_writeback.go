@@ -54,6 +54,14 @@ var (
 	writebackMu sync.Mutex
 )
 
+// v0.7.9: only log mask detection + v6 warning when they CHANGE,
+// not every 30s cycle. Prevents journal spam.
+var (
+	lastMaskV4 = -1
+	lastMaskV6 = -1
+	v6Warned   = false
+)
+
 // prefixFields is the ordered list of u64 fields at the start of the
 // remote_host value (offsets 0..111).  Used to re-serialize the JSON
 // value back to bytes.  Mirrors Python _PREFIX_FIELDS.
@@ -155,7 +163,10 @@ func detectMask(mapID int) {
 			if allZero {
 				if bits != maskBitsV4 {
 					maskBitsV4 = bits
-					fmt.Fprintf(os.Stderr, "[writeback] /%d v4 mask (%d entries)\n", bits, len(v4))
+					if bits != lastMaskV4 {
+						lastMaskV4 = bits
+						fmt.Fprintf(os.Stderr, "[writeback] /%d v4 mask (%d entries)\n", bits, len(v4))
+					}
 				}
 				break
 			}
@@ -179,7 +190,10 @@ func detectMask(mapID int) {
 			if allZero {
 				if bits != maskBitsV6 {
 					maskBitsV6 = bits
-					fmt.Fprintf(os.Stderr, "[writeback] /%d v6 mask (%d entries)\n", bits, len(v6))
+					if bits != lastMaskV6 {
+						lastMaskV6 = bits
+						fmt.Fprintf(os.Stderr, "[writeback] /%d v6 mask (%d entries)\n", bits, len(v6))
+					}
 				}
 				break
 			}
@@ -590,7 +604,9 @@ func (c *Collector) writebackStreaks(swaps []swapRow, met map[int64][]metEntry, 
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[writeback] done: %d hosts, %d algorithm slots corrected (processed %d swaps)\n",
-		totalHosts, totalSlots, len(rows))
+	if totalHosts > 0 {
+		fmt.Fprintf(os.Stderr, "[writeback] done: %d hosts, %d algorithm slots corrected (processed %d swaps)\n",
+			totalHosts, totalSlots, len(rows))
+	}
 	return totalHosts, totalSlots
 }
