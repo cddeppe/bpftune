@@ -186,12 +186,6 @@ if [ "$DO_DASHBOARD" = 1 ]; then
             cp /tmp/bpftune-collector-go-"$ARCH" "$GO_BIN"
             chmod +x "$GO_BIN"
             ok "Go binary updated from GitHub Releases"
-        elif [ -f "$BACKUP_DIR/bpftune-collector-go-$ARCH" ]; then
-            systemctl stop bpftune-collector-go 2>/dev/null || true
-            sleep 2
-            cp "$BACKUP_DIR/bpftune-collector-go-$ARCH" "$GO_BIN"
-            chmod +x "$GO_BIN"
-            ok "Go binary copied from $BACKUP_DIR"
         elif command -v go >/dev/null 2>&1; then
             printf "  building Go binary from source...\n"
             systemctl stop bpftune-collector-go 2>/dev/null || true
@@ -202,7 +196,7 @@ if [ "$DO_DASHBOARD" = 1 ]; then
             ok "Go binary rebuilt from source"
             cd /root/bpftune
         else
-            warn "could not update Go binary (no GitHub release, no Go installed, no backup) — keeping existing binary"
+            warn "could not update Go binary (no GitHub release, no Go installed) — keeping existing binary"
         fi
 
         # --- 2b. Deploy frontend files ---
