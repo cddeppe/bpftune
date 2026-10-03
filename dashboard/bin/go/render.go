@@ -68,8 +68,8 @@ func (c *Collector) renderToDisk() {
 	hist.renderMetaToDisk(bucketMaps)
 
 	// Write swaps.json
-	if so, ok := swapOutcomes.(map[string]interface{}); ok {
-		hist.renderSwapsToDisk(so)
+	if _, ok := swapOutcomes.(map[string]interface{}); ok {
+		renderSwapsFromCSV(time.Now().Unix())
 	}
 
 	// Write fleet.json
@@ -335,8 +335,8 @@ func (h *historyStore) renderFleetToDisk(buckets []map[string]interface{}) {
 		for _, s := range snaps {
 			seen++
 			if s.RefRate > 0 {
-					have++
-				}
+				have++
+			}
 		}
 		if seen == 0 {
 			continue
@@ -456,7 +456,38 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 			}
 			series = buildSeriesFromSnaps(snaps, width)
 		}
-				bs := map[int64]bool{}; for _, sn := range snaps { bs[sn.Ts/int64(width)] = true }; var bis []int64; for bi := range bs { bis = append(bis, bi) }; sort.Slice(bis, func(i, j int) bool { return bis[i] < bis[j] }); sa := make([]interface{}, len(bis)); bc := map[int64]int{}; if f, e := os.Open(swapsCSVPath); e == nil { sc := bufio.NewScanner(f); sc.Buffer(make([]byte, 1<<20), 1<<20); sc.Scan(); for sc.Scan() { c := strings.Split(sc.Text(), ","); if len(c) < 13 { continue }; if ResolveBucket(c[11]) != bucketID { continue }; st, _ := strconv.ParseInt(c[0], 10, 64); bc[st/int64(width)]++ }; f.Close() }; for i, bi := range bis { sa[i] = bc[bi] }; series["swaps"] = sa
+		bs := map[int64]bool{}
+		for _, sn := range snaps {
+			bs[sn.Ts/int64(width)] = true
+		}
+		var bis []int64
+		for bi := range bs {
+			bis = append(bis, bi)
+		}
+		sort.Slice(bis, func(i, j int) bool { return bis[i] < bis[j] })
+		sa := make([]interface{}, len(bis))
+		bc := map[int64]int{}
+		if f, e := os.Open(swapsCSVPath); e == nil {
+			sc := bufio.NewScanner(f)
+			sc.Buffer(make([]byte, 1<<20), 1<<20)
+			sc.Scan()
+			for sc.Scan() {
+				c := strings.Split(sc.Text(), ",")
+				if len(c) < 13 {
+					continue
+				}
+				if ResolveBucket(c[11]) != bucketID {
+					continue
+				}
+				st, _ := strconv.ParseInt(c[0], 10, 64)
+				bc[st/int64(width)]++
+			}
+			f.Close()
+		}
+		for i, bi := range bis {
+			sa[i] = bc[bi]
+		}
+		series["swaps"] = sa
 		doc["series"].(map[string]interface{})[rngName] = series
 	}
 
@@ -571,7 +602,10 @@ func buildSeriesFromSnaps(snaps []bucketSnapshot, width int) map[string]interfac
 			arrs["ss_"+alg] = append(arrs["ss_"+alg], avg.Ss[i])
 			arrs["bs_"+alg] = append(arrs["bs_"+alg], avg.Bs[i])
 			arrs["ns_"+alg] = append(arrs["ns_"+alg], avg.Ns[i])
-			arrs["mv_"+alg] = append(arrs["mv_"+alg], avg.Mv[i]); _p := 16.0 / (16.0 + float64(avg.Bs[i])*4.0 + float64(avg.Ns[i])*2.0); _sc := float64(avg.Re[i]) * (float64(avg.Ss[i]) / 256.0) * _p; arrs["score_"+alg] = append(arrs["score_"+alg], round2(_sc))
+			arrs["mv_"+alg] = append(arrs["mv_"+alg], avg.Mv[i])
+			_p := 16.0 / (16.0 + float64(avg.Bs[i])*4.0 + float64(avg.Ns[i])*2.0)
+			_sc := float64(avg.Re[i]) * (float64(avg.Ss[i]) / 256.0) * _p
+			arrs["score_"+alg] = append(arrs["score_"+alg], round2(_sc))
 		}
 	}
 	series["ts"] = tsArr
