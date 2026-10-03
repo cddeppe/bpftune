@@ -134,13 +134,42 @@
              '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
     }).join(""))
 
-  // v0.7.5p: config edit button (prefix4/prefix6/explore_pct)
-  var _cfgBtn = document.createElement('button');
-  _cfgBtn.textContent = 'Config';
-  _cfgBtn.style.cssText = 'font-size:10px;padding:2px 10px;cursor:pointer;border:1px solid var(--good);border-radius:3px;background:var(--good);color:#fff;margin-top:8px;display:block';
-  _cfgBtn.onclick = editConfigMenu;
-  var _buildEl = document.getElementById('lv-build');
-  if (_buildEl) _buildEl.appendChild(_cfgBtn);;
+  // v0.7.5p: inline editable prefix4/prefix6/explore_pct + Save button
+  (function() {
+    var _be = document.getElementById('lv-build');
+    if (!_be || !b.prefix4) return;
+    var _rows = _be.querySelectorAll('.row');
+    _rows.forEach(function(row) {
+      var _k = row.querySelector('.k');
+      var _v = row.querySelector('.v');
+      if (!_k || !_v) return;
+      var _kt = _k.textContent;
+      if (_kt.indexOf('prefix4') >= 0) {
+        _v.innerHTML = '/<input type="number" id="cfg-p4" value="' + b.prefix4 + '" min="1" max="32" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
+      } else if (_kt.indexOf('prefix6') >= 0) {
+        _v.innerHTML = '/<input type="number" id="cfg-p6" value="' + b.prefix6 + '" min="1" max="128" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">';
+      } else if (_kt.indexOf('exploration') >= 0) {
+        _v.innerHTML = '<input type="number" id="cfg-ep" value="' + b.explore_pct + '" min="0" max="100" style="width:40px;font-size:13px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:3px;color:inherit;padding:1px 3px">%';
+      }
+    });
+    var _sb = document.createElement('button');
+    _sb.textContent = 'Save';
+    _sb.style.cssText = 'font-size:10px;padding:2px 12px;cursor:pointer;border:1px solid var(--good);border-radius:3px;background:var(--good);color:#fff;margin-top:8px;display:block';
+    _sb.onclick = function() {
+      var ch = {};
+      var p4 = document.getElementById('cfg-p4');
+      var p6 = document.getElementById('cfg-p6');
+      var ep = document.getElementById('cfg-ep');
+      if (p4) ch.prefix4 = parseInt(p4.value);
+      if (p6) ch.prefix6 = parseInt(p6.value);
+      if (ep) ch.explore_pct = parseInt(ep.value);
+      fetch('/api/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(ch)})
+        .then(function(r) { return r.json(); })
+        .then(function(d) { if (d.ok) { status('Config saved — live on next bpftune restart'); if (window.__liveFetch) window.__liveFetch(); } })
+        .catch(function(e) { err('config: ' + e.message); });
+    };
+    _be.appendChild(_sb);
+  })();;
   }
 
   function renderSystem(s) {
@@ -2132,47 +2161,7 @@ function _populateBucketSelect(desiredBucket) {
       .catch(function (e) {
         err("FAIL: " + (e && e.message ? e.message : e), e);
       });
-  }
-
-
-  function editConfig(name, current, min, max) {
-    var label = name === 'explore_pct' ? current + '%' : '/' + current;
-    var newVal = prompt(name + ' (current: ' + label + ', range: ' + min + '-' + max + '):', current);
-    if (newVal === null) return;
-    newVal = parseInt(newVal);
-    if (isNaN(newVal) || newVal < min || newVal > max) {
-      alert('Invalid value. Must be between ' + min + ' and ' + max);
-      return;
-    }
-    fetch('/api/config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({[name]: newVal})
-    }).then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok) {
-          status(name + ' updated — live on next bpftune restart');
-          if (window.__liveFetch) window.__liveFetch();
-        }
-      }).catch(function(e) { err('config: ' + e.message); });
-  }
-
-
-  function editConfigMenu() {
-    var b = (window.__current_doc || {}).build || {};
-    var p4 = b.prefix4 || 16;
-    var p6 = b.prefix6 || 32;
-    var ep = b.explore_pct || 100;
-    var msg = "Edit which setting? 1=prefix4(/" + p4 + ") 2=prefix6(/" + p6 + ") 3=explore(" + ep + "%)";
-    var choice = prompt(msg);
-    if (choice === null) return;
-    choice = choice.trim();
-    if (choice === "1") editConfig("prefix4", p4, 1, 32);
-    else if (choice === "2") editConfig("prefix6", p6, 1, 128);
-    else if (choice === "3") editConfig("explore_pct", ep, 0, 100);
-  }
-
-  boot();
+  }  boot();
 
   // 0.4.78.2: dark/light toggle.  Persists per-browser in
   // localStorage; falls back to prefers-color-scheme.
