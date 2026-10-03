@@ -219,7 +219,7 @@ if [ "$DASHBOARD" = 1 ]; then
     elif command -v go >/dev/null 2>&1; then
         printf "  building Go binary from source...\n"
         cd /root/bpftune/dashboard/bin/go
-        CGO_ENABLED=0 go build -o "$GO_BIN" .
+        CGO_ENABLED=0 go build -ldflags "-X main.dashVersionStr=v0.7.5p" -o "$GO_BIN" .
         chmod +x "$GO_BIN"
         ok "built Go binary from source"
         cd /root/bpftune

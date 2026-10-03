@@ -197,7 +197,7 @@ if [ "$DO_DASHBOARD" = 1 ]; then
             systemctl stop bpftune-collector-go 2>/dev/null || true
             sleep 2
             cd /root/bpftune/dashboard/bin/go
-            CGO_ENABLED=0 go build -o "$GO_BIN" .
+            CGO_ENABLED=0 go build -ldflags "-X main.dashVersionStr=v0.7.5p" -o "$GO_BIN" .
             chmod +x "$GO_BIN"
             ok "Go binary rebuilt from source"
             cd /root/bpftune
