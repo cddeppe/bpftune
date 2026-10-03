@@ -492,7 +492,7 @@
   .tun-group:nth-child(3) { grid-column: 1; grid-row: 3; }
   .tun-group:nth-child(4) { grid-column: 2; grid-row: 1 / span 3; }
 
-  /* v0.7.5p: tunables stack in 1 column on mobile (override nth-child) */
+  /* v0.7.5p: tunables stack in 1 column on mobile */
   @media (max-width: 699px) {
   }
   
