@@ -132,7 +132,7 @@
     setHTML("lv-build", rows.map(function (r) {
       return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
              '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
-    }).join(""))
+    }).join(""));
 
   // v0.7.5p: inline editable prefix4/prefix6/explore_pct + Save button
   (function() {
