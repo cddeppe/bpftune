@@ -600,3 +600,11 @@ func finalizeSeriesFromBins(binMap map[int64]*binAcc) map[string]interface{} {
 	}
 	return series
 }
+
+
+// v0.7.5p: validateMetric clamps unreasonable values to 0.
+// Prevents column-mismatch bugs (old Python rows have different column order).
+func validateRe(v float64) float64 { if v > 10000000 { return 0 }; return v }
+func validateSs(v int) int { if v > 1000 { return 0 }; return v }
+func validateBs(v int) int { if v > 1000 { return 0 }; return v }
+func validateNs(v int) int { if v > 1000 { return 0 }; return v }
