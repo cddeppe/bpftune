@@ -13,12 +13,12 @@ package main
 // is rare (renderToDisk regenerates every 5 min).
 
 import (
-	""bufio""
-	""sort""
-	"os"
-	"strconv"
-	"strings"
-	"sync"
+    "bufio"
+    "os"
+    "sort"
+    "strconv"
+    "strings"
+    "sync"
 	"time"
 )
 
@@ -391,9 +391,9 @@ type binAcc struct {
 	ts      int64 // bin center timestamp
 	count   int   // number of snapshots accumulated
 	sumRe   [16]float64
-	sumSs   [16]float64
-	sumBs   [16]float64
-	sumNs   [16]float64
+	sumSs   [16]int
+	sumBs   [16]int
+	sumNs   [16]int
 	sumMv   [16]float64
 }
 
@@ -587,9 +587,9 @@ func finalizeSeriesFromBins(binMap map[int64]*binAcc) map[string]interface{} {
 				break
 			}
 			arrs["re_"+alg] = append(arrs["re_"+alg], b.sumRe[i]/float64(n))
-			arrs["ss_"+alg] = append(arrs["ss_"+alg], b.sumSs[i]/float64(n))
-			arrs["bs_"+alg] = append(arrs["bs_"+alg], b.sumBs[i]/float64(n))
-			arrs["ns_"+alg] = append(arrs["ns_"+alg], b.sumNs[i]/float64(n))
+			arrs["ss_"+alg] = append(arrs["ss_"+alg], b.sumSs[i]/n)
+			arrs["bs_"+alg] = append(arrs["bs_"+alg], b.sumBs[i]/n)
+			arrs["ns_"+alg] = append(arrs["ns_"+alg], b.sumNs[i]/n)
 			arrs["mv_"+alg] = append(arrs["mv_"+alg], b.sumMv[i]/float64(n))
 		}
 	}

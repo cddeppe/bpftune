@@ -432,8 +432,8 @@ func (h *historyStore) renderBucketToDisk(bucketID, safe string, swapOutcomes in
 			}
 		}
 
+		var snaps []bucketSnapshot
 		if series == nil {
-			var snaps []bucketSnapshot
 			switch rngName {
 			case "1h":
 				snaps = h.raw[bucketID]
