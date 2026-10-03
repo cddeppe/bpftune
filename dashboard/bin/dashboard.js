@@ -126,13 +126,21 @@
       rows.push(["uptime", h + "h " + m + "m"]);
     }
     if (b.started_utc) rows.push(["started", b.started_utc + " UTC", "dim"]);
-    if (b.prefix4 != null) rows.push(["prefix4 (v4)", "/" + b.prefix4 + " <button onclick="editConfig('prefix4'," + b.prefix4 + ",1,32)" style="font-size:10px;padding:1px 6px;cursor:pointer;border:1px solid var(--muted);border-radius:3px;background:var(--good);color:#fff">edit</button>", "dim"]);
+    if (b.prefix4 != null) rows.push(["prefix4 (v4)", "/" + b.prefix4, "dim"]);
     if (b.prefix6 != null) rows.push(["prefix6 (v6)", "/" + b.prefix6, "dim"]);
     if (b.explore_pct != null) rows.push(["exploration", b.explore_pct + "%", b.explore_pct > 0 ? "hi" : "dim"]);
     setHTML("lv-build", rows.map(function (r) {
       return '<div class="row"><span class="k">' + esc(r[0]) + '</span>' +
              '<span class="v ' + (r[2] || "") + '">' + esc(r[1]) + '</span></div>';
-    }).join(""));
+    }).join(""))
+
+  // v0.7.5p: config edit button (prefix4/prefix6/explore_pct)
+  var _cfgBtn = document.createElement('button');
+  _cfgBtn.textContent = 'Config';
+  _cfgBtn.style.cssText = 'font-size:10px;padding:2px 10px;cursor:pointer;border:1px solid var(--good);border-radius:3px;background:var(--good);color:#fff;margin-top:8px;display:block';
+  _cfgBtn.onclick = editConfigMenu;
+  var _buildEl = document.getElementById('lv-build');
+  if (_buildEl) _buildEl.appendChild(_cfgBtn);;
   }
 
   function renderSystem(s) {
@@ -2147,6 +2155,32 @@ function _populateBucketSelect(desiredBucket) {
           if (window.__liveFetch) window.__liveFetch();
         }
       }).catch(function(e) { err('config: ' + e.message); });
+  }
+
+
+  function editConfigMenu() {
+    var b = (window.__current_doc || {}).build || {};
+    var p4 = b.prefix4 || 16;
+    var p6 = b.prefix6 || 32;
+    var ep = b.explore_pct || 100;
+    var choice = prompt(
+      'Edit which setting?
+
+' +
+      '1. prefix4  (current: /' + p4 + ', range 1-32)
+' +
+      '2. prefix6  (current: /' + p6 + ', range 1-128)
+' +
+      '3. exploration (current: ' + ep + '%, range 0-100)
+
+' +
+      'Enter 1, 2, or 3:'
+    );
+    choice = choice.trim();
+    if (choice === '1') editConfig('prefix4', p4, 1, 32);
+    else if (choice === '2') editConfig('prefix6', p6, 1, 128);
+    else if (choice === '3') editConfig('explore_pct', ep, 0, 100);
+    else alert('Invalid choice: ' + choice);
   }
 
   boot();
