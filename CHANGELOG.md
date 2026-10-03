@@ -4,6 +4,96 @@ All notable changes to the bpftune dashboard (Go collector) are documented
 in this file. The dashboard is a Go rewrite of the original Python dashboard,
 optimized for low memory and low CPU on small VPS instances.
 
+## [v0.8.0] — 2026-10-03
+
+### Added
+- **90-day "all" chart cap** — the "all" timerange now shows last 90 days
+  at 24h bins (max 90 data points, ~2KB JSON). Previously was unlimited
+  span at 6h bins (potentially thousands of bins).
+- **CSV rotation** (`csv_rotate.go`) — daily at 4am, trims CSVs to 90 days
+  when they exceed size thresholds (buckets.v2.csv > 200MB, swaps.csv >
+  50MB, srate.csv > 50MB). Prevents endless growth.
+
+### Changed
+- `history.go`: `"all"` range changed from `{nil, 21600}` (unlimited, 6h
+  bins) to `{90 * 86400, 86400}` (90 days, 24h bins).
+- `renderSlowToDisk()`: calls `rotateAllCSVs()` at the start of each
+  daily render cycle.
+
+## [v0.7.9] — 2026-10-03
+
+### Changed
+- **Quiet writeback journal noise** — `streak_writeback.go` now only
+  logs when something interesting happens:
+  - Mask detection: only when mask CHANGES (once per boot, not every 30s)
+  - v6 warning: only ONCE (ever, until restart)
+  - "done: 0 hosts" summary: SKIPPED on no-patch cycles
+  - Per-host + summary lines: kept (only show when patches happen)
+- Result: journal is silent on most cycles, 1-2 lines when patches happen.
+
+## [v0.7.8] — 2026-10-03
+
+### Added
+- **Historical swap outcome trends** — `render_swaps.go` (411 lines, already
+  existed but wasn't being called) is now activated. Reads 16MB of swaps.csv
+  + 8MB of srate.csv, recomputes sustained outcomes via
+  `attachSustainedOutcomes()`, builds time-binned win/loss trends with
+  Wilson confidence intervals. Output: `d0/d1_rate`, `d0/d1_lo`, `d0/d1_hi`,
+  `d0/d1_n`, `d0/d1_rate_sustained`, etc.
+
+### Fixed
+- `renderSwapsFromCSV`: time filtering now uses `CollectedTs` (wall-clock
+  epoch, column 0) instead of `BootTs` (seconds-since-boot). Was causing
+  1h/24h/7d ranges to show 0 data (boot_ts << epoch, all filtered out).
+- `render.go`: switched call from `hist.renderSwapsToDisk(so)` (current
+  cycle only) to `renderSwapsFromCSV(time.Now().Unix())` (historical CSV).
+
+## [v0.7.7] — 2026-10-03
+
+### Added
+- **CSV enrichment** (`csv_enrichment.go`) — `enrichSwapsForCSV()` fills in
+  Outcome/SrateBefore/Direction/Rport on each swapRow before CSV write.
+  Previously these 7 columns were always empty strings.
+  - Outcome: outcomeSustained → outcomeComposite fallback → "no_post" if
+    >300s expired
+  - Direction: "origin" if rport==443 else "client" (from first met event
+    3-300s after swap)
+  - SrateBefore: last srate event before swap
+  - Rport: from met event
+- **Truth file** (`truth_writer.go`) — `writeTruthRow()` appends
+  `{"bucket":"82.43.0.0","tgt":"4","cls":"win"}` to
+  `swaps_truth.jsonl` for the bpftune tuner. Called from `writeSwapsCSV`
+  after dedup (one truth entry per resolved swap).
+
+### Changed
+- `swapRow` struct: added Outcome, SrateBefore, Direction, Rport fields.
+- `buildSwapCSVRow`: uses enriched fields instead of empty strings.
+- `writeSwapsCSV`: calls `writeTruthRow` after dedup passes.
+- `collect.go`: calls `enrichSwapsForCSV(allSwaps, allMets, allSrates)`
+  before `writeSwapsCSV`.
+
+## [v0.7.6] — 2026-10-03
+
+### Added
+- **Streak writeback** (`streak_writeback.go`, 596 lines) — patches BPF
+  map `bad_streak`/`null_streak` from sustained outcomes (60-300s after
+  swap). Mirrors deleted Python `streak_writeback.py` (232 lines).
+  - Auto-detects v4/v6 prefix mask from BPF map entries
+  - Converts swap dest (decimal u32) to IP via `swapDestToIP()`
+  - Looks up remote_host_map entries using raw bytes from bpftool
+  - Computes bad/null streak from last 8 sustained outcomes per (host, alg)
+  - Patches only offsets 42/43 — preserves swap_score, rate_ema, etc.
+  - Hooked from `collect()` as async goroutine (every 30s cycle)
+
+### Fixed
+- `swapDestToIP()`: converts kernel's decimal u32 (e.g., "1378604897")
+  to dotted-quad IP (e.g., "82.43.215.97"). Without this, `net.ParseIP()`
+  returned nil and ALL swaps were skipped.
+- `mapLookupBytes()`: uses raw "value" bytes from bpftool --json (list
+  of hex strings) instead of re-serializing from formatted.value. Also
+  fixed JSON unmarshal type (single object, not array) — was causing
+  every lookup to fail silently.
+
 ## [v0.7.5p] — 2026-10-03
 
 ### Added
